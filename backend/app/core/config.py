@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     llm_model: str = "stub"
     llm_api_key: str = ""
+    anthropic_api_key: str = ""
+
+    def resolved_llm_api_key(self) -> str:
+        """Prefer provider-specific keys, then the generic LLM_API_KEY."""
+        model = self.llm_model.lower()
+        if model.startswith("anthropic:") or "claude" in model:
+            return self.anthropic_api_key or self.llm_api_key
+        return self.llm_api_key or self.anthropic_api_key
 
 
 settings = Settings()

@@ -12,6 +12,7 @@ from app.schemas.coach import (
     CoachStartRequest,
     CoachStartResponse,
     ConceptCardRead,
+    LearnerStateRead,
     RoadmapMilestoneRead,
 )
 from app.services import coach as coach_service
@@ -62,6 +63,20 @@ def get_roadmap(
     current_user: User = Depends(get_current_user),
 ) -> list[RoadmapMilestoneRead]:
     return coach_service.get_roadmap(db, current_user, user_project_id)
+
+
+@router.get(
+    "/me/projects/{user_project_id}/state",
+    response_model=LearnerStateRead,
+)
+def get_learner_state(
+    user_project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> LearnerStateRead:
+    return LearnerStateRead.model_validate(
+        coach_service.get_learner_state(db, current_user, user_project_id)
+    )
 
 
 @router.get(

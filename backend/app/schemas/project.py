@@ -16,6 +16,7 @@ class MilestoneRead(BaseModel):
     order_index: int
     success_criteria: str
     concepts: list[str] = []
+    questions: list[str] = []
 
 
 class RecommendedResource(BaseModel):

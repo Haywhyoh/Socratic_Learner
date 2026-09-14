@@ -11,10 +11,13 @@ from app.agents.policies import (
     build_roadmap,
     classify_intent,
     current_teach_concepts,
+    enforce_brevity,
     fallback_card_reply,
     filter_specialist_reply,
+    go_build_reply,
     later_milestone_concepts,
     next_hint_level,
+    pose_question,
 )
 from app.agents.state import CoachState
 
@@ -67,31 +70,103 @@ def make_cards_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
     return cards_node
 
 
+def question_node(state: CoachState) -> CoachState:
+    questions = list(state.get("milestone_questions") or [])
+    index = int(state.get("question_index") or 0)
+    question = pose_question(questions, index)
+    if question is None:
+        reply = go_build_reply(
+            constraints=list(state.get("constraints") or []),
+            success_criteria=state.get("success_criteria") or "",
+        )
+        return {
+            "reply": reply,
+            "current_question": None,
+            "questions_complete": True,
+            "answer_status": "complete",
+        }
+    return {
+        "reply": question,
+        "current_question": question,
+        "questions_complete": False,
+        "answer_status": "awaiting",
+    }
+
+
 def route_node(state: CoachState) -> CoachState:
     return {"intent": classify_intent(state.get("learner_message") or "")}
 
 
 def _pick_chat_branch(state: CoachState) -> str:
-    intent = state.get("intent") or "mentor"
+    intent = state.get("intent") or "answer"
     if intent == "hint":
         return "hint_gate"
     if intent in {"card", "checkpoint"}:
         return "card_reply"
-    return "mentor"
+    return "evaluate"
 
 
-def make_mentor_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
-    def mentor_node(state: CoachState) -> CoachState:
-        reply = llm.mentor_reply(
-            milestone_title=state.get("milestone_title") or "the current milestone",
-            constraints=state.get("constraints") or [],
-            success_criteria=state.get("success_criteria") or "",
-            current_concepts=state.get("current_concepts") or [],
-            learner_message=state.get("learner_message") or "",
+def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
+    def evaluate_node(state: CoachState) -> CoachState:
+        questions = list(state.get("milestone_questions") or [])
+        index = int(state.get("question_index") or 0)
+        question = pose_question(questions, index)
+        if question is None:
+            reply = go_build_reply(
+                constraints=list(state.get("constraints") or []),
+                success_criteria=state.get("success_criteria") or "",
+            )
+            return {
+                "reply": reply,
+                "questions_complete": True,
+                "answer_status": "complete",
+                "current_question": None,
+            }
+        result = llm.evaluate_answer(
+            question=question,
+            answer=state.get("learner_message") or "",
+            milestone_title=state.get("milestone_title") or "",
         )
-        return {"reply": reply}
+        if result.get("passed"):
+            new_index = index + 1
+            new_passed = int(state.get("questions_passed") or 0) + 1
+            next_q = pose_question(questions, new_index)
+            if next_q is None:
+                reply = go_build_reply(
+                    constraints=list(state.get("constraints") or []),
+                    success_criteria=state.get("success_criteria") or "",
+                )
+                return {
+                    "question_index": new_index,
+                    "questions_passed": new_passed,
+                    "reply": reply,
+                    "answer_status": "passed",
+                    "push_back": None,
+                    "questions_complete": True,
+                    "current_question": None,
+                    "eval_result": result,
+                }
+            return {
+                "question_index": new_index,
+                "questions_passed": new_passed,
+                "reply": next_q,
+                "answer_status": "passed",
+                "push_back": None,
+                "questions_complete": False,
+                "current_question": next_q,
+                "eval_result": result,
+            }
+        push = result.get("push_back") or "Not enough. Answer in one clear sentence."
+        return {
+            "reply": enforce_brevity(str(push), max_sentences=1),
+            "answer_status": "push_back",
+            "push_back": push,
+            "questions_complete": False,
+            "current_question": question,
+            "eval_result": result,
+        }
 
-    return mentor_node
+    return evaluate_node
 
 
 def hint_gate_node(state: CoachState) -> CoachState:
@@ -101,7 +176,7 @@ def hint_gate_node(state: CoachState) -> CoachState:
 
 def _after_hint_gate(state: CoachState) -> str:
     if state.get("hint_blocked_reason") == "need_effort":
-        return "mentor"
+        return "policy"
     return "hint_coach"
 
 
@@ -112,29 +187,30 @@ def make_hint_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
             state.get("milestone_title") or "this milestone",
             state.get("current_concepts") or [],
         )
-        return {"reply": reply}
+        question = state.get("current_question")
+        if question:
+            reply = f"{reply} Still answer: {question}"
+        return {"reply": reply, "answer_status": "hint"}
 
     return hint_node
 
 
 def card_reply_node(state: CoachState) -> CoachState:
-    return {"reply": fallback_card_reply(state.get("cards") or [])}
+    return {
+        "reply": fallback_card_reply(state.get("cards") or []),
+        "answer_status": "card",
+    }
 
 
 def policy_node(state: CoachState) -> CoachState:
     reply = state.get("reply") or ""
     if state.get("hint_blocked_reason") == "need_effort":
-        reply = (
-            "Show genuine effort first — describe what you tried, an approach, "
-            "or a checkpoint answer. I will not make the hint more specific yet.\n\n"
-            + reply
-        )
+        question = state.get("current_question") or "the current question"
+        reply = f"Show effort first. Answer: {question}"
     filtered, flags = filter_specialist_reply(
         reply,
         later_concepts=state.get("later_concepts") or [],
-        allow_code=int(state.get("hint_level", -1)) >= 3
-        and state.get("intent") == "hint"
-        and not state.get("hint_blocked_reason"),
+        allow_code=False,
     )
     catalog = state.get("catalog_milestones") or []
     milestone_id = state.get("milestone_id")
@@ -154,6 +230,7 @@ def build_start_graph(llm: CoachLLM | None = None):
     builder.add_node("assess", assess_node)
     builder.add_node("plan", plan_node)
     builder.add_node("cards", make_cards_node(llm))
+    builder.add_node("question", question_node)
     builder.add_edge(START, "assess")
     builder.add_conditional_edges(
         "assess",
@@ -161,7 +238,8 @@ def build_start_graph(llm: CoachLLM | None = None):
         {"plan": "plan", "end": END},
     )
     builder.add_edge("plan", "cards")
-    builder.add_edge("cards", END)
+    builder.add_edge("cards", "question")
+    builder.add_edge("question", END)
     return builder.compile()
 
 
@@ -169,7 +247,7 @@ def build_chat_graph(llm: CoachLLM | None = None):
     llm = llm or StubCoachLLM()
     builder = StateGraph(CoachState)
     builder.add_node("route", route_node)
-    builder.add_node("mentor", make_mentor_node(llm))
+    builder.add_node("evaluate", make_evaluate_node(llm))
     builder.add_node("hint_gate", hint_gate_node)
     builder.add_node("hint_coach", make_hint_node(llm))
     builder.add_node("card_reply", card_reply_node)
@@ -179,7 +257,7 @@ def build_chat_graph(llm: CoachLLM | None = None):
         "route",
         _pick_chat_branch,
         {
-            "mentor": "mentor",
+            "evaluate": "evaluate",
             "hint_gate": "hint_gate",
             "card_reply": "card_reply",
         },
@@ -187,9 +265,9 @@ def build_chat_graph(llm: CoachLLM | None = None):
     builder.add_conditional_edges(
         "hint_gate",
         _after_hint_gate,
-        {"mentor": "mentor", "hint_coach": "hint_coach"},
+        {"policy": "policy", "hint_coach": "hint_coach"},
     )
-    builder.add_edge("mentor", "policy")
+    builder.add_edge("evaluate", "policy")
     builder.add_edge("hint_coach", "policy")
     builder.add_edge("card_reply", "policy")
     builder.add_edge("policy", END)

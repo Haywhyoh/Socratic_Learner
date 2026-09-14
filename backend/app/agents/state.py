@@ -6,6 +6,7 @@ class CatalogMilestone(TypedDict):
     title: str
     order_index: int
     concepts: list[str]
+    questions: list[str]
     success_criteria: str
     description: str
 
@@ -38,6 +39,11 @@ class EffortSignals(TypedDict):
     attempt_message: bool
 
 
+class EvalResult(TypedDict):
+    passed: bool
+    push_back: str | None
+
+
 class CoachState(TypedDict, total=False):
     mode: str
     user_project_id: int
@@ -46,6 +52,10 @@ class CoachState(TypedDict, total=False):
     milestone_title: str
     constraints: list[str]
     success_criteria: str
+    milestone_questions: list[str]
+    question_index: int
+    questions_passed: int
+    current_question: str | None
     catalog_milestones: list[CatalogMilestone]
     knowledge_profile: dict[str, str]
     assessment_answers: dict[str, str]
@@ -61,5 +71,9 @@ class CoachState(TypedDict, total=False):
     intent: str
     reply: str
     status: str
+    answer_status: str | None
+    push_back: str | None
+    questions_complete: bool
     hint_blocked_reason: NotRequired[str | None]
     policy_flags: list[str]
+    eval_result: EvalResult

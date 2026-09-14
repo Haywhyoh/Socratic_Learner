@@ -21,6 +21,7 @@ dependencies = [
     "rich>=13.9.0",
     "langchain>=0.3.27",
     "langchain-core>=0.3.70",
+    "langchain-anthropic>=0.3.0",
     "langgraph>=0.4.0",
 ]
 

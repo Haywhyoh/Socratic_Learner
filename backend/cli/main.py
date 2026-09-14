@@ -219,7 +219,7 @@ def _print_milestones_table(
         "Restart from a milestone (also resets later ones): "
         "socratic milestone restart <user_milestone_id>\n"
         "Full definition: socratic brief\n"
-        "Coach: socratic coach start  ·  socratic roadmap  ·  socratic cards  ·  socratic hint[/dim]"
+        "Coach: socratic coach start  ·  socratic coach message  ·  socratic state  ·  socratic hint[/dim]"
     )
 
 
@@ -512,6 +512,23 @@ def _print_cards(cards: list[dict[str, Any]]) -> None:
             console.print(f"[green]Checkpoint[/green]\n{card['checkpoint']}")
 
 
+def _prompt_mastery(prompt: str) -> str:
+    """Ask until we get (or can fuzzy-map to) unknown/familiar/can_explain."""
+    from app.agents.policies import normalize_mastery
+
+    allowed = {"unknown", "familiar", "can_explain"}
+    while True:
+        raw = typer.prompt(prompt, default="unknown")
+        mastery = normalize_mastery(raw)
+        if mastery in allowed:
+            if mastery != raw.strip().lower().replace(" ", "_"):
+                console.print(f"[dim]Interpreted as {mastery}[/dim]")
+            return mastery
+        console.print(
+            "[yellow]Please answer unknown, familiar, or can_explain.[/yellow]"
+        )
+
+
 @app.command("coach")
 def coach_cmd(
     action: Annotated[str, typer.Argument(help="'start' or 'message'")],
@@ -542,12 +559,13 @@ def coach_cmd(
             data = response.json()
             if data.get("status") == "needs_assessment":
                 console.print("[bold]What do you already understand?[/bold]")
+                console.print(
+                    "[dim]Answers: unknown · familiar · can_explain "
+                    "(typos are corrected when possible)[/dim]"
+                )
                 answers = []
                 for question in data.get("assessment_questions") or []:
-                    mastery = typer.prompt(
-                        f"{question['prompt']}",
-                        default="unknown",
-                    )
+                    mastery = _prompt_mastery(question["prompt"])
                     answers.append({"concept": question["concept"], "mastery": mastery})
                 response = client.post(
                     f"/api/v1/me/projects/{user_project_id}/coach/start",
@@ -562,21 +580,66 @@ def coach_cmd(
                 f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
             )
             if data.get("reply"):
-                console.print(f"\n{data['reply']}")
-            _print_cards(data.get("cards") or [])
+                console.print(f"\n[bold]Q[/bold] {data['reply']}")
             return
         if not message:
-            message = typer.prompt("Message")
+            message = typer.prompt("Answer")
         response = client.post(
             f"/api/v1/me/projects/{user_project_id}/coach/message",
             headers=_headers(),
             json={"message": message},
         )
+        if response.status_code == 409 and "assessment" in response.text.lower():
+            console.print(
+                "[yellow]Finish assessment first: socratic coach start[/yellow]"
+            )
+            raise typer.Exit(code=1)
         if response.status_code >= 400:
             console.print(f"[red]{response.status_code}: {response.text}[/red]")
             raise typer.Exit(code=1)
         body = response.json()
-        console.print(f"[dim]intent={body.get('intent')}[/dim]\n{body.get('reply')}")
+        status = body.get("answer_status")
+        if status == "push_back":
+            console.print(f"[yellow]{body.get('reply')}[/yellow]")
+        elif status == "passed":
+            console.print(f"[green]Pass.[/green] {body.get('reply')}")
+        elif status == "complete":
+            console.print(f"[green]{body.get('reply')}[/green]")
+        else:
+            console.print(body.get("reply") or "")
+
+
+@app.command("state")
+def show_state(
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option(help="User project ID"),
+    ] = None,
+) -> None:
+    """Show learner state for the current milestone."""
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.get(
+            f"/api/v1/me/projects/{user_project_id}/state",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    data = response.json()
+    console.print(
+        f"Q {data.get('questions_passed')}/{data.get('questions_total')} "
+        f"(index={data.get('question_index')}) help={data.get('help_received')}"
+    )
+    if data.get("current_question"):
+        console.print(f"[bold]Current[/bold] {data['current_question']}")
+    if data.get("failed_at"):
+        console.print(f"Failures: {len(data['failed_at'])}")
+    if data.get("researched_concepts"):
+        console.print("Researched: " + ", ".join(data["researched_concepts"]))
 
 
 @app.command("roadmap")
@@ -690,6 +753,16 @@ def interactive_start() -> None:
     )
     mode = typer.prompt("Learning mode (project/concept)", default="project")
     enroll(course=course_id, primary=primary_id, secondary=secondary_id, mode=mode)
+    if mode == "project":
+        console.print(
+            "\n[dim]Next: socratic brief  →  socratic coach start  →  "
+            "socratic coach message ...[/dim]"
+        )
+    else:
+        console.print(
+            "\n[dim]Concept mode has no AI coach yet. "
+            "Use project mode for roadmap/cards/mentor, or: socratic concept show[/dim]"
+        )
 
 
 if __name__ == "__main__":

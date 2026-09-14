@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from sqlalchemy.orm import Session, joinedload
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
+from sqlalchemy.orm import Session, joinedload
 
 from app.agents.graph import build_chat_graph, build_start_graph
 from app.agents.llm import get_coach_llm
-from app.agents.policies import checkpoint_passes, current_teach_concepts, message_looks_like_attempt
+from app.agents.policies import current_teach_concepts, message_looks_like_attempt
 from app.agents.state import CatalogMilestone, CoachState
 from app.models.coach import (
     CardCheckpoint,
@@ -14,6 +15,7 @@ from app.models.coach import (
     ConceptMastery,
     HintReveal,
     LearnerKnowledge,
+    LearnerState,
     MentorSession,
     MentorSessionStatus,
     MentorTurn,
@@ -43,6 +45,7 @@ def _catalog(user_project: UserProject) -> list[CatalogMilestone]:
             "title": milestone.title,
             "order_index": milestone.order_index,
             "concepts": list(milestone.concepts or []),
+            "questions": list(milestone.questions or []),
             "success_criteria": milestone.success_criteria,
             "description": milestone.description,
         }
@@ -167,6 +170,35 @@ def _persist_cards(
     return stored
 
 
+def _get_or_create_learner_state(
+    db: Session, user_project_id: int, milestone_id: int
+) -> LearnerState:
+    row = (
+        db.query(LearnerState)
+        .filter(
+            LearnerState.user_project_id == user_project_id,
+            LearnerState.milestone_id == milestone_id,
+        )
+        .first()
+    )
+    if row is None:
+        row = LearnerState(
+            user_project_id=user_project_id,
+            milestone_id=milestone_id,
+            question_index=0,
+            questions_passed=0,
+            attempts=[],
+            researched_concepts=[],
+            failed_at=[],
+            can_explain=[],
+            can_reproduce=False,
+            help_received=0,
+        )
+        db.add(row)
+        db.flush()
+    return row
+
+
 def _roadmap_read(db: Session, user_project: UserProject) -> list[RoadmapMilestoneRead]:
     items = (
         db.query(RoadmapItem)
@@ -276,8 +308,29 @@ def _base_state(user_project: UserProject, user_milestone: UserMilestone | None)
         "milestone_title": milestone.title if milestone else "",
         "constraints": list(user_project.project.constraints or []),
         "success_criteria": milestone.success_criteria if milestone else "",
+        "milestone_questions": list(milestone.questions or []) if milestone else [],
         "catalog_milestones": catalog,
         "resources": resources,
+    }
+
+
+def _learner_state_payload(row: LearnerState, questions: list[str]) -> dict:
+    index = row.question_index
+    current = questions[index] if 0 <= index < len(questions) else None
+    return {
+        "user_project_id": row.user_project_id,
+        "milestone_id": row.milestone_id,
+        "question_index": row.question_index,
+        "questions_passed": row.questions_passed,
+        "questions_total": len(questions),
+        "current_question": current,
+        "attempts": list(row.attempts or []),
+        "researched_concepts": list(row.researched_concepts or []),
+        "failed_at": list(row.failed_at or []),
+        "can_explain": list(row.can_explain or []),
+        "can_reproduce": row.can_reproduce,
+        "help_received": row.help_received,
+        "questions_complete": index >= len(questions),
     }
 
 
@@ -292,6 +345,24 @@ def start_coach(
     current = current_user_milestone(user_project)
     profile = _knowledge_profile(db, user_project.id)
     if session.status == MentorSessionStatus.active and not answers:
+        learner_state = None
+        questions: list[str] = []
+        reply = None
+        if current is not None:
+            questions = list(current.milestone.questions or [])
+            learner_state = _get_or_create_learner_state(
+                db, user_project.id, current.milestone_id
+            )
+            if learner_state.question_index < len(questions):
+                reply = questions[learner_state.question_index]
+            else:
+                constraints = list(user_project.project.constraints or [])
+                constraint = constraints[0] if constraints else "follow constraints"
+                reply = (
+                    f"Go build. Constraint: {constraint}; "
+                    f"success: {current.milestone.success_criteria}."
+                )
+        db.commit()
         return {
             "status": session.status,
             "user_project_id": user_project.id,
@@ -299,18 +370,25 @@ def start_coach(
             "milestone_id": current.milestone_id if current else None,
             "assessment_questions": [],
             "roadmap": _roadmap_read(db, user_project),
-            "cards": _cards_for_milestone(
-                db, user_project.id, current.milestone_id
-            )
-            if current
-            else [],
-            "reply": None,
+            "cards": [],
+            "reply": reply,
+            "current_question": reply if current and learner_state and learner_state.question_index < len(questions) else None,
+            "answer_status": None,
+            "learner_state": (
+                _learner_state_payload(learner_state, questions) if learner_state else None
+            ),
         }
     answer_map = {item.concept: item.mastery.value for item in answers or []}
     state: CoachState = _base_state(user_project, current)
     state["mode"] = "start"
     state["knowledge_profile"] = profile
     state["assessment_answers"] = answer_map
+    if current is not None:
+        learner_state = _get_or_create_learner_state(
+            db, user_project.id, current.milestone_id
+        )
+        state["question_index"] = learner_state.question_index
+        state["questions_passed"] = learner_state.questions_passed
     graph = build_start_graph(get_coach_llm())
     result = graph.invoke(state)
     status_value = result.get("status") or MentorSessionStatus.needs_assessment.value
@@ -327,26 +405,35 @@ def start_coach(
             "roadmap": [],
             "cards": [],
             "reply": None,
+            "current_question": None,
+            "answer_status": None,
+            "learner_state": None,
         }
 
     profile = result.get("knowledge_profile") or profile
     _persist_knowledge(db, user_project.id, profile)
     _persist_roadmap(db, user_project.id, result.get("roadmap") or [])
-    cards: list[ConceptCard] = []
     if current is not None:
-        cards = _persist_cards(
+        _persist_cards(
             db, user_project.id, current.milestone_id, result.get("cards") or []
         )
+        learner_state = _get_or_create_learner_state(
+            db, user_project.id, current.milestone_id
+        )
+    else:
+        learner_state = None
     session.status = MentorSessionStatus.active
+    reply = result.get("reply") or ""
     db.add(
         MentorTurn(
             session_id=session.id,
             role=MentorTurnRole.system,
-            content="Roadmap ready. Research the current concept cards, then implement the milestone.",
+            content=reply,
         )
     )
     db.commit()
     db.refresh(session)
+    questions = list(current.milestone.questions or []) if current else []
     return {
         "status": session.status,
         "user_project_id": user_project.id,
@@ -354,14 +441,32 @@ def start_coach(
         "milestone_id": current.milestone_id if current else None,
         "assessment_questions": [],
         "roadmap": _roadmap_read(db, user_project),
-        "cards": cards,
-        "reply": "Roadmap ready. Research the current concept cards, then implement the milestone.",
+        "cards": [],
+        "reply": reply,
+        "current_question": result.get("current_question"),
+        "answer_status": result.get("answer_status"),
+        "learner_state": (
+            _learner_state_payload(learner_state, questions) if learner_state else None
+        ),
     }
 
 
 def get_roadmap(db: Session, user: User, user_project_id: int) -> list[RoadmapMilestoneRead]:
     user_project = _user_project(db, user, user_project_id)
     return _roadmap_read(db, user_project)
+
+
+def get_learner_state(db: Session, user: User, user_project_id: int) -> dict:
+    user_project = _user_project(db, user, user_project_id)
+    current = current_user_milestone(user_project)
+    if current is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending milestone",
+        )
+    row = _get_or_create_learner_state(db, user_project.id, current.milestone_id)
+    db.commit()
+    return _learner_state_payload(row, list(current.milestone.questions or []))
 
 
 def list_cards(
@@ -411,6 +516,9 @@ def post_message(
             status_code=status.HTTP_409_CONFLICT,
             detail="No pending milestone to coach against",
         )
+    learner_state = _get_or_create_learner_state(
+        db, user_project.id, current.milestone_id
+    )
     profile = _knowledge_profile(db, user_project.id)
     roadmap_state = [
         {
@@ -433,6 +541,7 @@ def post_message(
         }
         for card in cards
     ]
+    questions = list(current.milestone.questions or [])
     state: CoachState = _base_state(user_project, current)
     state.update(
         {
@@ -446,6 +555,13 @@ def post_message(
             "hint_level": _max_hint_level(db, current.id),
             "effort": _effort(db, session, current, message),
             "learner_message": message,
+            "question_index": learner_state.question_index,
+            "questions_passed": learner_state.questions_passed,
+            "current_question": (
+                questions[learner_state.question_index]
+                if 0 <= learner_state.question_index < len(questions)
+                else None
+            ),
         }
     )
     result = build_chat_graph(get_coach_llm()).invoke(state)
@@ -454,18 +570,45 @@ def post_message(
     )
     reply = result.get("reply") or ""
     db.add(MentorTurn(session_id=session.id, role=MentorTurnRole.tutor, content=reply))
+
+    # Persist learner state updates
+    now = datetime.now(UTC).isoformat()
+    attempts = list(learner_state.attempts or [])
+    attempts.append(
+        {
+            "summary": message[:200],
+            "tested": False,
+            "outcome": result.get("answer_status"),
+            "at": now,
+        }
+    )
+    learner_state.attempts = attempts[-20:]
+    if result.get("answer_status") == "passed":
+        learner_state.question_index = int(result.get("question_index", learner_state.question_index))
+        learner_state.questions_passed = int(
+            result.get("questions_passed", learner_state.questions_passed)
+        )
+    elif result.get("answer_status") == "push_back":
+        failed = list(learner_state.failed_at or [])
+        failed.append({"description": message[:200], "at": now})
+        learner_state.failed_at = failed[-20:]
+
     hint_level = None
     blocked = result.get("hint_blocked_reason")
-    if result.get("intent") == "hint" and not blocked:
-        hint_level = int(result.get("hint_level", 0))
-        db.add(
-            HintReveal(
-                user_milestone_id=current.id,
-                level=hint_level,
-                content=reply,
+    if result.get("intent") == "hint":
+        learner_state.help_received = int(learner_state.help_received or 0) + 1
+        if not blocked:
+            hint_level = int(result.get("hint_level", 0))
+            db.add(
+                HintReveal(
+                    user_milestone_id=current.id,
+                    level=hint_level,
+                    content=reply,
+                )
             )
-        )
+
     db.commit()
+    db.refresh(learner_state)
     session = (
         db.query(MentorSession)
         .options(joinedload(MentorSession.turns))
@@ -473,13 +616,17 @@ def post_message(
         .one()
     )
     return {
-        "intent": result.get("intent") or "mentor",
+        "intent": result.get("intent") or "answer",
         "reply": reply,
         "hint_level": hint_level if result.get("intent") == "hint" else None,
         "hint_blocked_reason": blocked,
         "policy_flags": result.get("policy_flags") or [],
-        "cards": cards,
-        "turns": session.turns,
+        "cards": [],
+        "turns": session.turns[-4:],
+        "current_question": result.get("current_question"),
+        "answer_status": result.get("answer_status"),
+        "push_back": result.get("push_back"),
+        "learner_state": _learner_state_payload(learner_state, questions),
     }
 
 
@@ -500,28 +647,41 @@ def submit_checkpoint(
     if card is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
     user_project = learning_service.get_user_project(db, user, card.user_project_id)
-    passed = checkpoint_passes(answer)
+    passed = len(answer.strip()) >= 40 and "idk" not in answer.lower()
     row = CardCheckpoint(card_id=card.id, answer=answer, passed=passed)
     db.add(row)
-    if passed:
-        knowledge = (
-            db.query(LearnerKnowledge)
-            .filter(
-                LearnerKnowledge.user_project_id == user_project.id,
-                LearnerKnowledge.concept_name == card.name,
-            )
-            .first()
+    knowledge = (
+        db.query(LearnerKnowledge)
+        .filter(
+            LearnerKnowledge.user_project_id == user_project.id,
+            LearnerKnowledge.concept_name == card.name,
         )
-        if knowledge is None:
-            db.add(
-                LearnerKnowledge(
-                    user_project_id=user_project.id,
-                    concept_name=card.name,
-                    mastery=ConceptMastery.familiar,
-                )
-            )
-        elif knowledge.mastery == ConceptMastery.unknown:
+        .first()
+    )
+    if knowledge is None:
+        knowledge = LearnerKnowledge(
+            user_project_id=user_project.id,
+            concept_name=card.name,
+            mastery=ConceptMastery.familiar if passed else ConceptMastery.unknown,
+            researched=True,
+        )
+        db.add(knowledge)
+    else:
+        knowledge.researched = True
+        if passed and knowledge.mastery == ConceptMastery.unknown:
             knowledge.mastery = ConceptMastery.familiar
+    learner_state = _get_or_create_learner_state(
+        db, user_project.id, card.milestone_id
+    )
+    researched = list(learner_state.researched_concepts or [])
+    if card.name not in researched:
+        researched.append(card.name)
+        learner_state.researched_concepts = researched
+    if passed:
+        explained = list(learner_state.can_explain or [])
+        if card.name not in explained:
+            explained.append(card.name)
+            learner_state.can_explain = explained
     db.commit()
     db.refresh(row)
     return row
@@ -539,8 +699,10 @@ def ensure_cards_for_current_milestone(db: Session, user: User, user_project_id:
     current = current_user_milestone(user_project)
     if current is None:
         return
+    _get_or_create_learner_state(db, user_project.id, current.milestone_id)
     existing = _cards_for_milestone(db, user_project.id, current.milestone_id)
     if existing:
+        db.commit()
         return
     profile = _knowledge_profile(db, user_project.id)
     state: CoachState = _base_state(user_project, current)

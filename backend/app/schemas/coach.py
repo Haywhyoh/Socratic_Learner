@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.coach import ConceptMastery, MentorSessionStatus, MentorTurnRole, TeachingFlag
 
@@ -8,6 +8,15 @@ from app.models.coach import ConceptMastery, MentorSessionStatus, MentorTurnRole
 class AssessmentAnswer(BaseModel):
     concept: str
     mastery: ConceptMastery
+
+    @field_validator("mastery", mode="before")
+    @classmethod
+    def _normalize_mastery(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        from app.agents.policies import normalize_mastery
+
+        return normalize_mastery(value)
 
 
 class CoachStartRequest(BaseModel):
@@ -97,6 +106,25 @@ class CoachStartResponse(BaseModel):
     roadmap: list[RoadmapMilestoneRead] = []
     cards: list[ConceptCardRead] = []
     reply: str | None = None
+    current_question: str | None = None
+    answer_status: str | None = None
+    learner_state: "LearnerStateRead | None" = None
+
+
+class LearnerStateRead(BaseModel):
+    user_project_id: int
+    milestone_id: int
+    question_index: int
+    questions_passed: int
+    questions_total: int = 0
+    current_question: str | None = None
+    attempts: list[dict] = []
+    researched_concepts: list[str] = []
+    failed_at: list[dict] = []
+    can_explain: list[str] = []
+    can_reproduce: bool = False
+    help_received: int = 0
+    questions_complete: bool = False
 
 
 class CoachMessageResponse(BaseModel):
@@ -107,3 +135,10 @@ class CoachMessageResponse(BaseModel):
     policy_flags: list[str] = []
     cards: list[ConceptCardRead] = []
     turns: list[MentorTurnRead] = []
+    current_question: str | None = None
+    answer_status: str | None = None
+    push_back: str | None = None
+    learner_state: LearnerStateRead | None = None
+
+
+CoachStartResponse.model_rebuild()

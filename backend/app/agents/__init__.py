@@ -1,4 +1,4 @@
-"""LangGraph coaching workflow: assess, plan, cards, mentor, hints."""
+"""LangGraph coaching workflow: assess, plan, cards, question, evaluate."""
 
 from app.agents.graph import build_chat_graph, build_start_graph
 from app.agents.llm import StubCoachLLM, get_coach_llm

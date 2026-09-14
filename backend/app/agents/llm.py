@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
+import re
 from typing import Protocol
 
 from app.agents.policies import (
     fallback_card,
+    fallback_evaluate,
     fallback_hint,
-    fallback_mentor_reply,
 )
-from app.agents.state import CardDraft
+from app.agents.state import CardDraft, EvalResult
 from app.core.config import settings
 
 
@@ -19,15 +22,13 @@ class CoachLLM(Protocol):
         resources: list[dict[str, str]],
     ) -> CardDraft: ...
 
-    def mentor_reply(
+    def evaluate_answer(
         self,
         *,
+        question: str,
+        answer: str,
         milestone_title: str,
-        constraints: list[str],
-        success_criteria: str,
-        current_concepts: list[str],
-        learner_message: str,
-    ) -> str: ...
+    ) -> EvalResult: ...
 
     def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str: ...
 
@@ -43,34 +44,34 @@ class StubCoachLLM:
     ) -> CardDraft:
         return fallback_card(concept, milestone_title, resources)
 
-    def mentor_reply(
+    def evaluate_answer(
         self,
         *,
+        question: str,
+        answer: str,
         milestone_title: str,
-        constraints: list[str],
-        success_criteria: str,
-        current_concepts: list[str],
-        learner_message: str,
-    ) -> str:
-        return fallback_mentor_reply(
-            milestone_title=milestone_title,
-            constraints=constraints,
-            success_criteria=success_criteria,
-            current_concepts=current_concepts,
-            learner_message=learner_message,
-        )
+    ) -> EvalResult:
+        result = fallback_evaluate(question, answer)
+        return {"passed": bool(result["passed"]), "push_back": result.get("push_back")}  # type: ignore[return-value]
 
     def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str:
         return fallback_hint(level, milestone_title, concepts)
 
 
 def get_coach_llm() -> CoachLLM:
-    if settings.llm_model.lower() in {"stub", "none", "fake"} or not settings.llm_api_key:
+    model_name = (settings.llm_model or "stub").strip()
+    api_key = settings.resolved_llm_api_key().strip()
+    if model_name.lower() in {"stub", "none", "fake"} or not api_key:
         return StubCoachLLM()
     try:
         from langchain.chat_models import init_chat_model
 
-        model = init_chat_model(settings.llm_model)
+        if model_name.lower().startswith("anthropic:") or "claude" in model_name.lower():
+            os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
+        else:
+            os.environ.setdefault("OPENAI_API_KEY", api_key)
+
+        model = init_chat_model(model_name, api_key=api_key)
         return LangChainCoachLLM(model)
     except Exception:
         return StubCoachLLM()
@@ -83,6 +84,17 @@ class LangChainCoachLLM:
     def _invoke(self, prompt: str) -> str:
         result = getattr(self._model, "invoke")(prompt)
         content = getattr(result, "content", result)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and "text" in item:
+                    parts.append(str(item["text"]))
+                else:
+                    text = getattr(item, "text", None)
+                    parts.append(str(text if text is not None else item))
+            return "".join(parts)
         return str(content)
 
     def generate_card(
@@ -93,35 +105,42 @@ class LangChainCoachLLM:
     ) -> CardDraft:
         return fallback_card(concept, milestone_title, resources)
 
-    def mentor_reply(
+    def evaluate_answer(
         self,
         *,
+        question: str,
+        answer: str,
         milestone_title: str,
-        constraints: list[str],
-        success_criteria: str,
-        current_concepts: list[str],
-        learner_message: str,
-    ) -> str:
+    ) -> EvalResult:
         prompt = (
-            "You are a senior engineer mentoring a junior. Ask what they think, "
-            "expose missing assumptions, restate constraints, challenge architecture, "
-            "then tell them to implement. Never paste a full solution or complete files.\n"
+            "You evaluate a learner's understanding. "
+            "Return ONLY JSON: {\"passed\": true|false, \"push_back\": null|\"one sentence\"}. "
+            "passed=true if they show understanding. "
+            "If not, push_back is ONE short question. Never explain the answer. Never give code.\n"
             f"Milestone: {milestone_title}\n"
-            f"Constraints: {constraints}\n"
-            f"Success: {success_criteria}\n"
-            f"Concepts: {current_concepts}\n"
-            f"Learner: {learner_message}\n"
+            f"Question: {question}\n"
+            f"Answer: {answer}\n"
         )
         try:
-            return self._invoke(prompt)
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            passed = bool(payload.get("passed"))
+            push = payload.get("push_back")
+            if push is not None:
+                push = str(push).strip() or None
+            if passed:
+                return {"passed": True, "push_back": None}
+            return {
+                "passed": False,
+                "push_back": push or "Not enough. Answer in one clear sentence.",
+            }
         except Exception:
-            return fallback_mentor_reply(
-                milestone_title=milestone_title,
-                constraints=constraints,
-                success_criteria=success_criteria,
-                current_concepts=current_concepts,
-                learner_message=learner_message,
-            )
+            result = fallback_evaluate(question, answer)
+            return {
+                "passed": bool(result["passed"]),
+                "push_back": result.get("push_back"),  # type: ignore[return-value]
+            }
 
     def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str:
         return fallback_hint(level, milestone_title, concepts)

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
 import re
-from typing import Any
 
 from app.agents.state import (
     CardDraft,
@@ -65,15 +65,28 @@ def normalize_mastery(value: str | None) -> str:
         "know": ConceptMastery.can_explain.value,
         "yes": ConceptMastery.can_explain.value,
         "expert": ConceptMastery.can_explain.value,
+        "explain": ConceptMastery.can_explain.value,
+        "can": ConceptMastery.can_explain.value,
         "some": ConceptMastery.familiar.value,
         "kinda": ConceptMastery.familiar.value,
+        "mid": ConceptMastery.familiar.value,
         "no": ConceptMastery.unknown.value,
         "none": ConceptMastery.unknown.value,
+        "idk": ConceptMastery.unknown.value,
     }
     mapped = aliases.get(raw, raw)
     try:
         return ConceptMastery(mapped).value
     except ValueError:
+        # Tolerate typos like "can_explaun"
+        matches = difflib.get_close_matches(
+            mapped,
+            [m.value for m in ConceptMastery],
+            n=1,
+            cutoff=0.7,
+        )
+        if matches:
+            return matches[0]
         return ConceptMastery.unknown.value
 
 
@@ -191,7 +204,7 @@ def classify_intent(message: str) -> str:
         return "card"
     if "checkpoint" in lower or "i researched" in lower:
         return "checkpoint"
-    return "mentor"
+    return "answer"
 
 
 def fallback_card(
@@ -221,64 +234,61 @@ def fallback_card(
     }
 
 
-def fallback_mentor_reply(
-    *,
-    milestone_title: str,
-    constraints: list[str],
-    success_criteria: str,
-    current_concepts: list[str],
-    learner_message: str,
-) -> str:
-    constraint_line = "; ".join(constraints[:3]) if constraints else "the project constraints"
-    concept_line = ", ".join(current_concepts[:3]) if current_concepts else "the current concepts"
-    return (
-        f"Before we talk implementation for '{milestone_title}', what do you think the "
-        f"design should be? I want to hear your assumptions.\n\n"
-        f"Constraints you cannot ignore: {constraint_line}.\n"
-        f"Success looks like: {success_criteria}\n"
-        f"Relevant concepts (research the cards, don't wait for me to lecture): {concept_line}.\n\n"
-        f"You said: {learner_message[:280]}\n"
-        "Challenge: name the tradeoff you are making, then go implement your approach. "
-        "I will not write the solution for you."
-    )
+def pose_question(questions: list[str], question_index: int) -> str | None:
+    if question_index < 0 or question_index >= len(questions):
+        return None
+    return questions[question_index]
+
+
+def go_build_reply(*, constraints: list[str], success_criteria: str) -> str:
+    constraint = constraints[0] if constraints else "follow the project constraints"
+    success = success_criteria or "meet the milestone success criteria"
+    return f"Go build. Constraint: {constraint}; success: {success}."
+
+
+def fallback_evaluate(question: str, answer: str) -> dict[str, object]:
+    """Stub evaluator: short answers fail; substantive answers pass."""
+    cleaned = answer.strip()
+    if len(cleaned) < 20 or cleaned.lower() in {"idk", "dunno", "pass", "yes", "no"}:
+        return {
+            "passed": False,
+            "push_back": "Not enough. Answer the question in one clear sentence.",
+        }
+    # Reject obvious non-answers that just repeat the question
+    if cleaned.rstrip("?").lower() == question.rstrip("?").lower():
+        return {
+            "passed": False,
+            "push_back": "That restates the question. What is your answer?",
+        }
+    return {"passed": True, "push_back": None}
 
 
 def fallback_hint(level: int, milestone_title: str, concepts: list[str]) -> str:
-    concept = concepts[0] if concepts else "the core idea of this milestone"
+    concept = concepts[0] if concepts else "the core idea"
     templates = {
-        0: (
-            f"Question only: which part of '{milestone_title}' is actually failing, "
-            "and what did you expect to happen instead?"
-        ),
-        1: (
-            f"Direction: look at the milestone success criteria and the first concept card "
-            f"for '{concept}'. Start there, not in a tutorial dump."
-        ),
-        2: (
-            f"Concept: this is about {concept}. Open that card, answer its research "
-            "questions, then come back."
-        ),
-        3: (
-            f"Structure sketch (not code): identify the boundary, the data you must persist, "
-            f"and the check that proves '{milestone_title}' works. Fill those three boxes."
-        ),
-        4: (
-            f"Targeted help: the stuck piece is usually the {concept} boundary — "
-            "compare your actual result to the success criteria and change only that piece."
-        ),
+        0: f"What part of '{milestone_title}' is failing?",
+        1: f"Look at the success criteria for '{milestone_title}'.",
+        2: f"This is about {concept}. Research that, then answer.",
+        3: f"Sketch: boundary, data to persist, proof for '{milestone_title}'.",
+        4: f"Fix only the {concept} boundary. Compare to success criteria.",
     }
     return templates.get(level, templates[0])
 
 
 def fallback_card_reply(cards: list[CardDraft]) -> str:
     if not cards:
-        return "No concept cards for this milestone — you already know these ideas. Implement it."
-    lines = ["Research these cards. Explanations stay short on purpose:"]
-    for card in cards:
-        lines.append(f"- {card['name']}: {card['why_it_matters']}")
-        lines.append(f"  Checkpoint: {card['checkpoint']}")
-    lines.append("Come back when you can answer the checkpoint, not before.")
-    return "\n".join(lines)
+        return "No cards. Go build."
+    card = cards[0]
+    return f"{card['name']}: {card['why_it_matters']} Checkpoint: {card['checkpoint']}"
+
+
+def enforce_brevity(text: str, *, max_sentences: int = 2) -> str:
+    """Keep coach replies abrupt: at most max_sentences."""
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return cleaned
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    return " ".join(parts[:max_sentences]).strip()
 
 
 def _strip_solution_fences(text: str) -> tuple[str, bool]:
@@ -305,26 +315,21 @@ def filter_specialist_reply(
     allow_code: bool = False,
 ) -> tuple[str, list[str]]:
     flags: list[str] = []
-    text = reply
+    text = enforce_brevity(reply, max_sentences=2)
     if not allow_code:
         text, stripped = _strip_solution_fences(text)
         if stripped:
             flags.append("stripped_solution")
-        if "```" in text and text.count("\n") > 20:
+            text = "No full solutions. Answer the question."
+        if "```" in text:
             flags.append("stripped_solution")
-            text = (
-                "I almost pasted a full solution there. Let's stay on design: "
-                "what do you think the approach should be?"
-            )
-    remaining_later = []
+            text = "No code dumps. Answer the question."
     for concept in later_concepts:
         if concept and concept.lower() in text.lower():
-            remaining_later.append(concept)
+            flags.append("blocked_later_concept")
             pattern = re.compile(re.escape(concept), re.IGNORECASE)
-            text = pattern.sub("[later-milestone concept withheld]", text)
-    if remaining_later:
-        flags.append("blocked_later_concept")
-    return text, flags
+            text = pattern.sub("[later]", text)
+    return enforce_brevity(text, max_sentences=2), flags
 
 
 def checkpoint_passes(answer: str) -> bool:

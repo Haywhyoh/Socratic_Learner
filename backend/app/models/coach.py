@@ -58,11 +58,52 @@ class LearnerKnowledge(Base):
         default=ConceptMastery.unknown,
         nullable=False,
     )
+    attempted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    researched: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    failed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     user_project = relationship("UserProject")
+
+
+class LearnerState(Base):
+    """Per-milestone learning control state — the core IP of the product."""
+
+    __tablename__ = "learner_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_project_id",
+            "milestone_id",
+            name="uq_learner_state_milestone",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_project_id: Mapped[int] = mapped_column(
+        ForeignKey("user_projects.id", ondelete="CASCADE"), nullable=False
+    )
+    milestone_id: Mapped[int] = mapped_column(
+        ForeignKey("milestones.id", ondelete="CASCADE"), nullable=False
+    )
+    question_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    questions_passed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attempts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    researched_concepts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    failed_at: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    can_explain: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    can_reproduce: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    help_received: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user_project = relationship("UserProject")
+    milestone = relationship("Milestone")
 
 
 class RoadmapItem(Base):

@@ -28,6 +28,14 @@ def prepare_database() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def stub_coach_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.agents.llm import StubCoachLLM
+
+    monkeypatch.setattr("app.services.coach.get_coach_llm", StubCoachLLM)
+    monkeypatch.setattr("app.agents.llm.get_coach_llm", StubCoachLLM)
+
+
+@pytest.fixture(autouse=True)
 def clean_tables() -> Generator[None, None, None]:
     yield
     with engine.begin() as connection:
@@ -136,6 +144,10 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
                     order_index=index,
                     success_criteria=f"{title} done",
                     concepts=[title.lower()],
+                    questions=[
+                        f"What is the goal of {title}?",
+                        f"How will you verify {title} works?",
+                    ],
                 )
             )
         project_id = project.id

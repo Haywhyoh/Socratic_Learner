@@ -89,6 +89,10 @@ socratic path
 socratic brief
 socratic milestone complete <user_milestone_id>
 socratic concept show
+socratic coach start
+socratic roadmap
+socratic cards
+socratic hint
 socratic start   # interactive walkthrough
 ```
 
@@ -104,6 +108,11 @@ Token is stored at `~/.socratic/token`.
    - **concept** — assigns a seeded hard question when one exists for that path (`status=active`); otherwise creates a session with `question_text=null` and status `pending_generation` (AI later)
 5. Complete milestones in order; restart from any milestone with
    `POST /api/v1/me/milestones/{id}/restart` (also resets later milestones)
+6. Start the project coach (`POST /api/v1/me/projects/{id}/coach/start` or
+   `socratic coach start`) to assess prior knowledge, get a concept roadmap,
+   and receive just-in-time concept cards for the current milestone
+7. Chat with the senior-engineer mentor (`socratic coach message ...`);
+   request progressive hints with `socratic hint` (effort-gated)
 
 ### Python seed content
 
@@ -116,8 +125,26 @@ Token is stored at `~/.socratic/token`.
 Each project definition includes: objective, difficulty, prerequisites, expected outcome,
 skills, concepts, milestones, constraints, tests, evaluation criteria, extension challenges,
 and recommended resources. View via `GET /api/v1/projects/{id}` or `socratic brief`.
+Each milestone also lists `concepts` used by the AI planner.
 
-Re-run safely anytime:
+The project coach (LangGraph) personalizes teaching on top of that catalog: it does not
+invent milestones. Concept cards stay short; the mentor asks you to implement rather than
+pasting solutions. Hint levels unlock only after genuine effort.
+
+### Anthropic (optional)
+
+Default in code is `stub` (no network). To use Claude Haiku/Sonnet, set in `.env`:
+
+```
+LLM_MODEL=anthropic:claude-haiku-4-5
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Install extras are already in `pyproject.toml` (`langchain-anthropic`). Restart uvicorn
+after changing `.env`. Mentor chat uses the live model; cards and hint ladder stay
+deterministic so policy (no solution dumps / no level-skipping) remains reliable.
+
+Re-run seed safely anytime:
 
 ```bash
 python -m app.seed
@@ -129,3 +156,4 @@ python -m app.seed
 - Frontend
 - OAuth / social login
 - Admin CRUD UI
+- Concept-mode tutor loop

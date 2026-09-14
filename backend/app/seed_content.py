@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-# Milestone tuple: title, description, instructions, success_criteria, concepts
-MilestoneSpec = tuple[str, str, str, str, list[str]]
+# Milestone tuple: title, description, instructions, success_criteria, concepts, questions
+MilestoneSpec = tuple[str, str, str, str, list[str], list[str]]
 ProjectSpec = dict[str, object]
 
 
@@ -86,6 +86,10 @@ What to do:
 """.strip(),
             "GET /health returns HTTP 200 with a JSON status body, and the app starts cleanly via uvicorn.",
             ["Milestone-sized delivery", "OpenAPI documentation"],
+            [
+                "What information does a health endpoint need to return?",
+                "Where should configuration values live, and why?",
+            ],
         ),
         (
             "CRUD for tasks",
@@ -103,6 +107,10 @@ What to do:
 """.strip(),
             "A client can create a task, list tasks, and mark a task complete; data survives process restart.",
             ["REST status codes"],
+            [
+                "What HTTP status code signals a new resource was created?",
+                "Why persist tasks in a database instead of memory?",
+            ],
         ),
         (
             "Auth-aware ownership",
@@ -117,6 +125,10 @@ What to do:
 """.strip(),
             "Authenticated ownership is enforced: users cannot read or mutate another user's tasks, verified by tests.",
             ["Ownership isolation", "Auth boundaries on mutations"],
+            [
+                "What information identifies a task's owner?",
+                "Why return 404 instead of 403 for cross-user access?",
+            ],
         ),
     ],
 }
@@ -199,6 +211,10 @@ What to do:
 """.strip(),
             "Creating a note returns HTTP 201 with a stable id and persisted fields.",
             ["Validation of query params (422)"],
+            [
+                "What fields must a note have at create time?",
+                "What status code should an invalid note title return?",
+            ],
         ),
         (
             "Tags and filtering",
@@ -212,6 +228,10 @@ What to do:
 """.strip(),
             "GET /notes?tag=<tag> returns only notes that include that tag.",
             ["Normalization of tag casing"],
+            [
+                "How should tags be stored relative to notes?",
+                "What happens if two tags differ only by casing?",
+            ],
         ),
         (
             "Search and pagination",
@@ -225,6 +245,10 @@ What to do:
 """.strip(),
             "Search and pagination params change the result set correctly and compose with tag filters.",
             ["List endpoint complexity", "Empty result sets vs errors", "Response metadata for totals"],
+            [
+                "Which fields should a text search query cover?",
+                "How do tag filter, search, and pagination compose on one list endpoint?",
+            ],
         ),
     ],
 }
@@ -305,6 +329,10 @@ What to do:
 """.strip(),
             "Books and authors can be created and edited in Django admin.",
             ["Foreign keys (Author → Book)", "Admin as a content tool"],
+            [
+                "How is a book related to an author in the data model?",
+                "What does Django admin give you that a custom form would not, at this stage?",
+            ],
         ),
         (
             "Catalog list views",
@@ -318,6 +346,10 @@ What to do:
 """.strip(),
             "Catalog list and detail pages render correctly for seeded books.",
             ["Form POST actions on detail pages"],
+            [
+                "What belongs on the list page versus the detail page?",
+                "How does a shared base template keep the catalog consistent?",
+            ],
         ),
         (
             "Borrow workflow",
@@ -331,6 +363,10 @@ What to do:
 """.strip(),
             "Borrowing a book flips availability and the detail page reflects the new state.",
             ["Availability state transitions", "Blocking invalid domain actions"],
+            [
+                "What state change happens when a book is borrowed?",
+                "What should happen if someone tries to borrow an unavailable book?",
+            ],
         ),
     ],
 }
@@ -410,6 +446,10 @@ What to do:
 """.strip(),
             "Two routes render inside a shared layout without console errors.",
             ["Shared layout with nested routes"],
+            [
+                "What does a shared layout own that individual pages should not?",
+                "Why use client-side routes instead of separate HTML pages here?",
+            ],
         ),
         (
             "Progress widgets",
@@ -422,6 +462,10 @@ What to do:
 """.strip(),
             "At least three progress widgets display correctly from mock data.",
             ["Derived progress summaries", "Separating mock data from UI"],
+            [
+                "What progress summary can you derive from milestone statuses?",
+                "Why keep mock data in a module separate from UI components?",
+            ],
         ),
         (
             "Interactive filters",
@@ -434,6 +478,10 @@ What to do:
 """.strip(),
             "Filtering updates visible widgets without a full page reload.",
             ["Filter without full page reload", "Dashboard information architecture"],
+            [
+                "What should change when a filter updates, and what should stay mounted?",
+                "Where should filter state live in the component tree?",
+            ],
         ),
     ],
 }
@@ -513,6 +561,10 @@ Keep it to one page.
 """.strip(),
             "Brief names audience, pain, promise, and proof.",
             ["Audience / pain / promise / proof", "Executable briefs vs generic personas"],
+            [
+                "What four elements must the audience brief name?",
+                "How does an executable brief differ from a generic persona?",
+            ],
         ),
         (
             "Four-week calendar",
@@ -525,6 +577,10 @@ What to include:
 """.strip(),
             "Calendar includes at least 12 dated content items with channels and CTAs.",
             ["Channel mix across a launch window"],
+            [
+                "What makes a calendar item specific enough to execute?",
+                "Why mix channels across a four-week launch window?",
+            ],
         ),
         (
             "Measurement plan",
@@ -538,6 +594,10 @@ What to include:
 """.strip(),
             "Plan lists leading and lagging indicators with owners.",
             ["Leading vs lagging indicators", "Measurement cadence"],
+            [
+                "What is the difference between a leading and a lagging indicator?",
+                "Who owns each metric, and when do you review them?",
+            ],
         ),
     ],
 }
