@@ -37,6 +37,35 @@ class CheckpointRequest(BaseModel):
     answer: str = Field(min_length=1)
 
 
+class ReviewAnswerRequest(BaseModel):
+    answers: list[str] = Field(min_length=1)
+
+
+class ReviewDimensionRead(BaseModel):
+    rating: str
+    notes: str = ""
+
+
+class UnderstandingAnswerRead(BaseModel):
+    question: str
+    answer: str
+    passed: bool
+    feedback: str | None = None
+
+
+class MilestoneReviewRead(BaseModel):
+    id: int
+    user_milestone_id: int
+    verdict: MilestoneReviewVerdict
+    dimensions: dict[str, ReviewDimensionRead] = {}
+    summary: str = ""
+    understanding_questions: list[str] = []
+    understanding_answers: list[UnderstandingAnswerRead] = []
+    attempts: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
 class AssessmentQuestion(BaseModel):
     concept: str
     prompt: str
