@@ -61,11 +61,17 @@ python -m app.seed
 
 ### Python sandbox image
 
-Learner code runs in ephemeral Docker containers. Build the image once (requires Docker Desktop or a local Docker daemon):
+Learner code runs in ephemeral Docker containers. You need a Docker daemon.
+
+**macOS (lightweight):** Colima
 
 ```bash
+brew install docker colima
+colima start
 docker build -t socratic-sandbox-python:latest sandbox
 ```
+
+**Or** install Docker Desktop, start it, then build the same image.
 
 Sandbox settings (see `.env.example`):
 
@@ -80,8 +86,7 @@ SANDBOX_PIDS_LIMIT=64
 
 Workspaces live under `data/workspaces/{user_project_id}/` (gitignored). Containers use no network, CPU/memory/PID limits, and auto-cleanup. Allowlisted commands: `python`, `python3`, `pytest`.
 
-This is a **local trust model**: the API host must be able to talk to the Docker daemon. Do not expose an unauthenticated Docker socket to learners.
-
+This is a **local trust model**: the API host must be able to talk to the Docker daemon. Do not expose an unauthenticated Docker socket to learners. If the API cannot find Docker after Colima starts, set `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` and restart uvicorn.
 ### Run the API
 
 ```bash
