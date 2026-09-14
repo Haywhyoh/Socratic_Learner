@@ -405,6 +405,7 @@ def start_coach(
             "reply": reply,
             "current_question": reply if current and learner_state and learner_state.question_index < len(questions) else None,
             "answer_status": None,
+            "resumed": True,
             "learner_state": (
                 _learner_state_payload(learner_state, questions) if learner_state else None
             ),
