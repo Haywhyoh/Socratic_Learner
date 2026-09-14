@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.agents.graph import build_chat_graph, build_start_graph
 from app.agents.llm import get_coach_llm
-from app.agents.policies import current_teach_concepts, message_looks_like_attempt
+from app.agents.policies import (
+    MAX_REVIEW_ATTEMPTS,
+    current_teach_concepts,
+    message_looks_like_attempt,
+)
 from app.agents.state import CatalogMilestone, CoachState
 from app.models.coach import (
     CardCheckpoint,
@@ -20,6 +24,8 @@ from app.models.coach import (
     MentorSessionStatus,
     MentorTurn,
     MentorTurnRole,
+    MilestoneReview,
+    MilestoneReviewVerdict,
     RoadmapItem,
     TeachingFlag,
 )
@@ -38,7 +44,12 @@ def _user_project(db: Session, user: User, user_project_id: int) -> UserProject:
 
 
 def _catalog(user_project: UserProject) -> list[CatalogMilestone]:
-    milestones = sorted(user_project.project.milestones, key=lambda m: m.order_index)
+    # This learner's own generated curriculum (each learner gets their own
+    # milestone set), not the shared catalog template on Project.milestones.
+    milestones = sorted(
+        (um.milestone for um in user_project.user_milestones if um.milestone is not None),
+        key=lambda m: m.order_index,
+    )
     return [
         {
             "id": milestone.id,
@@ -341,6 +352,7 @@ def _learner_state_payload(row: LearnerState, questions: list[str]) -> dict:
         "milestone_id": row.milestone_id,
         "question_index": row.question_index,
         "questions_passed": row.questions_passed,
+        "question_attempts": row.question_attempts,
         "questions_total": len(questions),
         "current_question": current,
         "attempts": list(row.attempts or []),
@@ -613,6 +625,7 @@ def post_message(
             "learner_message": message,
             "question_index": learner_state.question_index,
             "questions_passed": learner_state.questions_passed,
+            "question_attempts": learner_state.question_attempts,
             "current_question": (
                 questions[learner_state.question_index]
                 if 0 <= learner_state.question_index < len(questions)
@@ -644,7 +657,23 @@ def post_message(
         learner_state.questions_passed = int(
             result.get("questions_passed", learner_state.questions_passed)
         )
+        learner_state.question_attempts = 0
+    elif result.get("answer_status") == "advanced_with_gap":
+        learner_state.question_index = int(result.get("question_index", learner_state.question_index))
+        learner_state.question_attempts = 0
+        failed = list(learner_state.failed_at or [])
+        failed.append(
+            {
+                "description": f"Advanced without a confirmed answer: {result.get('gap_question', '')}"[:200],
+                "at": now,
+                "capped": True,
+            }
+        )
+        learner_state.failed_at = failed[-20:]
     elif result.get("answer_status") == "push_back":
+        learner_state.question_attempts = int(
+            result.get("question_attempts", learner_state.question_attempts + 1)
+        )
         failed = list(learner_state.failed_at or [])
         failed.append({"description": message[:200], "at": now})
         learner_state.failed_at = failed[-20:]

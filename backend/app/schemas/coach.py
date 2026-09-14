@@ -116,6 +116,7 @@ class LearnerStateRead(BaseModel):
     milestone_id: int
     question_index: int
     questions_passed: int
+    question_attempts: int = 0
     questions_total: int = 0
     current_question: str | None = None
     attempts: list[dict] = []
