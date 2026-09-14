@@ -757,8 +757,8 @@ def interactive_start() -> None:
     enroll(course=course_id, primary=primary_id, secondary=secondary_id, mode=mode)
     if mode == "project":
         console.print(
-            "\n[dim]Next: socratic brief  →  socratic coach start  →  "
-            "socratic coach message ...[/dim]"
+            "\n[dim]Next: socratic brief → socratic sandbox init → "
+            "socratic coach start → socratic coach message ...[/dim]"
         )
     else:
         console.print(

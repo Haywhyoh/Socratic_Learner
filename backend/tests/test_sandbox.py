@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models.coach import LearnerState
-from app.models.user import User
 from app.services.sandbox_runner import (
     FakeSandboxRunner,
     RunResult,
@@ -46,10 +45,10 @@ def _enroll_project(client: TestClient, auth_headers: dict[str, str], db: Sessio
             "course_id": path["course_id"],
             "primary_option_id": path["primary_option_id"],
             "secondary_option_id": path["secondary_option_id"],
-            "mode": "project",
+            "learning_mode": "project",
         },
     )
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     user_project_id = response.json()["user_project"]["id"]
     return int(user_project_id)
 
@@ -98,13 +97,24 @@ def test_sandbox_path_traversal_rejected(
     workspace_tmp: Path,
     fake_runner: FakeSandboxRunner,
 ) -> None:
+    from fastapi import HTTPException
+
+    from app.services.sandbox import resolve_safe_path, workspace_path_for
+
     user_project_id = _enroll_project(client, auth_headers, db)
     client.post(f"/api/v1/me/projects/{user_project_id}/sandbox", headers=auth_headers)
-    response = client.get(
-        f"/api/v1/me/projects/{user_project_id}/sandbox/files/../etc/passwd",
-        headers=auth_headers,
-    )
-    assert response.status_code == 400
+    root = workspace_path_for(user_project_id)
+    with pytest.raises(HTTPException) as exc:
+        resolve_safe_path(root, "../etc/passwd")
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_safe_path(root, "subdir/../../outside.py")
+    assert exc.value.status_code == 400
+
+    # Absolute-looking paths still resolve under the workspace root
+    ok = resolve_safe_path(root, "src/main.py")
+    assert ok == (root / "src" / "main.py").resolve()
 
 
 def test_sandbox_write_read_delete(
@@ -163,7 +173,6 @@ def test_sandbox_run_and_test_wire_coach_attempts(
     client: TestClient,
     auth_headers: dict[str, str],
     db: Session,
-    user: User,
     workspace_tmp: Path,
     fake_runner: FakeSandboxRunner,
 ) -> None:

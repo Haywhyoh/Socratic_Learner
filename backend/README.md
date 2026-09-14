@@ -1,6 +1,6 @@
 # Socratic Learner — Backend
 
-FastAPI + Postgres backend for project-based and concept-based learning. No frontend and no AI generation in this slice.
+FastAPI + Postgres backend for project-based and concept-based learning. No frontend in this slice.
 
 ## Stack
 
@@ -8,6 +8,7 @@ FastAPI + Postgres backend for project-based and concept-based learning. No fron
 - PostgreSQL 16 (Docker Compose or local Homebrew Postgres)
 - Alembic migrations
 - JWT email/password auth
+- Docker-based Python sandbox for learner code (never runs on the API process)
 - pytest against a dedicated `socratic_test` database
 - Typer CLI (`socratic`) for terminal use
 
@@ -58,6 +59,29 @@ alembic upgrade head
 python -m app.seed
 ```
 
+### Python sandbox image
+
+Learner code runs in ephemeral Docker containers. Build the image once (requires Docker Desktop or a local Docker daemon):
+
+```bash
+docker build -t socratic-sandbox-python:latest sandbox
+```
+
+Sandbox settings (see `.env.example`):
+
+```
+SANDBOX_ENABLED=true
+SANDBOX_IMAGE=socratic-sandbox-python:latest
+SANDBOX_MEMORY_MB=512
+SANDBOX_CPUS=1.0
+SANDBOX_TIMEOUT_SEC=30
+SANDBOX_PIDS_LIMIT=64
+```
+
+Workspaces live under `data/workspaces/{user_project_id}/` (gitignored). Containers use no network, CPU/memory/PID limits, and auto-cleanup. Allowlisted commands: `python`, `python3`, `pytest`.
+
+This is a **local trust model**: the API host must be able to talk to the Docker daemon. Do not expose an unauthenticated Docker socket to learners.
+
 ### Run the API
 
 ```bash
@@ -72,7 +96,11 @@ Open docs at http://localhost:8000/docs
 pytest
 ```
 
-Tests use `TEST_DATABASE_URL` and recreate/truncate tables automatically.
+Tests use `TEST_DATABASE_URL` and recreate/truncate tables automatically. Sandbox unit tests use a fake runner (no Docker). Optional Docker smoke:
+
+```bash
+SOCRATIC_SANDBOX_DOCKER=1 pytest -m docker
+```
 
 ## CLI
 
@@ -87,6 +115,10 @@ socratic options 1 --parent-id 1
 socratic enroll --course 1 --primary 1 --secondary 2 --mode project
 socratic path
 socratic brief
+socratic sandbox init
+socratic sandbox write main.py --content "print('hello')"
+socratic sandbox run -- python main.py
+socratic sandbox test
 socratic milestone complete <user_milestone_id>
 socratic concept show
 socratic coach start
@@ -108,11 +140,12 @@ Token is stored at `~/.socratic/token`.
    - **concept** — assigns a seeded hard question when one exists for that path (`status=active`); otherwise creates a session with `question_text=null` and status `pending_generation` (AI later)
 5. Complete milestones in order; restart from any milestone with
    `POST /api/v1/me/milestones/{id}/restart` (also resets later milestones)
-6. Start the project coach (`POST /api/v1/me/projects/{id}/coach/start` or
+6. Use the sandbox (`socratic sandbox init` / `write` / `run` / `test`) to implement and verify; test results are recorded on learner state (`tested=True`) for the coach
+7. Start the project coach (`POST /api/v1/me/projects/{id}/coach/start` or
    `socratic coach start`) to assess prior knowledge, get a concept roadmap,
    and receive just-in-time concept cards for the current milestone
-7. Chat with the senior-engineer mentor (`socratic coach message ...`);
-   request progressive hints with `socratic hint` (effort-gated)
+8. Chat with the senior-engineer mentor (`socratic coach message ...`);
+   request progressive hints with `socratic hint` (effort-gated; real sandbox tests count as effort)
 
 ### Python seed content
 
@@ -133,7 +166,7 @@ pasting solutions. Hint levels unlock only after genuine effort.
 
 ### Anthropic (optional)
 
-Default in code is `stub` (no network). To use Claude Haiku/Sonnet, set in `.env`:
+Default in code is `stub`. To use Claude Haiku/Sonnet, set in `.env`:
 
 ```
 LLM_MODEL=anthropic:claude-haiku-4-5
@@ -152,7 +185,10 @@ python -m app.seed
 
 ## Out of scope (this slice)
 
-- LLM question generation and argument scoring
+- Browser editor (Monaco / xterm)
+- Git teaching workflows
+- Gating milestone complete on green tests
+- AI code review / project defense / completion levels
 - Frontend
 - OAuth / social login
 - Admin CRUD UI
