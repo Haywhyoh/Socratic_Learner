@@ -181,6 +181,46 @@ def enroll(
     _print_enrollment(response.json())
 
 
+def _print_milestones_table(
+    user_milestones: list[dict[str, Any]],
+    *,
+    project_title: str | None = None,
+    project_status: str | None = None,
+    user_project_id: int | None = None,
+) -> None:
+    header_bits = []
+    if project_title:
+        header_bits.append(project_title)
+    if user_project_id is not None:
+        header_bits.append(f"user_project={user_project_id}")
+    if project_status:
+        header_bits.append(f"status={project_status}")
+    if header_bits:
+        console.print("[bold]" + " · ".join(header_bits) + "[/bold]")
+
+    table = Table("User milestone ID", "#", "Title", "Status", "Completed at")
+    ordered = sorted(
+        user_milestones,
+        key=lambda um: (um.get("milestone") or {}).get("order_index") or 0,
+    )
+    for um in ordered:
+        milestone = um.get("milestone") or {}
+        completed = um.get("completed_at") or "-"
+        table.add_row(
+            str(um["id"]),
+            str(milestone.get("order_index", "-")),
+            str(milestone.get("title", "-")),
+            str(um.get("status", "-")),
+            str(completed),
+        )
+    console.print(table)
+    console.print(
+        "[dim]Complete next: socratic milestone complete <user_milestone_id>\n"
+        "Restart from a milestone (also resets later ones): "
+        "socratic milestone restart <user_milestone_id>[/dim]"
+    )
+
+
 def _print_enrollment(data: dict[str, Any]) -> None:
     console.print(
         f"[bold]Enrollment {data['id']}[/bold] — "
@@ -192,20 +232,12 @@ def _print_enrollment(data: dict[str, Any]) -> None:
     if data.get("user_project"):
         up = data["user_project"]
         project = up.get("project") or data.get("assigned_project") or {}
-        console.print(
-            f"Project: {project.get('title', up['project_id'])} "
-            f"(user_project={up['id']}, status={up['status']})"
-        )
-        for um in data.get("user_milestones", []):
-            milestone = um.get("milestone") or {}
-            console.print(
-                f"  \\[{um['status']}] user_milestone={um['id']} "
-                f"#{milestone.get('order_index')} {milestone.get('title')}"
-            )
-        console.print(
-            "[dim]Complete next: socratic milestone complete <user_milestone_id>\n"
-            "Restart from a milestone (also resets later ones): "
-            "socratic milestone restart <user_milestone_id>[/dim]"
+        milestones = data.get("user_milestones") or up.get("user_milestones") or []
+        _print_milestones_table(
+            milestones,
+            project_title=project.get("title"),
+            project_status=up.get("status"),
+            user_project_id=up.get("id"),
         )
     if data.get("concept_session_id"):
         console.print(f"Concept session id={data['concept_session_id']}")
@@ -248,17 +280,38 @@ def milestone_action(
             f"/api/v1/me/milestones/{user_milestone_id}/{action}",
             headers=_headers(),
         )
-    if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
-        raise typer.Exit(code=1)
-    if action == "complete":
-        console.print("[green]Milestone completed.[/green]")
-    else:
-        console.print(
-            "[green]Milestone restarted "
-            "(this milestone and any later ones are pending again).[/green]"
-        )
-    _print_json(response.json())
+        if response.status_code >= 400:
+            console.print(f"[red]{response.status_code}: {response.text}[/red]")
+            raise typer.Exit(code=1)
+        data = response.json()
+        if action == "complete":
+            console.print("[green]Milestone completed.[/green]")
+            # Fetch full project progress for a table view
+            project = client.get(
+                f"/api/v1/me/projects/{data['user_project_id']}",
+                headers=_headers(),
+            )
+            project.raise_for_status()
+            body = project.json()
+            project_info = body.get("project") or {}
+            _print_milestones_table(
+                body.get("user_milestones") or [],
+                project_title=project_info.get("title"),
+                project_status=body.get("status"),
+                user_project_id=body.get("id"),
+            )
+        else:
+            console.print(
+                "[green]Milestone restarted "
+                "(this milestone and any later ones are pending again).[/green]"
+            )
+            project_info = data.get("project") or {}
+            _print_milestones_table(
+                data.get("user_milestones") or [],
+                project_title=project_info.get("title"),
+                project_status=data.get("status"),
+                user_project_id=data.get("id"),
+            )
 
 
 @app.command("concept")
