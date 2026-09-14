@@ -32,6 +32,7 @@ def stub_coach_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.agents.llm import StubCoachLLM
 
     monkeypatch.setattr("app.services.coach.get_coach_llm", StubCoachLLM)
+    monkeypatch.setattr("app.services.curriculum.get_coach_llm", StubCoachLLM)
     monkeypatch.setattr("app.agents.llm.get_coach_llm", StubCoachLLM)
 
 

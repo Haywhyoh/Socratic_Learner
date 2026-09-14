@@ -13,6 +13,8 @@ from app.schemas.coach import (
     CoachStartResponse,
     ConceptCardRead,
     LearnerStateRead,
+    MilestoneReviewRead,
+    ReviewAnswerRequest,
     RoadmapMilestoneRead,
 )
 from app.services import coach as coach_service
@@ -116,4 +118,49 @@ def submit_checkpoint(
 ) -> CheckpointRead:
     return coach_service.submit_checkpoint(
         db, current_user, card_id, payload.answer
+    )
+
+
+@router.get(
+    "/me/milestones/{user_milestone_id}/review",
+    response_model=MilestoneReviewRead,
+)
+def get_milestone_review(
+    user_milestone_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MilestoneReviewRead:
+    return MilestoneReviewRead.model_validate(
+        coach_service.get_milestone_review(db, current_user, user_milestone_id)
+    )
+
+
+@router.post(
+    "/me/milestones/{user_milestone_id}/review",
+    response_model=MilestoneReviewRead,
+)
+def request_milestone_review(
+    user_milestone_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MilestoneReviewRead:
+    return MilestoneReviewRead.model_validate(
+        coach_service.request_milestone_review(db, current_user, user_milestone_id)
+    )
+
+
+@router.post(
+    "/me/milestones/{user_milestone_id}/review/answer",
+    response_model=MilestoneReviewRead,
+)
+def answer_milestone_review(
+    user_milestone_id: int,
+    payload: ReviewAnswerRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MilestoneReviewRead:
+    return MilestoneReviewRead.model_validate(
+        coach_service.submit_milestone_review_answers(
+            db, current_user, user_milestone_id, payload.answers
+        )
     )
