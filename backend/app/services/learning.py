@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.concept import ConceptSession, ConceptSessionStatus
+from app.models.concept import ConceptQuestion, ConceptSession, ConceptSessionStatus
 from app.models.course import Course, CourseOption
 from app.models.enrollment import Enrollment, LearningMode
 from app.models.project import (
@@ -183,13 +183,33 @@ def create_enrollment(db: Session, user: User, payload: EnrollmentCreate) -> Enr
                 )
             )
     else:
-        db.add(
-            ConceptSession(
-                enrollment_id=enrollment.id,
-                question_text=None,
-                status=ConceptSessionStatus.pending_generation,
+        question = (
+            db.query(ConceptQuestion)
+            .filter(
+                ConceptQuestion.course_id == payload.course_id,
+                ConceptQuestion.primary_option_id == payload.primary_option_id,
+                ConceptQuestion.secondary_option_id == payload.secondary_option_id,
+                ConceptQuestion.is_active.is_(True),
             )
+            .order_by(ConceptQuestion.id)
+            .first()
         )
+        if question is not None:
+            db.add(
+                ConceptSession(
+                    enrollment_id=enrollment.id,
+                    question_text=question.question_text,
+                    status=ConceptSessionStatus.active,
+                )
+            )
+        else:
+            db.add(
+                ConceptSession(
+                    enrollment_id=enrollment.id,
+                    question_text=None,
+                    status=ConceptSessionStatus.pending_generation,
+                )
+            )
 
     db.commit()
     return get_enrollment(db, user, enrollment.id)

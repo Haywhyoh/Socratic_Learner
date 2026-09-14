@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -16,6 +16,30 @@ class ConceptSessionStatus(str, enum.Enum):
 class ConceptTurnRole(str, enum.Enum):
     learner = "learner"
     tutor = "tutor"
+
+
+class ConceptQuestion(Base):
+    """Catalog of hard concept questions. Used until AI generation is wired up."""
+
+    __tablename__ = "concept_questions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
+    primary_option_id: Mapped[int] = mapped_column(
+        ForeignKey("course_options.id", ondelete="RESTRICT"), nullable=False
+    )
+    secondary_option_id: Mapped[int] = mapped_column(
+        ForeignKey("course_options.id", ondelete="RESTRICT"), nullable=False
+    )
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    course = relationship("Course")
+    primary_option = relationship("CourseOption", foreign_keys=[primary_option_id])
+    secondary_option = relationship("CourseOption", foreign_keys=[secondary_option_id])
 
 
 class ConceptSession(Base):
