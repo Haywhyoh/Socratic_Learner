@@ -15,6 +15,7 @@ from app.models.concept import ConceptQuestion, ConceptSession, ConceptTurn
 from app.models.course import Course, CourseOption
 from app.models.enrollment import Enrollment
 from app.models.project import Milestone, Project, UserMilestone, UserProject
+from app.models.sandbox import SandboxWorkspace
 from app.models.user import User
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Milestone",
     "UserProject",
     "UserMilestone",
+    "SandboxWorkspace",
     "ConceptQuestion",
     "ConceptSession",
     "ConceptTurn",

@@ -1,0 +1,297 @@
+"""Learner code workspace + sandboxed execution (never on the API process)."""
+
+from __future__ import annotations
+
+import re
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.models.sandbox import SandboxWorkspace, SandboxWorkspaceStatus
+from app.models.user import User
+from app.services import coach as coach_service
+from app.services import learning as learning_service
+from app.services.sandbox_runner import get_sandbox_runner, validate_argv
+
+_PYTEST_COUNTS_RE = re.compile(
+    r"(?P<failed>\d+)\s+failed"
+    r"|(?P<passed>\d+)\s+passed"
+    r"|(?P<errors>\d+)\s+error"
+)
+
+
+def _require_enabled() -> None:
+    if not settings.sandbox_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sandbox is disabled",
+        )
+
+
+def workspace_root() -> Path:
+    root = Path(settings.sandbox_workspaces_root)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def workspace_path_for(user_project_id: int) -> Path:
+    return workspace_root() / str(user_project_id)
+
+
+def resolve_safe_path(workspace: Path, relative: str) -> Path:
+    """Resolve a relative path under workspace; reject traversal."""
+    cleaned = relative.strip().lstrip("/")
+    if not cleaned or cleaned in {".", ".."}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid path",
+        )
+    if ".." in Path(cleaned).parts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path traversal is not allowed",
+        )
+    target = (workspace / cleaned).resolve()
+    root = workspace.resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path escapes workspace",
+        )
+    return target
+
+
+def _scaffold(workspace: Path, project_title: str) -> None:
+    workspace.mkdir(parents=True, exist_ok=True)
+    readme = workspace / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# {project_title}\n\n"
+            "Learner workspace. Write your code here, then run:\n\n"
+            "```bash\n"
+            "socratic sandbox test\n"
+            "```\n",
+            encoding="utf-8",
+        )
+    tests_dir = workspace / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    init_py = tests_dir / "__init__.py"
+    if not init_py.exists():
+        init_py.write_text("", encoding="utf-8")
+
+
+def ensure_workspace(db: Session, user: User, user_project_id: int) -> SandboxWorkspace:
+    _require_enabled()
+    user_project = learning_service.get_user_project(db, user, user_project_id)
+    path = workspace_path_for(user_project.id)
+    _scaffold(path, user_project.project.title)
+
+    row = (
+        db.query(SandboxWorkspace)
+        .filter(SandboxWorkspace.user_project_id == user_project.id)
+        .first()
+    )
+    if row is None:
+        row = SandboxWorkspace(
+            user_project_id=user_project.id,
+            status=SandboxWorkspaceStatus.ready,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def list_files(db: Session, user: User, user_project_id: int) -> list[dict[str, Any]]:
+    ensure_workspace(db, user, user_project_id)
+    root = workspace_path_for(user_project_id).resolve()
+    entries: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_dir():
+            entries.append({"path": rel, "is_dir": True, "size": None})
+        else:
+            entries.append({"path": rel, "is_dir": False, "size": path.stat().st_size})
+    return entries
+
+
+def read_file(db: Session, user: User, user_project_id: int, relative: str) -> dict[str, str]:
+    ensure_workspace(db, user, user_project_id)
+    root = workspace_path_for(user_project_id)
+    target = resolve_safe_path(root, relative)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File is not UTF-8 text",
+        ) from exc
+    return {"path": relative.strip().lstrip("/"), "content": content}
+
+
+def write_file(
+    db: Session, user: User, user_project_id: int, relative: str, content: str
+) -> dict[str, str]:
+    ensure_workspace(db, user, user_project_id)
+    root = workspace_path_for(user_project_id)
+    target = resolve_safe_path(root, relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return {"path": relative.strip().lstrip("/"), "content": content}
+
+
+def delete_file(db: Session, user: User, user_project_id: int, relative: str) -> None:
+    ensure_workspace(db, user, user_project_id)
+    root = workspace_path_for(user_project_id)
+    target = resolve_safe_path(root, relative)
+    if not target.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    if target.is_dir():
+        try:
+            next(target.iterdir())
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Directory is not empty",
+            )
+        except StopIteration:
+            target.rmdir()
+            return
+    target.unlink()
+
+
+def run_command(
+    db: Session, user: User, user_project_id: int, argv: list[str]
+) -> dict[str, Any]:
+    _require_enabled()
+    row = ensure_workspace(db, user, user_project_id)
+    try:
+        safe_argv = validate_argv(argv)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    workspace = workspace_path_for(user_project_id)
+    try:
+        result = get_sandbox_runner().run(workspace, safe_argv)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    row.last_run_at = datetime.now(UTC)
+    db.add(row)
+    db.commit()
+
+    return {
+        "exit_code": result.exit_code,
+        "stdout": result.stdout[-50_000:],
+        "stderr": result.stderr[-50_000:],
+        "timed_out": result.timed_out,
+        "argv": safe_argv,
+    }
+
+
+def _parse_pytest_counts(output: str) -> tuple[int, int, int]:
+    passed = failed = errors = 0
+    for match in _PYTEST_COUNTS_RE.finditer(output):
+        if match.group("passed"):
+            passed = int(match.group("passed"))
+        if match.group("failed"):
+            failed = int(match.group("failed"))
+        if match.group("errors"):
+            errors = int(match.group("errors"))
+    return passed, failed, errors
+
+
+def _failure_summary(output: str, *, max_lines: int = 12) -> str:
+    """Short failure signal for coach — what failed, not how to fix."""
+    lines = [line for line in output.splitlines() if line.strip()]
+    interesting = [
+        line
+        for line in lines
+        if line.startswith("FAILED")
+        or line.startswith("ERROR")
+        or " short test summary " in line
+        or line.startswith("E ")
+        or "AssertionError" in line
+    ]
+    chosen = interesting[:max_lines] if interesting else lines[-max_lines:]
+    return "\n".join(chosen)[:2000]
+
+
+def run_tests(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
+    _require_enabled()
+    row = ensure_workspace(db, user, user_project_id)
+    argv = ["pytest", "-q", "--tb=line"]
+    workspace = workspace_path_for(user_project_id)
+
+    try:
+        result = get_sandbox_runner().run(workspace, argv)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    passed, failed, errors = _parse_pytest_counts(combined)
+    if result.exit_code == 0 and passed == 0 and failed == 0 and errors == 0:
+        # No tests collected still exits 5 in pytest; treat quiet empty as unknown counts
+        if "no tests ran" in combined.lower() or result.exit_code == 5:
+            passed, failed, errors = 0, 0, 0
+
+    outcome = "passed" if result.exit_code == 0 and not result.timed_out else "failed"
+    if result.timed_out:
+        outcome = "failed"
+    summary = _failure_summary(combined) if outcome == "failed" else "All tests passed."
+
+    payload = {
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "output": combined[-50_000:],
+        "summary": summary,
+        "outcome": outcome,
+    }
+
+    row.last_run_at = datetime.now(UTC)
+    row.last_test_summary = {
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "outcome": outcome,
+        "summary": summary[:500],
+    }
+    db.add(row)
+    db.commit()
+
+    coach_service.record_sandbox_test_attempt(
+        db,
+        user,
+        user_project_id,
+        outcome=outcome,
+        summary=summary[:200],
+        passed=outcome == "passed",
+    )
+    return payload
+
+
+def workspace_read_payload(row: SandboxWorkspace, user_project_id: int) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "user_project_id": row.user_project_id,
+        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+        "last_run_at": row.last_run_at,
+        "last_test_summary": row.last_test_summary,
+        "workspace_path": str(workspace_path_for(user_project_id)),
+    }

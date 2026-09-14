@@ -37,6 +37,7 @@ class EffortSignals(TypedDict):
     learner_turns_since_hint: int
     checkpoint_since_hint: bool
     attempt_message: bool
+    tested_attempt: bool
 
 
 class EvalResult(TypedDict):

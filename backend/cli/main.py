@@ -13,7 +13,9 @@ from app.core.config import settings
 
 app = typer.Typer(help="Socratic Learner CLI — talk to the backend without a frontend.")
 auth_app = typer.Typer(help="Authentication commands")
+sandbox_app = typer.Typer(help="Sandboxed Python workspace (Docker)")
 app.add_typer(auth_app, name="auth")
+app.add_typer(sandbox_app, name="sandbox")
 
 console = Console()
 TOKEN_PATH = Path.home() / ".socratic" / "token"
@@ -765,5 +767,229 @@ def interactive_start() -> None:
         )
 
 
+@sandbox_app.command("init")
+def sandbox_init(
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    """Create or ensure the sandboxed workspace for a project."""
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/sandbox",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    data = response.json()
+    console.print(
+        f"[green]Sandbox ready[/green] user_project={data['user_project_id']} "
+        f"path={data.get('workspace_path')}"
+    )
+
+
+@sandbox_app.command("ls")
+def sandbox_ls(
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.get(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/files",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    table = Table("Path", "Type", "Size")
+    for entry in response.json().get("files") or []:
+        table.add_row(
+            entry["path"],
+            "dir" if entry.get("is_dir") else "file",
+            "" if entry.get("size") is None else str(entry["size"]),
+        )
+    console.print(table)
+
+
+@sandbox_app.command("read")
+def sandbox_read(
+    path: Annotated[str, typer.Argument(help="Relative file path in the workspace")],
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.get(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/files/{path}",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    console.print(response.json().get("content", ""))
+
+
+@sandbox_app.command("write")
+def sandbox_write(
+    path: Annotated[str, typer.Argument(help="Relative file path in the workspace")],
+    content: Annotated[
+        Optional[str],
+        typer.Option(help="File contents (omit to read from stdin / prompt)"),
+    ] = None,
+    file: Annotated[
+        Optional[Path],
+        typer.Option("--file", help="Read contents from a local file"),
+    ] = None,
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    if file is not None:
+        body = file.read_text(encoding="utf-8")
+    elif content is not None:
+        body = content
+    else:
+        body = typer.prompt("Content")
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.put(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/files/{path}",
+            headers=_headers(),
+            json={"content": body},
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Wrote[/green] {path}")
+
+
+@sandbox_app.command("rm")
+def sandbox_rm(
+    path: Annotated[str, typer.Argument(help="Relative file path in the workspace")],
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.delete(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/files/{path}",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Deleted[/green] {path}")
+
+
+@sandbox_app.command(
+    "run",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def sandbox_run(
+    ctx: typer.Context,
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    """Run an allowlisted command in the sandbox. Example: socratic sandbox run -- python main.py"""
+    argv = list(ctx.args)
+    if not argv:
+        console.print(
+            "[red]Provide a command after -- , e.g. socratic sandbox run -- python main.py[/red]"
+        )
+        raise typer.Exit(code=1)
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/run",
+            headers=_headers(),
+            json={"argv": argv},
+            timeout=90.0,
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    data = response.json()
+    if data.get("stdout"):
+        console.print(data["stdout"], end="" if data["stdout"].endswith("\n") else "\n")
+    if data.get("stderr"):
+        console.print(f"[yellow]{data['stderr']}[/yellow]", end="")
+    if data.get("timed_out"):
+        console.print("[red]Timed out[/red]")
+    console.print(f"[dim]exit={data.get('exit_code')} argv={data.get('argv')}[/dim]")
+    if data.get("exit_code"):
+        raise typer.Exit(code=int(data["exit_code"]))
+
+
+@sandbox_app.command("test")
+def sandbox_test(
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    """Run pytest in the sandbox and record the result for the coach."""
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/test",
+            headers=_headers(),
+            timeout=90.0,
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    data = response.json()
+    outcome = data.get("outcome")
+    color = "green" if outcome == "passed" else "red"
+    console.print(
+        f"[{color}]{outcome}[/{color}] "
+        f"passed={data.get('passed')} failed={data.get('failed')} "
+        f"errors={data.get('errors')} exit={data.get('exit_code')}"
+    )
+    if data.get("output"):
+        console.print(data["output"])
+    if outcome != "passed":
+        console.print(
+            "\n[dim]Tell the coach which layer or assumption failed "
+            "(do not ask for the fix yet).[/dim]"
+        )
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
+

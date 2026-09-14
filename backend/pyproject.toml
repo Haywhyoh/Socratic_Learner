@@ -23,6 +23,7 @@ dependencies = [
     "langchain-core>=0.3.70",
     "langchain-anthropic>=0.3.0",
     "langgraph>=0.4.0",
+    "docker>=7.1.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,9 @@ include = ["app*", "cli*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "docker: requires Docker daemon and the socratic-sandbox-python image",
+]
 
 [tool.ruff]
 line-length = 100

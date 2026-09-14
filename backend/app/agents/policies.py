@@ -174,6 +174,7 @@ def has_genuine_effort(effort: EffortSignals) -> bool:
         effort.get("learner_turns_since_hint", 0) >= 1
         or effort.get("checkpoint_since_hint")
         or effort.get("attempt_message")
+        or effort.get("tested_attempt")
     )
 
 

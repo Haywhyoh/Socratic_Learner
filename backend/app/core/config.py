@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     anthropic_api_key: str = ""
 
+    sandbox_enabled: bool = True
+    sandbox_workspaces_root: str = str(_BACKEND_ROOT / "data" / "workspaces")
+    sandbox_image: str = "socratic-sandbox-python:latest"
+    sandbox_memory_mb: int = 512
+    sandbox_cpus: float = 1.0
+    sandbox_timeout_sec: int = 30
+    sandbox_pids_limit: int = 64
+
     def resolved_llm_api_key(self) -> str:
         """Prefer provider-specific keys, then the generic LLM_API_KEY."""
         model = self.llm_model.lower()

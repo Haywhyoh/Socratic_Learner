@@ -255,6 +255,15 @@ def _max_hint_level(db: Session, user_milestone_id: int) -> int:
     return max(levels) if levels else -1
 
 
+def _has_recent_tested_attempt(learner_state: LearnerState | None) -> bool:
+    if learner_state is None:
+        return False
+    for attempt in reversed(list(learner_state.attempts or [])):
+        if isinstance(attempt, dict) and attempt.get("tested") is True:
+            return True
+    return False
+
+
 def _effort(
     db: Session,
     session: MentorSession,
@@ -278,6 +287,7 @@ def _effort(
         if turn.role == MentorTurnRole.learner:
             turns_since += 1
     checkpoint_since = False
+    learner_state = None
     if user_milestone is not None:
         cards = _cards_for_milestone(db, session.user_project_id, user_milestone.milestone_id)
         card_ids = [card.id for card in cards]
@@ -286,10 +296,19 @@ def _effort(
             if last_hint_at is not None:
                 query = query.filter(CardCheckpoint.created_at > last_hint_at)
             checkpoint_since = query.first() is not None
+        learner_state = (
+            db.query(LearnerState)
+            .filter(
+                LearnerState.user_project_id == session.user_project_id,
+                LearnerState.milestone_id == user_milestone.milestone_id,
+            )
+            .first()
+        )
     return {
         "learner_turns_since_hint": turns_since,
         "checkpoint_since_hint": checkpoint_since,
         "attempt_message": message_looks_like_attempt(message),
+        "tested_attempt": _has_recent_tested_attempt(learner_state),
     }
 
 
@@ -467,6 +486,43 @@ def get_learner_state(db: Session, user: User, user_project_id: int) -> dict:
     row = _get_or_create_learner_state(db, user_project.id, current.milestone_id)
     db.commit()
     return _learner_state_payload(row, list(current.milestone.questions or []))
+
+
+def record_sandbox_test_attempt(
+    db: Session,
+    user: User,
+    user_project_id: int,
+    *,
+    outcome: str,
+    summary: str,
+    passed: bool,
+) -> None:
+    """Persist a real sandbox test run onto the current milestone learner state."""
+    user_project = _user_project(db, user, user_project_id)
+    current = current_user_milestone(user_project)
+    if current is None:
+        return
+    row = _get_or_create_learner_state(db, user_project.id, current.milestone_id)
+    now = datetime.now(UTC).isoformat()
+    attempts = list(row.attempts or [])
+    attempts.append(
+        {
+            "summary": summary[:200],
+            "tested": True,
+            "outcome": outcome,
+            "at": now,
+            "source": "sandbox_test",
+        }
+    )
+    row.attempts = attempts[-20:]
+    if passed:
+        row.can_reproduce = True
+    else:
+        failed = list(row.failed_at or [])
+        failed.append({"description": summary[:200], "at": now, "source": "sandbox_test"})
+        row.failed_at = failed[-20:]
+    db.add(row)
+    db.commit()
 
 
 def list_cards(
