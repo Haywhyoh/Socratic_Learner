@@ -125,19 +125,13 @@ class DockerSandboxRunner:
                 except Exception:
                     pass
             try:
-                raw = container.logs(stdout=True, stderr=True, demux=True)
-                if isinstance(raw, tuple):
-                    out_b, err_b = raw
-                    stdout = (out_b or b"").decode("utf-8", errors="replace")
-                    stderr = (err_b or b"").decode("utf-8", errors="replace")
+                raw = container.logs(stdout=True, stderr=True)
+                if isinstance(raw, bytes):
+                    stdout = raw.decode("utf-8", errors="replace")
                 else:
-                    stdout = (
-                        raw.decode("utf-8", errors="replace")
-                        if isinstance(raw, bytes)
-                        else str(raw)
-                    )
+                    stdout = str(raw)
             except Exception:
-                pass
+                stdout = ""
             if timed_out and not stderr:
                 stderr = f"Execution timed out after {self.timeout_sec}s\n"
         except RuntimeError:
