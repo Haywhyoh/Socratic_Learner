@@ -253,8 +253,37 @@ def test_tested_attempt_counts_as_hint_effort() -> None:
     assert level == 1
 
 
-@pytest.mark.docker
-def test_docker_sandbox_smoke(tmp_path: Path) -> None:
+def test_docker_unavailable_returns_503(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Docker is down, run/test should be 503 with a clear detail — not 500."""
+    from app.services.sandbox_runner import DockerSandboxRunner, set_sandbox_runner
+
+    class BrokenDocker(DockerSandboxRunner):
+        def _client(self):  # noqa: ANN202
+            raise RuntimeError(
+                "Cannot connect to Docker. Install/start Docker Desktop "
+                "(or a Docker daemon), then build the sandbox image:\n"
+                "  docker build -t socratic-sandbox-python:latest sandbox"
+            )
+
+    set_sandbox_runner(BrokenDocker())
+    try:
+        user_project_id = _enroll_project(client, auth_headers, db)
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/run",
+            headers=auth_headers,
+            json={"argv": ["python", "-c", "print(1)"]},
+        )
+        assert response.status_code == 503
+        assert "Docker" in response.json()["detail"]
+    finally:
+        set_sandbox_runner(None)
+
     """Optional: requires Docker + built socratic-sandbox-python:latest."""
     import os
 

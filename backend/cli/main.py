@@ -797,7 +797,7 @@ def sandbox_init(
             headers=_headers(),
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     data = response.json()
     console.print(
@@ -823,7 +823,7 @@ def sandbox_ls(
             headers=_headers(),
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     table = Table("Path", "Type", "Size")
     for entry in response.json().get("files") or []:
@@ -853,7 +853,7 @@ def sandbox_read(
             headers=_headers(),
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     console.print(response.json().get("content", ""))
 
@@ -891,7 +891,7 @@ def sandbox_write(
             json={"content": body},
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     console.print(f"[green]Wrote[/green] {path}")
 
@@ -914,7 +914,7 @@ def sandbox_rm(
             headers=_headers(),
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     console.print(f"[green]Deleted[/green] {path}")
 
@@ -949,7 +949,7 @@ def sandbox_run(
             timeout=90.0,
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     data = response.json()
     if data.get("stdout"):
@@ -982,7 +982,7 @@ def sandbox_test(
             timeout=90.0,
         )
     if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        _print_http_error(response)
         raise typer.Exit(code=1)
     data = response.json()
     outcome = data.get("outcome")
