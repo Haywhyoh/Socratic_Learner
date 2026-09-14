@@ -3,11 +3,11 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
+from app.models.coach import MilestoneReview, MilestoneReviewVerdict
 from app.models.concept import ConceptQuestion, ConceptSession, ConceptSessionStatus
 from app.models.course import Course, CourseOption
 from app.models.enrollment import Enrollment, LearningMode
 from app.models.project import (
-    Milestone,
     Project,
     UserMilestone,
     UserMilestoneStatus,
@@ -16,6 +16,7 @@ from app.models.project import (
 )
 from app.models.user import User
 from app.schemas.enrollment import EnrollmentCreate
+from app.services import curriculum as curriculum_service
 
 
 def list_courses(db: Session) -> list[Course]:
@@ -168,20 +169,7 @@ def create_enrollment(db: Session, user: User, payload: EnrollmentCreate) -> Enr
         )
         db.add(user_project)
         db.flush()
-        milestones = (
-            db.query(Milestone)
-            .filter(Milestone.project_id == project.id)
-            .order_by(Milestone.order_index)
-            .all()
-        )
-        for milestone in milestones:
-            db.add(
-                UserMilestone(
-                    user_project_id=user_project.id,
-                    milestone_id=milestone.id,
-                    status=UserMilestoneStatus.pending,
-                )
-            )
+        curriculum_service.generate_milestones_for_user_project(db, user_project, project)
     else:
         question = (
             db.query(ConceptQuestion)
@@ -309,6 +297,20 @@ def complete_user_milestone(
             detail="Milestones must be completed in order",
         )
 
+    review = (
+        db.query(MilestoneReview)
+        .filter(MilestoneReview.user_milestone_id == user_milestone.id)
+        .first()
+    )
+    if review is None or review.verdict != MilestoneReviewVerdict.passed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "The AI milestone review must pass before you can complete this "
+                "milestone — get your tests green, then run: socratic review"
+            ),
+        )
+
     user_milestone.status = UserMilestoneStatus.completed
     user_milestone.completed_at = datetime.now(UTC)
 
@@ -352,10 +354,19 @@ def restart_user_milestone(db: Session, user: User, user_milestone_id: int) -> U
 
     restart_from = user_milestone.milestone.order_index
     user_project = user_milestone.user_project
+    reset_ids = [
+        um.id for um in user_project.user_milestones if um.milestone.order_index >= restart_from
+    ]
     for um in user_project.user_milestones:
         if um.milestone.order_index >= restart_from:
             um.status = UserMilestoneStatus.pending
             um.completed_at = None
+    if reset_ids:
+        # The code is about to change again — any prior review verdict for
+        # these milestones no longer applies.
+        db.query(MilestoneReview).filter(
+            MilestoneReview.user_milestone_id.in_(reset_ids)
+        ).delete(synchronize_session=False)
 
     completed_count = sum(
         1 for um in user_project.user_milestones if um.status == UserMilestoneStatus.completed

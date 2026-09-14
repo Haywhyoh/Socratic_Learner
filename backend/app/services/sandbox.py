@@ -286,6 +286,47 @@ def run_tests(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
     return payload
 
 
+_REVIEW_SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules"}
+_REVIEW_SKIP_FILES = {"README.md"}
+_REVIEW_MAX_FILES = 25
+_REVIEW_MAX_FILE_CHARS = 4_000
+_REVIEW_MAX_TOTAL_CHARS = 30_000
+
+
+def collect_source_bundle(user_project_id: int) -> str:
+    """Read the learner's current workspace into a bounded text bundle for the
+
+    milestone-review LLM prompt — this is how the coach 'sees' the actual code
+    instead of only chat answers.
+    """
+    root = workspace_path_for(user_project_id)
+    if not root.exists():
+        return ""
+    parts: list[str] = []
+    total = 0
+    for path in sorted(root.rglob("*")):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(root)
+        if any(part in _REVIEW_SKIP_DIRS for part in rel.parts):
+            continue
+        if rel.name in _REVIEW_SKIP_FILES:
+            continue
+        if len(parts) >= _REVIEW_MAX_FILES or total >= _REVIEW_MAX_TOTAL_CHARS:
+            break
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if not content.strip():
+            continue
+        snippet = content[:_REVIEW_MAX_FILE_CHARS]
+        block = f"--- {rel.as_posix()} ---\n{snippet}\n"
+        total += len(block)
+        parts.append(block)
+    return "\n".join(parts)
+
+
 def workspace_read_payload(row: SandboxWorkspace, user_project_id: int) -> dict[str, Any]:
     return {
         "id": row.id,

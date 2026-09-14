@@ -35,8 +35,12 @@ def _to_enrollment_detail(enrollment: Enrollment) -> EnrollmentDetail:
     user_milestones = []
     if enrollment.user_project is not None:
         user_milestones = enrollment.user_project.user_milestones
-        if enrollment.assigned_project is not None:
-            milestones = enrollment.assigned_project.milestones
+        # These are the learner's own generated milestones (not the shared
+        # catalog outline) — each learner gets their own curriculum.
+        milestones = sorted(
+            (um.milestone for um in user_milestones if um.milestone is not None),
+            key=lambda m: m.order_index,
+        )
     return EnrollmentDetail(
         **base.model_dump(),
         assigned_project=enrollment.assigned_project,
