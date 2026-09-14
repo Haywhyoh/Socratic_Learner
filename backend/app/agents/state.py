@@ -56,6 +56,8 @@ class CoachState(TypedDict, total=False):
     milestone_questions: list[str]
     question_index: int
     questions_passed: int
+    question_attempts: int
+    gap_question: str | None
     current_question: str | None
     catalog_milestones: list[CatalogMilestone]
     knowledge_profile: dict[str, str]

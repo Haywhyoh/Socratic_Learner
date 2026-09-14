@@ -7,11 +7,13 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -74,22 +76,52 @@ class Project(Base):
     secondary_option = relationship("CourseOption", foreign_keys=[secondary_option_id])
     milestones = relationship(
         "Milestone",
-        back_populates="project",
-        cascade="all, delete-orphan",
+        primaryjoin=(
+            "and_(Milestone.project_id == Project.id, "
+            "Milestone.user_project_id.is_(None))"
+        ),
+        viewonly=True,
         order_by="Milestone.order_index",
     )
 
 
 class Milestone(Base):
+    """A milestone step.
+
+    Rows with ``user_project_id IS NULL`` are the shared *catalog* outline for a
+    project (seeded content, used as a reference template and shown before
+    enrollment). Rows with ``user_project_id`` set are the learner-specific
+    curriculum generated (by AI, or cloned from the catalog as a deterministic
+    fallback) the moment a learner is assigned that project — this is what the
+    coach actually teaches from.
+    """
+
     __tablename__ = "milestones"
     __table_args__ = (
-        UniqueConstraint("project_id", "order_index", name="uq_milestone_order"),
+        Index(
+            "uq_milestone_order_catalog",
+            "project_id",
+            "order_index",
+            unique=True,
+            postgresql_where=text("user_project_id IS NULL"),
+        ),
+        Index(
+            "uq_milestone_order_generated",
+            "user_project_id",
+            "order_index",
+            unique=True,
+            postgresql_where=text("user_project_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
+    user_project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("user_projects.id", ondelete="CASCADE"), nullable=True
+    )
+    generated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -98,7 +130,8 @@ class Milestone(Base):
     concepts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     questions: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
-    project = relationship("Project", back_populates="milestones")
+    project = relationship("Project", foreign_keys=[project_id])
+    user_project = relationship("UserProject", foreign_keys=[user_project_id])
 
 
 class UserProject(Base):

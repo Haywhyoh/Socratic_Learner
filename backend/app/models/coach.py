@@ -42,6 +42,12 @@ class MentorSessionStatus(str, enum.Enum):
     completed = "completed"
 
 
+class MilestoneReviewVerdict(str, enum.Enum):
+    needs_work = "needs_work"
+    awaiting_understanding = "awaiting_understanding"
+    passed = "passed"
+
+
 class LearnerKnowledge(Base):
     __tablename__ = "learner_knowledge"
     __table_args__ = (
@@ -89,6 +95,7 @@ class LearnerState(Base):
     )
     question_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     questions_passed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    question_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     attempts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     researched_concepts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     failed_at: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
@@ -234,6 +241,51 @@ class MentorTurn(Base):
     )
 
     session = relationship("MentorSession", back_populates="turns")
+
+
+class MilestoneReview(Base):
+    """Post-milestone AI review gate — the record of whether the coach has
+
+    signed off on a learner's implementation (correctness, architecture,
+    readability, complexity, reliability, testing) and on their understanding
+    of what they built. ``complete_user_milestone`` requires ``verdict ==
+    passed`` here before a milestone can be marked complete.
+    """
+
+    __tablename__ = "milestone_reviews"
+    __table_args__ = (
+        UniqueConstraint("user_milestone_id", name="uq_milestone_review_user_milestone"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_milestone_id: Mapped[int] = mapped_column(
+        ForeignKey("user_milestones.id", ondelete="CASCADE"), nullable=False
+    )
+    verdict: Mapped[MilestoneReviewVerdict] = mapped_column(
+        Enum(MilestoneReviewVerdict, name="milestone_review_verdict", native_enum=False),
+        default=MilestoneReviewVerdict.needs_work,
+        nullable=False,
+    )
+    dimensions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    understanding_questions: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    understanding_answers: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user_milestone = relationship("UserMilestone")
 
 
 class HintReveal(Base):

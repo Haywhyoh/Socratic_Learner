@@ -22,6 +22,13 @@ HINT_LEVELS = {
 }
 
 MAX_HINT_LEVEL = 4
+MAX_QUESTION_ATTEMPTS = 3
+"""How many times a pre-code question can be pushed back before the coach
+notes the gap and moves the learner on, rather than rephrasing forever."""
+
+MAX_REVIEW_ATTEMPTS = 3
+"""How many post-milestone review cycles before the coach notes remaining
+gaps and lets the learner proceed, rather than blocking indefinitely."""
 SOLUTION_FENCE_LINES = 8
 _FENCE_RE = re.compile(r"```[\w+-]*\n(.*?)```", re.DOTALL)
 _ATTEMPT_MARKERS = (
@@ -336,3 +343,127 @@ def filter_specialist_reply(
 def checkpoint_passes(answer: str) -> bool:
     cleaned = answer.strip()
     return len(cleaned) >= 40 and "idk" not in cleaned.lower()
+
+
+REVIEW_DIMENSIONS = (
+    "correctness",
+    "architecture",
+    "readability",
+    "complexity",
+    "reliability",
+    "testing",
+)
+
+
+def fallback_curriculum(catalog: list[dict]) -> list[dict]:
+    """Deterministic curriculum used in tests / when no model is configured.
+
+    Clones the project's seeded catalog outline verbatim (so behavior matches
+    today's static milestones). When a real LLM is configured this is only
+    the safety-net fallback if generation fails — the LLM path in
+    ``LangChainCoachLLM.generate_curriculum`` produces the actual AI-generated,
+    learner-tailored curriculum.
+    """
+    if catalog:
+        return [
+            {
+                "title": item["title"],
+                "description": item["description"],
+                "instructions": item.get("instructions", ""),
+                "success_criteria": item["success_criteria"],
+                "concepts": list(item.get("concepts") or []),
+                "questions": list(item.get("questions") or []),
+            }
+            for item in catalog
+        ]
+    return [
+        {
+            "title": "Scaffold the project",
+            "description": "Stand up a runnable skeleton so progress can be verified from step one.",
+            "instructions": (
+                "What to do:\n"
+                "1. Create a clean project layout and entrypoint.\n"
+                "2. Add a health/status check you can run immediately.\n"
+                "3. Confirm the app starts cleanly."
+            ),
+            "success_criteria": "The app starts cleanly and a basic status check succeeds.",
+            "concepts": ["Project layout", "Configuration"],
+            "questions": [
+                "What does 'runnable from step one' buy you as you keep building?",
+            ],
+        },
+        {
+            "title": "Core data and behavior",
+            "description": "Implement the primary data model and the operations that make the project useful.",
+            "instructions": (
+                "What to do:\n"
+                "1. Define the core data model.\n"
+                "2. Implement create/read operations against it.\n"
+                "3. Add at least one automated test."
+            ),
+            "success_criteria": "The core operation works end-to-end and is covered by a test.",
+            "concepts": ["Data modeling", "Automated testing"],
+            "questions": [
+                "Why test this now instead of waiting until the project is 'done'?",
+            ],
+        },
+        {
+            "title": "Harden and finish",
+            "description": "Close the gaps: validation, error handling, and the project's stated success criteria.",
+            "instructions": (
+                "What to do:\n"
+                "1. Add input validation and sensible error responses.\n"
+                "2. Verify the project's tests/evaluation criteria pass.\n"
+                "3. Document how to run it."
+            ),
+            "success_criteria": "The project meets its stated tests and evaluation criteria.",
+            "concepts": ["Error handling", "Reliability"],
+            "questions": [
+                "What's the difference between 'it works on my machine' and 'it's reliable'?",
+            ],
+        },
+    ]
+
+
+def fallback_review(
+    *, code_bundle: str, tests_passed: bool, milestone_title: str
+) -> dict[str, object]:
+    """Deterministic reviewer used in tests / when no model is configured."""
+    has_code = len(code_bundle.strip()) >= 40
+    rating = "pass" if has_code and tests_passed else "concern" if has_code else "fail"
+    dimensions = {
+        dim: {
+            "rating": rating,
+            "notes": (
+                f"{dim.capitalize()} looks reasonable for '{milestone_title}'."
+                if rating == "pass"
+                else f"Can't confirm {dim} yet for '{milestone_title}' — get tests green first."
+            ),
+        }
+        for dim in REVIEW_DIMENSIONS
+    }
+    understanding_questions = [
+        (
+            f"In your own words, walk through how your implementation of "
+            f"'{milestone_title}' works, and why you structured it that way."
+        )
+    ]
+    return {
+        "dimensions": dimensions,
+        "summary": (
+            "Tests are green — reviewing your implementation."
+            if tests_passed
+            else "Get your tests passing before requesting a review."
+        ),
+        "understanding_questions": understanding_questions if rating != "fail" else [],
+    }
+
+
+def fallback_understanding(question: str, answer: str) -> dict[str, object]:
+    cleaned = answer.strip()
+    if len(cleaned) < 25 or cleaned.lower() in {"idk", "dunno", "pass", "yes", "no"}:
+        return {
+            "passed": False,
+            "feedback": "Too short — explain your actual implementation choice, not just the outcome.",
+        }
+    return {"passed": True, "feedback": None}

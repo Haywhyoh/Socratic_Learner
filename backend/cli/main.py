@@ -543,6 +543,55 @@ def _prompt_mastery(prompt: str) -> str:
         )
 
 
+def _print_coach_reply(body: dict) -> None:
+    status = body.get("answer_status")
+    reply = body.get("reply") or ""
+    if status == "push_back":
+        console.print(f"[yellow]{reply}[/yellow]")
+    elif status == "passed":
+        console.print("[green]Pass.[/green]")
+        if body.get("current_question"):
+            console.print(f"\n[bold]Q[/bold] {body['current_question']}")
+        elif reply:
+            console.print(reply)
+    elif status == "complete":
+        console.print(f"[green]{reply}[/green]")
+    else:
+        console.print(reply)
+
+
+def _coach_answer_loop(client: httpx.Client, user_project_id: int) -> None:
+    """Prompt for answers until milestone questions are done or the learner quits."""
+    console.print("[dim]Type your answer (or quit).[/dim]")
+    while True:
+        try:
+            message = typer.prompt("Answer")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Paused. Resume with: socratic coach start[/dim]")
+            return
+        if message.strip().lower() in {"quit", "exit", "q"}:
+            console.print("[dim]Paused. Resume with: socratic coach start[/dim]")
+            return
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/coach/message",
+            headers=_headers(),
+            json={"message": message},
+        )
+        if response.status_code == 409 and "assessment" in response.text.lower():
+            console.print(
+                "[yellow]Finish assessment first: socratic coach start[/yellow]"
+            )
+            raise typer.Exit(code=1)
+        if response.status_code >= 400:
+            console.print(f"[red]{response.status_code}: {response.text}[/red]")
+            raise typer.Exit(code=1)
+        body = response.json()
+        _print_coach_reply(body)
+        state = body.get("learner_state") or {}
+        if body.get("answer_status") == "complete" or state.get("questions_complete"):
+            return
+
+
 @app.command("coach")
 def coach_cmd(
     action: Annotated[str, typer.Argument(help="'start' or 'message'")],
@@ -593,11 +642,17 @@ def coach_cmd(
             console.print(
                 f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
             )
-            if data.get("reply"):
-                console.print(f"\n[bold]Q[/bold] {data['reply']}")
+            reply = data.get("reply")
+            if reply:
+                if data.get("learner_state", {}).get("questions_complete"):
+                    console.print(f"\n[green]{reply}[/green]")
+                    return
+                console.print(f"\n[bold]Q[/bold] {reply}")
+                _coach_answer_loop(client, user_project_id)
             return
         if not message:
-            message = typer.prompt("Answer")
+            _coach_answer_loop(client, user_project_id)
+            return
         response = client.post(
             f"/api/v1/me/projects/{user_project_id}/coach/message",
             headers=_headers(),
@@ -612,15 +667,12 @@ def coach_cmd(
             console.print(f"[red]{response.status_code}: {response.text}[/red]")
             raise typer.Exit(code=1)
         body = response.json()
-        status = body.get("answer_status")
-        if status == "push_back":
-            console.print(f"[yellow]{body.get('reply')}[/yellow]")
-        elif status == "passed":
-            console.print(f"[green]Pass.[/green] {body.get('reply')}")
-        elif status == "complete":
-            console.print(f"[green]{body.get('reply')}[/green]")
-        else:
-            console.print(body.get("reply") or "")
+        _print_coach_reply(body)
+        state = body.get("learner_state") or {}
+        if not (
+            body.get("answer_status") == "complete" or state.get("questions_complete")
+        ):
+            _coach_answer_loop(client, user_project_id)
 
 
 @app.command("state")

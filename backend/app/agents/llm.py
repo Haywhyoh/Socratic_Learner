@@ -6,9 +6,13 @@ import re
 from typing import Protocol
 
 from app.agents.policies import (
+    REVIEW_DIMENSIONS,
     fallback_card,
+    fallback_curriculum,
     fallback_evaluate,
     fallback_hint,
+    fallback_review,
+    fallback_understanding,
 )
 from app.agents.state import CardDraft, EvalResult
 from app.core.config import settings
@@ -31,6 +35,40 @@ class CoachLLM(Protocol):
     ) -> EvalResult: ...
 
     def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str: ...
+
+    def generate_curriculum(
+        self,
+        *,
+        project_title: str,
+        project_objective: str,
+        language: str,
+        framework: str,
+        skills: list[str],
+        concepts: list[str],
+        constraints: list[str],
+        tests: list[str],
+        catalog: list[dict[str, object]],
+    ) -> list[dict[str, object]]: ...
+
+    def review_milestone(
+        self,
+        *,
+        milestone_title: str,
+        milestone_description: str,
+        success_criteria: str,
+        constraints: list[str],
+        code_bundle: str,
+        tests_passed: bool,
+        test_summary: str,
+    ) -> dict[str, object]: ...
+
+    def evaluate_understanding(
+        self,
+        *,
+        question: str,
+        answer: str,
+        milestone_title: str,
+    ) -> dict[str, object]: ...
 
 
 class StubCoachLLM:
@@ -56,6 +94,47 @@ class StubCoachLLM:
 
     def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str:
         return fallback_hint(level, milestone_title, concepts)
+
+    def generate_curriculum(
+        self,
+        *,
+        project_title: str,
+        project_objective: str,
+        language: str,
+        framework: str,
+        skills: list[str],
+        concepts: list[str],
+        constraints: list[str],
+        tests: list[str],
+        catalog: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        return fallback_curriculum(catalog)
+
+    def review_milestone(
+        self,
+        *,
+        milestone_title: str,
+        milestone_description: str,
+        success_criteria: str,
+        constraints: list[str],
+        code_bundle: str,
+        tests_passed: bool,
+        test_summary: str,
+    ) -> dict[str, object]:
+        return fallback_review(
+            code_bundle=code_bundle,
+            tests_passed=tests_passed,
+            milestone_title=milestone_title,
+        )
+
+    def evaluate_understanding(
+        self,
+        *,
+        question: str,
+        answer: str,
+        milestone_title: str,
+    ) -> dict[str, object]:
+        return fallback_understanding(question, answer)
 
 
 def get_coach_llm() -> CoachLLM:
@@ -144,3 +223,145 @@ class LangChainCoachLLM:
 
     def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str:
         return fallback_hint(level, milestone_title, concepts)
+
+    def generate_curriculum(
+        self,
+        *,
+        project_title: str,
+        project_objective: str,
+        language: str,
+        framework: str,
+        skills: list[str],
+        concepts: list[str],
+        constraints: list[str],
+        tests: list[str],
+        catalog: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        catalog_outline = "\n".join(
+            f"- {item['title']}: {item['success_criteria']}" for item in catalog
+        ) or "(no reference outline — invent a sensible progression)"
+        prompt = (
+            "You design a project-based curriculum for a learner building a real "
+            f"project in {language}/{framework}. Never include actual code — only "
+            "descriptions of what to build and why. Each milestone must build "
+            "directly on the code from the previous one (same codebase, growing).\n\n"
+            f"Project: {project_title}\n"
+            f"Objective: {project_objective}\n"
+            f"Skills to exercise: {', '.join(skills) or 'n/a'}\n"
+            f"Concepts to cover: {', '.join(concepts) or 'n/a'}\n"
+            f"Constraints: {', '.join(constraints) or 'n/a'}\n"
+            f"Must eventually satisfy these tests: {', '.join(tests) or 'n/a'}\n"
+            f"Reference outline (you may follow or improve on this):\n{catalog_outline}\n\n"
+            "Return ONLY a JSON array of 3-5 milestones, each an object with keys: "
+            'title (string), description (1-2 sentences), instructions '
+            '(numbered "what to do" steps, no code), success_criteria (one concrete, '
+            "testable sentence), concepts (array of 3-6 short concept names), "
+            "questions (array of 2-3 short conceptual questions to ask the learner "
+            "BEFORE they start coding this milestone, about the milestone's ideas — "
+            "not about code they haven't written yet)."
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\[.*\]", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            milestones: list[dict[str, object]] = []
+            for item in payload:
+                milestones.append(
+                    {
+                        "title": str(item["title"]).strip(),
+                        "description": str(item.get("description", "")).strip(),
+                        "instructions": str(item.get("instructions", "")).strip(),
+                        "success_criteria": str(item.get("success_criteria", "")).strip(),
+                        "concepts": [str(c) for c in (item.get("concepts") or [])],
+                        "questions": [str(q) for q in (item.get("questions") or [])],
+                    }
+                )
+            if milestones:
+                return milestones
+        except Exception:
+            pass
+        return fallback_curriculum(catalog)
+
+    def review_milestone(
+        self,
+        *,
+        milestone_title: str,
+        milestone_description: str,
+        success_criteria: str,
+        constraints: list[str],
+        code_bundle: str,
+        tests_passed: bool,
+        test_summary: str,
+    ) -> dict[str, object]:
+        dims = ", ".join(REVIEW_DIMENSIONS)
+        prompt = (
+            "You are a senior engineer reviewing a learner's code for a milestone. "
+            "Never rewrite or paste corrected code — only critique and ask questions. "
+            f"Rate each of these dimensions as pass, concern, or fail: {dims}.\n\n"
+            f"Milestone: {milestone_title}\n{milestone_description}\n"
+            f"Success criteria: {success_criteria}\n"
+            f"Constraints: {', '.join(constraints) or 'n/a'}\n"
+            f"Automated tests: {'PASSED' if tests_passed else 'NOT PASSING'} — {test_summary}\n\n"
+            f"Learner's current codebase:\n{code_bundle or '(empty)'}\n\n"
+            "Return ONLY JSON: {\"dimensions\": {\"<dimension>\": {\"rating\": "
+            '"pass"|"concern"|"fail", "notes": "one short sentence"}, ...}, '
+            '"summary": "one or two sentence overall verdict, no code", '
+            '"understanding_questions": ["1-3 short questions about THEIR specific '
+            'implementation choices, referencing what they actually built"]}. '
+            "If correctness or testing is a fail, understanding_questions may be empty."
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            dimensions = {
+                str(name): {
+                    "rating": str(info.get("rating", "concern")),
+                    "notes": str(info.get("notes", "")),
+                }
+                for name, info in (payload.get("dimensions") or {}).items()
+            }
+            if dimensions:
+                return {
+                    "dimensions": dimensions,
+                    "summary": str(payload.get("summary", "")),
+                    "understanding_questions": [
+                        str(q) for q in (payload.get("understanding_questions") or [])
+                    ],
+                }
+        except Exception:
+            pass
+        return fallback_review(
+            code_bundle=code_bundle,
+            tests_passed=tests_passed,
+            milestone_title=milestone_title,
+        )
+
+    def evaluate_understanding(
+        self,
+        *,
+        question: str,
+        answer: str,
+        milestone_title: str,
+    ) -> dict[str, object]:
+        prompt = (
+            "You evaluate whether a learner genuinely understands the "
+            "implementation they built (not a scripted quiz answer). "
+            "Return ONLY JSON: {\"passed\": true|false, \"feedback\": null|\"one "
+            "short sentence\"}. Never explain the answer for them, never give code.\n"
+            f"Milestone: {milestone_title}\n"
+            f"Question: {question}\n"
+            f"Learner's answer: {answer}\n"
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            passed = bool(payload.get("passed"))
+            feedback = payload.get("feedback")
+            return {
+                "passed": passed,
+                "feedback": (str(feedback).strip() or None) if feedback else None,
+            }
+        except Exception:
+            return fallback_understanding(question, answer)

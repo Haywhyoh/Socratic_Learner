@@ -9,6 +9,7 @@ from app.models.coach import (
     LearnerState,
     MentorSession,
     MentorTurn,
+    MilestoneReview,
     RoadmapItem,
 )
 from app.models.concept import ConceptQuestion, ConceptSession, ConceptTurn
@@ -40,4 +41,5 @@ __all__ = [
     "MentorSession",
     "MentorTurn",
     "HintReveal",
+    "MilestoneReview",
 ]

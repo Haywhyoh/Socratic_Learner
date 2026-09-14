@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.llm import CoachLLM, StubCoachLLM
 from app.agents.policies import (
+    MAX_QUESTION_ATTEMPTS,
     apply_assessment_answers,
     assessment_questions,
     build_roadmap,
@@ -139,6 +140,7 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
                 return {
                     "question_index": new_index,
                     "questions_passed": new_passed,
+                    "question_attempts": 0,
                     "reply": reply,
                     "answer_status": "passed",
                     "push_back": None,
@@ -149,6 +151,7 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
             return {
                 "question_index": new_index,
                 "questions_passed": new_passed,
+                "question_attempts": 0,
                 "reply": next_q,
                 "answer_status": "passed",
                 "push_back": None,
@@ -156,8 +159,48 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
                 "current_question": next_q,
                 "eval_result": result,
             }
+
+        attempts = int(state.get("question_attempts") or 0) + 1
+        if attempts >= MAX_QUESTION_ATTEMPTS:
+            # Cap reached: don't rephrase the same question forever. Note the
+            # gap and move the learner on so they can start building.
+            new_index = index + 1
+            next_q = pose_question(questions, new_index)
+            gap_note = (
+                f"Noted — moving on without a confirmed answer on '{question}'. "
+                "We'll revisit this in the milestone review."
+            )
+            if next_q is None:
+                build_reply = go_build_reply(
+                    constraints=list(state.get("constraints") or []),
+                    success_criteria=state.get("success_criteria") or "",
+                )
+                return {
+                    "question_index": new_index,
+                    "question_attempts": 0,
+                    "gap_question": question,
+                    "reply": enforce_brevity(f"{gap_note} {build_reply}", max_sentences=2),
+                    "answer_status": "advanced_with_gap",
+                    "push_back": None,
+                    "questions_complete": True,
+                    "current_question": None,
+                    "eval_result": result,
+                }
+            return {
+                "question_index": new_index,
+                "question_attempts": 0,
+                "gap_question": question,
+                "reply": enforce_brevity(f"{gap_note} Next: {next_q}", max_sentences=2),
+                "answer_status": "advanced_with_gap",
+                "push_back": None,
+                "questions_complete": False,
+                "current_question": next_q,
+                "eval_result": result,
+            }
+
         push = result.get("push_back") or "Not enough. Answer in one clear sentence."
         return {
+            "question_attempts": attempts,
             "reply": enforce_brevity(str(push), max_sentences=1),
             "answer_status": "push_back",
             "push_back": push,
