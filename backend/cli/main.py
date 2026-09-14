@@ -53,6 +53,18 @@ def _print_json(data: Any) -> None:
     console.print_json(json.dumps(data, default=str))
 
 
+def _print_http_error(response: httpx.Response) -> None:
+    detail: Any = None
+    try:
+        body = response.json()
+        detail = body.get("detail", body)
+    except Exception:
+        detail = response.text
+    if isinstance(detail, list):
+        detail = "; ".join(str(item) for item in detail)
+    console.print(f"[red]{response.status_code}: {detail}[/red]")
+
+
 @auth_app.command("register")
 def auth_register(
     email: str = typer.Option(..., prompt=True),

@@ -62,19 +62,35 @@ class DockerSandboxRunner:
             pids_limit if pids_limit is not None else settings.sandbox_pids_limit
         )
 
-    def run(self, workspace: Path, argv: list[str]) -> RunResult:
+    def _client(self):  # noqa: ANN201 — docker.DockerClient without hard import
         import docker
-        from docker.errors import ImageNotFound
+        from docker.errors import DockerException
+
+        try:
+            return docker.from_env()
+        except DockerException as exc:
+            raise RuntimeError(
+                "Cannot connect to Docker. Install/start Docker Desktop (or a Docker "
+                "daemon), then build the sandbox image:\n"
+                "  docker build -t socratic-sandbox-python:latest sandbox"
+            ) from exc
+
+    def run(self, workspace: Path, argv: list[str]) -> RunResult:
+        from docker.errors import DockerException, ImageNotFound
 
         safe_argv = validate_argv(argv)
-        client = docker.from_env()
+        client = self._client()
         try:
             client.images.get(self.image)
         except ImageNotFound as exc:
             raise RuntimeError(
                 f"Sandbox image '{self.image}' not found. "
-                "Build it with: docker build -t socratic-sandbox-python:latest "
-                "backend/sandbox"
+                "Build it with: docker build -t socratic-sandbox-python:latest sandbox"
+            ) from exc
+        except DockerException as exc:
+            raise RuntimeError(
+                "Cannot talk to Docker while checking the sandbox image. "
+                "Is Docker Desktop running?"
             ) from exc
 
         nano_cpus = int(self.cpus * 1_000_000_000)
@@ -124,6 +140,8 @@ class DockerSandboxRunner:
                 pass
             if timed_out and not stderr:
                 stderr = f"Execution timed out after {self.timeout_sec}s\n"
+        except RuntimeError:
+            raise
         except Exception as exc:
             raise RuntimeError(f"Failed to start sandbox container: {exc}") from exc
         finally:
