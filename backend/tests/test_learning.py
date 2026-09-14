@@ -108,7 +108,7 @@ def test_complete_milestones_in_order(
     assert progress.json()["status"] == "completed"
 
 
-def test_enroll_concept_mode_creates_pending_session(
+def test_enroll_concept_mode_without_question_is_pending(
     client: TestClient,
     auth_headers: dict[str, str],
     db: Session,
@@ -137,3 +137,70 @@ def test_enroll_concept_mode_creates_pending_session(
     assert body["question_text"] is None
     assert body["status"] == "pending_generation"
     assert body["turns"] == []
+
+
+def test_enroll_concept_mode_assigns_seeded_question(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    seeded_db: Session,
+) -> None:
+    courses = client.get("/api/v1/courses").json()
+    se = next(c for c in courses if c["slug"] == "software-engineering")
+    primary = client.get(f"/api/v1/courses/{se['id']}/options").json()
+    python = next(o for o in primary if o["slug"] == "python")
+    secondary = client.get(f"/api/v1/courses/{se['id']}/options/{python['id']}/options").json()
+    fastapi = next(o for o in secondary if o["slug"] == "fastapi")
+
+    response = client.post(
+        "/api/v1/enrollments",
+        headers=auth_headers,
+        json={
+            "course_id": se["id"],
+            "primary_option_id": python["id"],
+            "secondary_option_id": fastapi["id"],
+            "learning_mode": "concept",
+        },
+    )
+    assert response.status_code == 201
+    session = client.get(
+        f"/api/v1/concept-sessions/{response.json()['concept_session_id']}",
+        headers=auth_headers,
+    )
+    assert session.status_code == 200
+    body = session.json()
+    assert body["status"] == "active"
+    assert body["question_text"]
+    assert "FastAPI" in body["question_text"] or "dependency" in body["question_text"].lower()
+
+
+def test_seeded_python_projects_exist(client: TestClient, seeded_db: Session) -> None:
+    courses = client.get("/api/v1/courses").json()
+    se = next(c for c in courses if c["slug"] == "software-engineering")
+    primary = client.get(f"/api/v1/courses/{se['id']}/options").json()
+    python = next(o for o in primary if o["slug"] == "python")
+    secondary = client.get(f"/api/v1/courses/{se['id']}/options/{python['id']}/options").json()
+    fastapi = next(o for o in secondary if o["slug"] == "fastapi")
+    django = next(o for o in secondary if o["slug"] == "django")
+
+    fastapi_projects = client.get(
+        "/api/v1/projects",
+        params={
+            "course_id": se["id"],
+            "primary_option_id": python["id"],
+            "secondary_option_id": fastapi["id"],
+        },
+    ).json()
+    django_projects = client.get(
+        "/api/v1/projects",
+        params={
+            "course_id": se["id"],
+            "primary_option_id": python["id"],
+            "secondary_option_id": django["id"],
+        },
+    ).json()
+
+    assert {p["title"] for p in fastapi_projects} >= {
+        "Task Tracker API",
+        "Notes API with Tags",
+    }
+    assert {p["title"] for p in django_projects} >= {"Library Catalog"}

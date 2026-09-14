@@ -100,8 +100,20 @@ Token is stored at `~/.socratic/token`.
 3. Choose primary option (Language / Domain) then secondary (Framework / Focus)
 4. Choose `project` or `concept`
    - **project** — assigns the lowest-id matching active project and creates milestone progress rows
-   - **concept** — creates a session with `question_text=null` and status `pending_generation` (AI later)
+   - **concept** — assigns a seeded hard question when one exists for that path (`status=active`); otherwise creates a session with `question_text=null` and status `pending_generation` (AI later)
 5. Complete milestones in order
+
+### Python seed content
+
+- **FastAPI projects:** Task Tracker API, Notes API with Tags (each with 3 milestones)
+- **Django project:** Library Catalog (3 milestones)
+- **Concept questions:** 3 for Python/FastAPI, 3 for Python/Django
+
+Re-run safely anytime:
+
+```bash
+python -m app.seed
+```
 
 ## Out of scope (this slice)
 

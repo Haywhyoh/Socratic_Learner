@@ -247,7 +247,10 @@ def concept_show(
         f"Session {data['id']} status={data['status']} "
         f"question={data['question_text']!r}"
     )
-    console.print("[dim]AI question generation is not implemented yet.[/dim]")
+    if data["question_text"]:
+        console.print("[dim]Question came from the seeded catalog (AI generation later).[/dim]")
+    else:
+        console.print("[dim]No seeded question for this path yet; AI generation later.[/dim]")
 
 
 @app.command("start")
