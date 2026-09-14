@@ -284,6 +284,9 @@ def test_docker_unavailable_returns_503(
     finally:
         set_sandbox_runner(None)
 
+
+@pytest.mark.docker
+def test_docker_sandbox_smoke(tmp_path: Path) -> None:
     """Optional: requires Docker + built socratic-sandbox-python:latest."""
     import os
 
