@@ -217,7 +217,8 @@ def _print_milestones_table(
     console.print(
         "[dim]Complete next: socratic milestone complete <user_milestone_id>\n"
         "Restart from a milestone (also resets later ones): "
-        "socratic milestone restart <user_milestone_id>[/dim]"
+        "socratic milestone restart <user_milestone_id>\n"
+        "Full definition: socratic brief[/dim]"
     )
 
 
@@ -232,6 +233,8 @@ def _print_enrollment(data: dict[str, Any]) -> None:
     if data.get("user_project"):
         up = data["user_project"]
         project = up.get("project") or data.get("assigned_project") or {}
+        if project.get("description"):
+            console.print(f"[italic]{project['description']}[/italic]")
         milestones = data.get("user_milestones") or up.get("user_milestones") or []
         _print_milestones_table(
             milestones,
@@ -242,6 +245,97 @@ def _print_enrollment(data: dict[str, Any]) -> None:
     if data.get("concept_session_id"):
         console.print(f"Concept session id={data['concept_session_id']}")
         console.print("[dim]View question with: socratic concept show[/dim]")
+
+
+def _print_list_section(title: str, items: list[Any] | None) -> None:
+    if not items:
+        return
+    console.print(f"\n[bold]{title}[/bold]")
+    for item in items:
+        console.print(f"  • {item}")
+
+
+def _print_project_brief(project: dict[str, Any], milestones: list[dict[str, Any]] | None = None) -> None:
+    console.print(f"[bold]{project.get('title')}[/bold] (project_id={project.get('id')})")
+    if project.get("description"):
+        console.print(f"\n[bold]Summary[/bold]\n{project['description']}")
+    if project.get("difficulty"):
+        console.print(f"\n[bold]Difficulty[/bold]\n{project['difficulty']}")
+    if project.get("objective"):
+        console.print(f"\n[bold]Objective[/bold]\n{project['objective']}")
+    _print_list_section("Prerequisites", project.get("prerequisites"))
+    if project.get("expected_outcome"):
+        console.print(f"\n[bold]Expected outcome[/bold]\n{project['expected_outcome']}")
+    _print_list_section("Skills", project.get("skills"))
+    _print_list_section("Concepts", project.get("concepts"))
+    _print_list_section("Constraints", project.get("constraints"))
+    _print_list_section("Tests", project.get("tests"))
+    _print_list_section("Evaluation criteria", project.get("evaluation_criteria"))
+    _print_list_section("Extension challenges", project.get("extension_challenges"))
+    resources = project.get("recommended_resources") or []
+    if resources:
+        console.print("\n[bold]Recommended resources[/bold]")
+        for resource in resources:
+            title = resource.get("title") if isinstance(resource, dict) else str(resource)
+            url = resource.get("url") if isinstance(resource, dict) else ""
+            if url:
+                console.print(f"  • {title} — {url}")
+            else:
+                console.print(f"  • {title}")
+    items = milestones if milestones is not None else project.get("milestones") or []
+    if not items:
+        return
+    console.print("\n[bold]Milestones[/bold]")
+    ordered = sorted(items, key=lambda m: m.get("order_index") or 0)
+    for milestone in ordered:
+        console.print(
+            f"\n[bold]#{milestone.get('order_index')} {milestone.get('title')}[/bold]"
+        )
+        if milestone.get("description"):
+            console.print(milestone["description"])
+        if milestone.get("instructions"):
+            console.print(f"\n[cyan]Instructions[/cyan]\n{milestone['instructions']}")
+        if milestone.get("success_criteria"):
+            console.print(
+                f"\n[green]Success criteria[/green]\n{milestone['success_criteria']}"
+            )
+
+
+@app.command("brief")
+def show_brief(
+    project_id: Annotated[
+        Optional[int],
+        typer.Option(help="Project ID (defaults to your latest project enrollment)"),
+    ] = None,
+) -> None:
+    """Show the full project definition and detailed milestone instructions."""
+    if not isinstance(project_id, int):
+        project_id = None
+    with _client() as client:
+        if project_id is None:
+            enrollments = client.get("/api/v1/enrollments", headers=_headers())
+            if enrollments.status_code >= 400:
+                console.print(f"[red]{enrollments.status_code}: {enrollments.text}[/red]")
+                raise typer.Exit(code=1)
+            project_id = next(
+                (
+                    e["assigned_project_id"]
+                    for e in reversed(enrollments.json())
+                    if e.get("assigned_project_id")
+                ),
+                None,
+            )
+            if project_id is None:
+                console.print(
+                    "[yellow]No project enrollment found. "
+                    "Pass --project-id or enroll in project mode first.[/yellow]"
+                )
+                raise typer.Exit(code=1)
+        response = client.get(f"/api/v1/projects/{project_id}")
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    _print_project_brief(response.json())
 
 
 @app.command("path")

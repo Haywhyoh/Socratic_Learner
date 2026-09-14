@@ -38,16 +38,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectDetail
     project = learning_service.get_project_with_milestones(db, project_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return ProjectDetail(
-        id=project.id,
-        title=project.title,
-        description=project.description,
-        course_id=project.course_id,
-        primary_option_id=project.primary_option_id,
-        secondary_option_id=project.secondary_option_id,
-        is_active=project.is_active,
-        milestones=project.milestones,
-    )
+    return ProjectDetail.model_validate(project)
 
 
 @router.get("/me/projects/{user_project_id}", response_model=UserProjectRead)

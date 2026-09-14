@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -28,12 +30,33 @@ class UserMilestoneStatus(str, enum.Enum):
     completed = "completed"
 
 
+class ProjectDifficulty(str, enum.Enum):
+    beginner = "beginner"
+    intermediate = "intermediate"
+    advanced = "advanced"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    difficulty: Mapped[ProjectDifficulty] = mapped_column(
+        Enum(ProjectDifficulty, name="project_difficulty", native_enum=False),
+        default=ProjectDifficulty.beginner,
+        nullable=False,
+    )
+    expected_outcome: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    prerequisites: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    skills: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    concepts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    constraints: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    tests: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    evaluation_criteria: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    extension_challenges: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    recommended_resources: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
     primary_option_id: Mapped[int] = mapped_column(
         ForeignKey("course_options.id", ondelete="RESTRICT"), nullable=False
@@ -69,6 +92,7 @@ class Milestone(Base):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     success_criteria: Mapped[str] = mapped_column(Text, nullable=False)
 

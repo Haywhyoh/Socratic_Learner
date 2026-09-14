@@ -86,6 +86,7 @@ socratic options 1
 socratic options 1 --parent-id 1
 socratic enroll --course 1 --primary 1 --secondary 2 --mode project
 socratic path
+socratic brief
 socratic milestone complete <user_milestone_id>
 socratic concept show
 socratic start   # interactive walkthrough
@@ -108,7 +109,13 @@ Token is stored at `~/.socratic/token`.
 
 - **FastAPI projects:** Task Tracker API, Notes API with Tags (each with 3 milestones)
 - **Django project:** Library Catalog (3 milestones)
+- **React project:** Learning Dashboard (3 milestones)
+- **Business project:** Content Calendar Sprint (3 milestones)
 - **Concept questions:** 3 for Python/FastAPI, 3 for Python/Django
+
+Each project definition includes: objective, difficulty, prerequisites, expected outcome,
+skills, concepts, milestones, constraints, tests, evaluation criteria, extension challenges,
+and recommended resources. View via `GET /api/v1/projects/{id}` or `socratic brief`.
 
 Re-run safely anytime:
 

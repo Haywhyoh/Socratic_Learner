@@ -11,7 +11,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models.course import Course, CourseOption
-from app.models.project import Milestone, Project
+from app.models.project import Milestone, Project, ProjectDifficulty
 from app.models.user import User
 from app.seed import seed
 
@@ -108,6 +108,17 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
         project = Project(
             title="Task Tracker API",
             description="Build an API",
+            objective="Ship a small task-tracking backend.",
+            difficulty=ProjectDifficulty.beginner,
+            expected_outcome="Auth-aware task CRUD with tests.",
+            prerequisites=["Python", "HTTP basics"],
+            skills=["routing", "auth"],
+            concepts=["ownership isolation"],
+            constraints=["No frontend"],
+            tests=["Happy-path create/list/complete"],
+            evaluation_criteria=["Milestones complete"],
+            extension_challenges=["Due dates"],
+            recommended_resources=[{"title": "FastAPI docs", "url": "https://fastapi.tiangolo.com"}],
             course_id=course.id,
             primary_option_id=primary.id,
             secondary_option_id=secondary.id,
@@ -121,6 +132,7 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
                     project_id=project.id,
                     title=title,
                     description=f"{title} description",
+                    instructions=f"{title} instructions",
                     order_index=index,
                     success_criteria=f"{title} done",
                 )

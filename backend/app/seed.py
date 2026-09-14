@@ -7,7 +7,39 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.concept import ConceptQuestion
 from app.models.course import Course, CourseOption
-from app.models.project import Milestone, Project
+from app.models.project import Milestone, Project, ProjectDifficulty
+from app.seed_content import (
+    CONTENT_CALENDAR,
+    LEARNING_DASHBOARD,
+    LIBRARY_CATALOG,
+    NOTES_API,
+    TASK_TRACKER,
+    MilestoneSpec,
+    ProjectSpec,
+)
+
+_DEFINITION_LIST_KEYS = (
+    "prerequisites",
+    "skills",
+    "concepts",
+    "constraints",
+    "tests",
+    "evaluation_criteria",
+    "extension_challenges",
+    "recommended_resources",
+)
+
+
+def _definition_fields(spec: ProjectSpec) -> dict[str, object]:
+    difficulty = ProjectDifficulty(str(spec["difficulty"]))
+    fields: dict[str, object] = {
+        "objective": str(spec["objective"]),
+        "difficulty": difficulty,
+        "expected_outcome": str(spec["expected_outcome"]),
+    }
+    for key in _DEFINITION_LIST_KEYS:
+        fields[key] = list(spec[key])  # type: ignore[arg-type]
+    return fields
 
 
 def _option(
@@ -17,19 +49,6 @@ def _option(
     parent_id: int | None = None,
 ) -> CourseOption:
     return CourseOption(course_id=course_id, name=name, slug=slug, parent_id=parent_id)
-
-
-def _milestones(project_id: int, items: list[tuple[str, str, str]]) -> list[Milestone]:
-    return [
-        Milestone(
-            project_id=project_id,
-            order_index=index,
-            title=title,
-            description=description,
-            success_criteria=criteria,
-        )
-        for index, (title, description, criteria) in enumerate(items, start=1)
-    ]
 
 
 def _get_option(db: Session, course_id: int, slug: str, parent_id: int | None = None) -> CourseOption:
@@ -47,16 +66,44 @@ def _get_option(db: Session, course_id: int, slug: str, parent_id: int | None = 
     return option
 
 
+def _sync_milestones(db: Session, project: Project, milestones: list[MilestoneSpec]) -> None:
+    existing = {
+        m.order_index: m
+        for m in db.query(Milestone).filter(Milestone.project_id == project.id).all()
+    }
+    for index, (title, description, instructions, criteria) in enumerate(milestones, start=1):
+        current = existing.get(index)
+        if current is None:
+            db.add(
+                Milestone(
+                    project_id=project.id,
+                    order_index=index,
+                    title=title,
+                    description=description,
+                    instructions=instructions,
+                    success_criteria=criteria,
+                )
+            )
+        else:
+            current.title = title
+            current.description = description
+            current.instructions = instructions
+            current.success_criteria = criteria
+
+
 def _ensure_project(
     db: Session,
     *,
-    title: str,
-    description: str,
+    spec: ProjectSpec,
     course_id: int,
     primary_option_id: int,
     secondary_option_id: int,
-    milestones: list[tuple[str, str, str]],
 ) -> Project:
+    title = str(spec["title"])
+    description = str(spec["description"])
+    definition = _definition_fields(spec)
+    milestones = list(spec["milestones"])  # type: ignore[arg-type]
+
     project = db.query(Project).filter(Project.title == title).first()
     if project is None:
         project = Project(
@@ -66,11 +113,22 @@ def _ensure_project(
             primary_option_id=primary_option_id,
             secondary_option_id=secondary_option_id,
             is_active=True,
+            **definition,
         )
         db.add(project)
         db.flush()
-        db.add_all(_milestones(project.id, milestones))
         print(f"Seeded project: {title}")
+    else:
+        project.description = description
+        project.course_id = course_id
+        project.primary_option_id = primary_option_id
+        project.secondary_option_id = secondary_option_id
+        project.is_active = True
+        for key, value in definition.items():
+            setattr(project, key, value)
+        print(f"Updated project definition: {title}")
+
+    _sync_milestones(db, project, milestones)
     return project
 
 
@@ -159,138 +217,42 @@ def seed(db: Session) -> None:
     react_opt = _get_option(db, se.id, "react", parent_id=javascript.id)
     content_opt = _get_option(db, business.id, "content-strategy", parent_id=marketing.id)
 
-    # Python / FastAPI projects
     _ensure_project(
         db,
-        title="Task Tracker API",
-        description="Build a FastAPI service for creating, listing, and completing tasks.",
+        spec=TASK_TRACKER,
         course_id=se.id,
         primary_option_id=python.id,
         secondary_option_id=fastapi_opt.id,
-        milestones=[
-            (
-                "Scaffold the API",
-                "Create the FastAPI app, health endpoint, and project layout.",
-                "GET /health returns 200 and the app starts cleanly.",
-            ),
-            (
-                "CRUD for tasks",
-                "Implement create, list, and complete task endpoints with persistence.",
-                "Tasks can be created, listed, and marked complete via the API.",
-            ),
-            (
-                "Auth-aware ownership",
-                "Restrict task access to the authenticated owner.",
-                "Users cannot read or mutate another user's tasks.",
-            ),
-        ],
     )
     _ensure_project(
         db,
-        title="Notes API with Tags",
-        description="Build a FastAPI notes service with tagging, search, and pagination.",
+        spec=NOTES_API,
         course_id=se.id,
         primary_option_id=python.id,
         secondary_option_id=fastapi_opt.id,
-        milestones=[
-            (
-                "Note model and create endpoint",
-                "Persist notes with title and body; expose POST /notes.",
-                "Creating a note returns 201 with an id.",
-            ),
-            (
-                "Tags and filtering",
-                "Attach tags to notes and filter list results by tag.",
-                "GET /notes?tag=python returns only matching notes.",
-            ),
-            (
-                "Search and pagination",
-                "Add text search plus limit/offset pagination.",
-                "Search and page params change the result set correctly.",
-            ),
-        ],
     )
-
-    # Python / Django project
     _ensure_project(
         db,
-        title="Library Catalog",
-        description="Build a Django app to catalog books, authors, and borrow status.",
+        spec=LIBRARY_CATALOG,
         course_id=se.id,
         primary_option_id=python.id,
         secondary_option_id=django_opt.id,
-        milestones=[
-            (
-                "Models and admin",
-                "Create Book and Author models and register them in Django admin.",
-                "Books and authors can be created in the admin UI.",
-            ),
-            (
-                "Catalog list views",
-                "Expose list and detail pages for books.",
-                "Catalog pages render without template errors.",
-            ),
-            (
-                "Borrow workflow",
-                "Track whether a book is available or borrowed.",
-                "Borrowing a book flips availability and shows on the detail page.",
-            ),
-        ],
     )
-
-    # Existing non-Python projects
     _ensure_project(
         db,
-        title="Learning Dashboard",
-        description="Build a React dashboard that visualizes a learner's progress.",
+        spec=LEARNING_DASHBOARD,
         course_id=se.id,
         primary_option_id=javascript.id,
         secondary_option_id=react_opt.id,
-        milestones=[
-            (
-                "App shell",
-                "Create the React app shell with routing and a basic layout.",
-                "Two routes render without console errors.",
-            ),
-            (
-                "Progress widgets",
-                "Render milestone progress cards from mock API data.",
-                "At least three progress widgets display correctly.",
-            ),
-            (
-                "Interactive filters",
-                "Add filters for course and learning mode.",
-                "Filtering updates the visible widgets without a full page reload.",
-            ),
-        ],
     )
     _ensure_project(
         db,
-        title="Content Calendar Sprint",
-        description="Design a 4-week content calendar and measurement plan for a product launch.",
+        spec=CONTENT_CALENDAR,
         course_id=business.id,
         primary_option_id=marketing.id,
         secondary_option_id=content_opt.id,
-        milestones=[
-            (
-                "Audience brief",
-                "Write a one-page audience and positioning brief.",
-                "Brief names audience, pain, promise, and proof.",
-            ),
-            (
-                "Four-week calendar",
-                "Produce a 4-week calendar with channels and CTAs.",
-                "Calendar includes at least 12 dated content items.",
-            ),
-            (
-                "Measurement plan",
-                "Define KPIs and a weekly review ritual.",
-                "Plan lists leading and lagging indicators with owners.",
-            ),
-        ],
     )
 
-    # Python concept questions (stand-in for AI generation)
     python_fastapi_questions = [
         (
             "Why might you prefer dependency injection over importing a database session "

@@ -262,3 +262,20 @@ def test_seeded_python_projects_exist(client: TestClient, seeded_db: Session) ->
         "Notes API with Tags",
     }
     assert {p["title"] for p in django_projects} >= {"Library Catalog"}
+
+    task = next(p for p in fastapi_projects if p["title"] == "Task Tracker API")
+    detail = client.get(f"/api/v1/projects/{task['id']}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["difficulty"] == "beginner"
+    assert body["objective"]
+    assert "task-tracking" in body["objective"].lower() or "task" in body["objective"].lower()
+    assert isinstance(body["skills"], list) and body["skills"]
+    assert isinstance(body["tests"], list) and body["tests"]
+    assert isinstance(body["recommended_resources"], list) and body["recommended_resources"]
+    assert body["recommended_resources"][0]["title"]
+    assert body["recommended_resources"][0]["url"]
+    assert "brief" not in body
+    assert len(body["milestones"]) == 3
+    assert body["milestones"][0]["instructions"]
+    assert "What to do" in body["milestones"][0]["instructions"]

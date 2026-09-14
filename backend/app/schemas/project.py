@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.project import UserMilestoneStatus, UserProjectStatus
+from app.models.project import ProjectDifficulty, UserMilestoneStatus, UserProjectStatus
 
 
 class MilestoneRead(BaseModel):
@@ -12,8 +12,14 @@ class MilestoneRead(BaseModel):
     project_id: int
     title: str
     description: str
+    instructions: str
     order_index: int
     success_criteria: str
+
+
+class RecommendedResource(BaseModel):
+    title: str
+    url: str
 
 
 class ProjectRead(BaseModel):
@@ -22,6 +28,7 @@ class ProjectRead(BaseModel):
     id: int
     title: str
     description: str
+    difficulty: ProjectDifficulty
     course_id: int
     primary_option_id: int
     secondary_option_id: int
@@ -29,6 +36,16 @@ class ProjectRead(BaseModel):
 
 
 class ProjectDetail(ProjectRead):
+    objective: str
+    expected_outcome: str
+    prerequisites: list[str] = []
+    skills: list[str] = []
+    concepts: list[str] = []
+    constraints: list[str] = []
+    tests: list[str] = []
+    evaluation_criteria: list[str] = []
+    extension_challenges: list[str] = []
+    recommended_resources: list[RecommendedResource] = []
     milestones: list[MilestoneRead] = []
 
 
