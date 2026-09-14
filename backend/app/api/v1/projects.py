@@ -66,3 +66,12 @@ def complete_milestone(
     current_user: User = Depends(get_current_user),
 ) -> UserMilestoneRead:
     return learning_service.complete_user_milestone(db, current_user, user_milestone_id)
+
+
+@router.post("/me/milestones/{user_milestone_id}/restart", response_model=UserProjectRead)
+def restart_milestone(
+    user_milestone_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> UserProjectRead:
+    return learning_service.restart_user_milestone(db, current_user, user_milestone_id)

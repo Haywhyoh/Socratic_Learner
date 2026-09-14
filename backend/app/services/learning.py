@@ -329,6 +329,46 @@ def complete_user_milestone(
     return user_milestone
 
 
+def restart_user_milestone(db: Session, user: User, user_milestone_id: int) -> UserProject:
+    """Reset a milestone and all later ones so the learner can redo from that point."""
+    user_milestone = (
+        db.query(UserMilestone)
+        .options(
+            joinedload(UserMilestone.milestone),
+            joinedload(UserMilestone.user_project)
+            .joinedload(UserProject.user_milestones)
+            .joinedload(UserMilestone.milestone),
+            joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment),
+            joinedload(UserMilestone.user_project).joinedload(UserProject.project),
+        )
+        .filter(UserMilestone.id == user_milestone_id)
+        .first()
+    )
+    if (
+        user_milestone is None
+        or user_milestone.user_project.enrollment.user_id != user.id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+
+    restart_from = user_milestone.milestone.order_index
+    user_project = user_milestone.user_project
+    for um in user_project.user_milestones:
+        if um.milestone.order_index >= restart_from:
+            um.status = UserMilestoneStatus.pending
+            um.completed_at = None
+
+    completed_count = sum(
+        1 for um in user_project.user_milestones if um.status == UserMilestoneStatus.completed
+    )
+    if completed_count == 0:
+        user_project.status = UserProjectStatus.assigned
+    else:
+        user_project.status = UserProjectStatus.in_progress
+
+    db.commit()
+    return get_user_project(db, user, user_project.id)
+
+
 def get_concept_session(db: Session, user: User, session_id: int) -> ConceptSession:
     session = (
         db.query(ConceptSession)

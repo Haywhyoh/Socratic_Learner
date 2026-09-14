@@ -337,8 +337,49 @@ def seed(db: Session) -> None:
             question_text=text,
         )
 
+    _backfill_empty_concept_sessions(db)
+
     db.commit()
     print("Seed complete (projects + concept questions ensured).")
+
+
+def _backfill_empty_concept_sessions(db: Session) -> None:
+    """Fill concept sessions created before the question catalog existed."""
+    from app.models.concept import ConceptSession, ConceptSessionStatus
+    from app.models.enrollment import Enrollment, LearningMode
+
+    empty_sessions = (
+        db.query(ConceptSession)
+        .join(Enrollment, ConceptSession.enrollment_id == Enrollment.id)
+        .filter(
+            ConceptSession.question_text.is_(None),
+            Enrollment.learning_mode == LearningMode.concept,
+        )
+        .all()
+    )
+    filled = 0
+    for session in empty_sessions:
+        enrollment = db.get(Enrollment, session.enrollment_id)
+        if enrollment is None:
+            continue
+        question = (
+            db.query(ConceptQuestion)
+            .filter(
+                ConceptQuestion.course_id == enrollment.course_id,
+                ConceptQuestion.primary_option_id == enrollment.primary_option_id,
+                ConceptQuestion.secondary_option_id == enrollment.secondary_option_id,
+                ConceptQuestion.is_active.is_(True),
+            )
+            .order_by(ConceptQuestion.id)
+            .first()
+        )
+        if question is None:
+            continue
+        session.question_text = question.question_text
+        session.status = ConceptSessionStatus.active
+        filled += 1
+    if filled:
+        print(f"Backfilled {filled} empty concept session(s) with seeded questions.")
 
 
 def main() -> None:

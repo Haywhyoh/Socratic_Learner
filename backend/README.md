@@ -101,7 +101,8 @@ Token is stored at `~/.socratic/token`.
 4. Choose `project` or `concept`
    - **project** — assigns the lowest-id matching active project and creates milestone progress rows
    - **concept** — assigns a seeded hard question when one exists for that path (`status=active`); otherwise creates a session with `question_text=null` and status `pending_generation` (AI later)
-5. Complete milestones in order
+5. Complete milestones in order; restart from any milestone with
+   `POST /api/v1/me/milestones/{id}/restart` (also resets later milestones)
 
 ### Python seed content
 

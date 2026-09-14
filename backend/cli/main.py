@@ -151,11 +151,65 @@ def enroll(
                 "learning_mode": mode,
             },
         )
+        if response.status_code == 409 and "already exists" in response.text:
+            console.print(
+                "[yellow]Already enrolled on this path — opening your existing enrollment.[/yellow]"
+            )
+            enrollments = client.get("/api/v1/enrollments", headers=_headers()).json()
+            match = next(
+                (
+                    e
+                    for e in enrollments
+                    if e["course_id"] == course
+                    and e["primary_option_id"] == primary
+                    and e["secondary_option_id"] == secondary
+                    and e["learning_mode"] == mode
+                ),
+                None,
+            )
+            if match is None:
+                console.print(f"[red]{response.status_code}: {response.text}[/red]")
+                raise typer.Exit(code=1)
+            detail = client.get(f"/api/v1/enrollments/{match['id']}", headers=_headers())
+            detail.raise_for_status()
+            _print_enrollment(detail.json())
+            return
     if response.status_code >= 400:
         console.print(f"[red]{response.status_code}: {response.text}[/red]")
         raise typer.Exit(code=1)
     console.print("[green]Enrolled.[/green]")
-    _print_json(response.json())
+    _print_enrollment(response.json())
+
+
+def _print_enrollment(data: dict[str, Any]) -> None:
+    console.print(
+        f"[bold]Enrollment {data['id']}[/bold] — "
+        f"{(data.get('course') or {}).get('name')} / "
+        f"{(data.get('primary_option') or {}).get('name')} / "
+        f"{(data.get('secondary_option') or {}).get('name')} / "
+        f"{data['learning_mode']}"
+    )
+    if data.get("user_project"):
+        up = data["user_project"]
+        project = up.get("project") or data.get("assigned_project") or {}
+        console.print(
+            f"Project: {project.get('title', up['project_id'])} "
+            f"(user_project={up['id']}, status={up['status']})"
+        )
+        for um in data.get("user_milestones", []):
+            milestone = um.get("milestone") or {}
+            console.print(
+                f"  \\[{um['status']}] user_milestone={um['id']} "
+                f"#{milestone.get('order_index')} {milestone.get('title')}"
+            )
+        console.print(
+            "[dim]Complete next: socratic milestone complete <user_milestone_id>\n"
+            "Restart from a milestone (also resets later ones): "
+            "socratic milestone restart <user_milestone_id>[/dim]"
+        )
+    if data.get("concept_session_id"):
+        console.print(f"Concept session id={data['concept_session_id']}")
+        console.print("[dim]View question with: socratic concept show[/dim]")
 
 
 @app.command("path")
@@ -169,48 +223,41 @@ def show_path() -> None:
     if not enrollments:
         console.print("[yellow]No enrollments yet.[/yellow]")
         return
-    latest = enrollments[-1]
+    console.print(f"[bold]{len(enrollments)} enrollment(s)[/bold]")
     with _client() as client:
-        detail = client.get(f"/api/v1/enrollments/{latest['id']}", headers=_headers())
-    detail.raise_for_status()
-    data = detail.json()
-    console.print(
-        f"[bold]Enrollment {data['id']}[/bold] — "
-        f"{data.get('course', {}).get('name')} / "
-        f"{data.get('primary_option', {}).get('name')} / "
-        f"{data.get('secondary_option', {}).get('name')} / "
-        f"{data['learning_mode']}"
-    )
-    if data.get("user_project"):
-        up = data["user_project"]
-        console.print(f"User project {up['id']} status={up['status']} project_id={up['project_id']}")
-        for um in data.get("user_milestones", []):
-            milestone = um.get("milestone") or {}
-            console.print(
-                f"  \\[{um['status']}] user_milestone={um['id']} "
-                f"#{milestone.get('order_index')} {milestone.get('title')}"
-            )
-    if data.get("concept_session_id"):
-        console.print(f"Concept session id={data['concept_session_id']}")
+        for item in enrollments:
+            detail = client.get(f"/api/v1/enrollments/{item['id']}", headers=_headers())
+            detail.raise_for_status()
+            _print_enrollment(detail.json())
+            console.print("")
 
 
 @app.command("milestone")
-def milestone_complete(
-    action: str = typer.Argument(..., help="Use 'complete'"),
+def milestone_action(
+    action: str = typer.Argument(..., help="'complete' or 'restart'"),
     user_milestone_id: int = typer.Argument(..., help="User milestone ID"),
 ) -> None:
-    if action != "complete":
-        console.print("[red]Only 'complete' is supported, e.g. socratic milestone complete 1[/red]")
+    if action not in {"complete", "restart"}:
+        console.print(
+            "[red]Use: socratic milestone complete <id>  or  "
+            "socratic milestone restart <id>[/red]"
+        )
         raise typer.Exit(code=1)
     with _client() as client:
         response = client.post(
-            f"/api/v1/me/milestones/{user_milestone_id}/complete",
+            f"/api/v1/me/milestones/{user_milestone_id}/{action}",
             headers=_headers(),
         )
     if response.status_code >= 400:
         console.print(f"[red]{response.status_code}: {response.text}[/red]")
         raise typer.Exit(code=1)
-    console.print("[green]Milestone completed.[/green]")
+    if action == "complete":
+        console.print("[green]Milestone completed.[/green]")
+    else:
+        console.print(
+            "[green]Milestone restarted "
+            "(this milestone and any later ones are pending again).[/green]"
+        )
     _print_json(response.json())
 
 
@@ -243,20 +290,26 @@ def concept_show(
         console.print(f"[red]{response.status_code}: {response.text}[/red]")
         raise typer.Exit(code=1)
     data = response.json()
-    console.print(
-        f"Session {data['id']} status={data['status']} "
-        f"question={data['question_text']!r}"
-    )
+    console.print(f"Session {data['id']} status={data['status']}")
     if data["question_text"]:
+        console.print(f"\n[bold]Question[/bold]\n{data['question_text']}\n")
         console.print("[dim]Question came from the seeded catalog (AI generation later).[/dim]")
     else:
-        console.print("[dim]No seeded question for this path yet; AI generation later.[/dim]")
+        console.print("question=None")
+        console.print(
+            "[dim]No question on this session. Re-run `python -m app.seed` to backfill, "
+            "or enroll concept on Django for a fresh seeded question.[/dim]"
+        )
 
 
 @app.command("start")
 def interactive_start() -> None:
     """Walk through register/login → course → options → mode interactively."""
     console.print("[bold]Socratic Learner — interactive start[/bold]")
+    console.print(
+        "[dim]Tip: enter the ID from the left column of each table "
+        "(FastAPI is usually 5, not 1).[/dim]"
+    )
     if _load_token() is None:
         if typer.confirm("No saved token. Register a new account?", default=True):
             email = typer.prompt("Email")
@@ -267,14 +320,16 @@ def interactive_start() -> None:
         auth_login(email=email, password=password)
 
     list_courses()
-    course_id = typer.prompt("Course ID", type=int)
+    course_id = typer.prompt("Course ID (left column)", type=int)
     list_options(course_id=course_id)
-    primary_id = typer.prompt("Primary option ID", type=int)
+    primary_id = typer.prompt("Primary option ID — e.g. Python (left column)", type=int)
     list_options(course_id=course_id, parent_id=primary_id)
-    secondary_id = typer.prompt("Secondary option ID", type=int)
+    secondary_id = typer.prompt(
+        "Secondary option ID — e.g. FastAPI/Django (left column, NOT the parent id)",
+        type=int,
+    )
     mode = typer.prompt("Learning mode (project/concept)", default="project")
     enroll(course=course_id, primary=primary_id, secondary=secondary_id, mode=mode)
-    show_path()
 
 
 if __name__ == "__main__":

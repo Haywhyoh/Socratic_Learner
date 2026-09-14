@@ -108,6 +108,64 @@ def test_complete_milestones_in_order(
     assert progress.json()["status"] == "completed"
 
 
+def test_restart_milestone_resets_from_that_point(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+) -> None:
+    path = make_course_path(db, with_project=True)
+    enrolled = client.post(
+        "/api/v1/enrollments",
+        headers=auth_headers,
+        json={
+            "course_id": path["course_id"],
+            "primary_option_id": path["primary_option_id"],
+            "secondary_option_id": path["secondary_option_id"],
+            "learning_mode": "project",
+        },
+    )
+    assert enrolled.status_code == 201
+    ordered = sorted(
+        enrolled.json()["user_milestones"],
+        key=lambda um: next(
+            m["order_index"] for m in enrolled.json()["milestones"] if m["id"] == um["milestone_id"]
+        ),
+    )
+    for um in ordered:
+        assert (
+            client.post(
+                f"/api/v1/me/milestones/{um['id']}/complete",
+                headers=auth_headers,
+            ).status_code
+            == 200
+        )
+
+    restarted = client.post(
+        f"/api/v1/me/milestones/{ordered[1]['id']}/restart",
+        headers=auth_headers,
+    )
+    assert restarted.status_code == 200
+    body = restarted.json()
+    assert body["status"] == "in_progress"
+
+    by_id = {um["id"]: um for um in body["user_milestones"]}
+    assert by_id[ordered[0]["id"]]["status"] == "completed"
+    assert by_id[ordered[0]["id"]]["completed_at"] is not None
+    assert by_id[ordered[1]["id"]]["status"] == "pending"
+    assert by_id[ordered[1]["id"]]["completed_at"] is None
+    assert by_id[ordered[2]["id"]]["status"] == "pending"
+    assert by_id[ordered[2]["id"]]["completed_at"] is None
+
+    # Can complete again from the restarted point
+    assert (
+        client.post(
+            f"/api/v1/me/milestones/{ordered[1]['id']}/complete",
+            headers=auth_headers,
+        ).status_code
+        == 200
+    )
+
+
 def test_enroll_concept_mode_without_question_is_pending(
     client: TestClient,
     auth_headers: dict[str, str],
