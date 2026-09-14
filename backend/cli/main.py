@@ -218,7 +218,8 @@ def _print_milestones_table(
         "[dim]Complete next: socratic milestone complete <user_milestone_id>\n"
         "Restart from a milestone (also resets later ones): "
         "socratic milestone restart <user_milestone_id>\n"
-        "Full definition: socratic brief[/dim]"
+        "Full definition: socratic brief\n"
+        "Coach: socratic coach start  ·  socratic roadmap  ·  socratic cards  ·  socratic hint[/dim]"
     )
 
 
@@ -447,6 +448,218 @@ def concept_show(
             "[dim]No question on this session. Re-run `python -m app.seed` to backfill, "
             "or enroll concept on Django for a fresh seeded question.[/dim]"
         )
+
+
+def _latest_user_project_id(client: httpx.Client) -> int:
+    enrollments = client.get("/api/v1/enrollments", headers=_headers())
+    if enrollments.status_code >= 400:
+        console.print(f"[red]{enrollments.status_code}: {enrollments.text}[/red]")
+        raise typer.Exit(code=1)
+    user_project_id = next(
+        (
+            (e.get("user_project") or {}).get("id")
+            for e in reversed(enrollments.json())
+            if (e.get("user_project") or {}).get("id")
+        ),
+        None,
+    )
+    if user_project_id is None:
+        console.print("[yellow]No project enrollment found.[/yellow]")
+        raise typer.Exit(code=1)
+    return int(user_project_id)
+
+
+def _latest_user_milestone_id(client: httpx.Client, user_project_id: int) -> int:
+    project = client.get(f"/api/v1/me/projects/{user_project_id}", headers=_headers())
+    if project.status_code >= 400:
+        console.print(f"[red]{project.status_code}: {project.text}[/red]")
+        raise typer.Exit(code=1)
+    pending = [
+        um
+        for um in project.json().get("user_milestones") or []
+        if um.get("status") == "pending"
+    ]
+    pending.sort(key=lambda um: (um.get("milestone") or {}).get("order_index") or 0)
+    if not pending:
+        console.print("[yellow]No pending milestone.[/yellow]")
+        raise typer.Exit(code=1)
+    return int(pending[0]["id"])
+
+
+def _print_cards(cards: list[dict[str, Any]]) -> None:
+    if not cards:
+        console.print("[dim]No concept cards for this milestone.[/dim]")
+        return
+    for card in cards:
+        console.print(f"\n[bold]{card.get('name')}[/bold] (card_id={card.get('id')})")
+        if card.get("why_it_matters"):
+            console.print(card["why_it_matters"])
+        if card.get("explanation"):
+            console.print(f"[dim]{card['explanation']}[/dim]")
+        questions = card.get("research_questions") or []
+        if questions:
+            console.print("[cyan]Research questions[/cyan]")
+            for question in questions:
+                console.print(f"  • {question}")
+        resources = card.get("resources") or []
+        if resources:
+            console.print("[cyan]Resources[/cyan]")
+            for resource in resources:
+                title = resource.get("title") if isinstance(resource, dict) else str(resource)
+                url = resource.get("url") if isinstance(resource, dict) else ""
+                console.print(f"  • {title}" + (f" — {url}" if url else ""))
+        if card.get("checkpoint"):
+            console.print(f"[green]Checkpoint[/green]\n{card['checkpoint']}")
+
+
+@app.command("coach")
+def coach_cmd(
+    action: Annotated[str, typer.Argument(help="'start' or 'message'")],
+    message: Annotated[Optional[str], typer.Argument(help="Message for 'coach message'")] = None,
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option(help="User project ID (defaults to latest enrollment)"),
+    ] = None,
+) -> None:
+    """Start the AI coach or send a mentoring message."""
+    if action not in {"start", "message"}:
+        console.print("[red]Use: socratic coach start  or  socratic coach message TEXT[/red]")
+        raise typer.Exit(code=1)
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        if action == "start":
+            response = client.post(
+                f"/api/v1/me/projects/{user_project_id}/coach/start",
+                headers=_headers(),
+                json={"answers": []},
+            )
+            if response.status_code >= 400:
+                console.print(f"[red]{response.status_code}: {response.text}[/red]")
+                raise typer.Exit(code=1)
+            data = response.json()
+            if data.get("status") == "needs_assessment":
+                console.print("[bold]What do you already understand?[/bold]")
+                answers = []
+                for question in data.get("assessment_questions") or []:
+                    mastery = typer.prompt(
+                        f"{question['prompt']}",
+                        default="unknown",
+                    )
+                    answers.append({"concept": question["concept"], "mastery": mastery})
+                response = client.post(
+                    f"/api/v1/me/projects/{user_project_id}/coach/start",
+                    headers=_headers(),
+                    json={"answers": answers},
+                )
+                if response.status_code >= 400:
+                    console.print(f"[red]{response.status_code}: {response.text}[/red]")
+                    raise typer.Exit(code=1)
+                data = response.json()
+            console.print(
+                f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
+            )
+            if data.get("reply"):
+                console.print(f"\n{data['reply']}")
+            _print_cards(data.get("cards") or [])
+            return
+        if not message:
+            message = typer.prompt("Message")
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/coach/message",
+            headers=_headers(),
+            json={"message": message},
+        )
+        if response.status_code >= 400:
+            console.print(f"[red]{response.status_code}: {response.text}[/red]")
+            raise typer.Exit(code=1)
+        body = response.json()
+        console.print(f"[dim]intent={body.get('intent')}[/dim]\n{body.get('reply')}")
+
+
+@app.command("roadmap")
+def show_roadmap(
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option(help="User project ID"),
+    ] = None,
+) -> None:
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.get(
+            f"/api/v1/me/projects/{user_project_id}/roadmap",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    items = response.json()
+    if not items:
+        console.print("[yellow]No roadmap yet. Run: socratic coach start[/yellow]")
+        return
+    for item in items:
+        console.print(f"\n[bold]#{item.get('order_index')} {item.get('title')}[/bold]")
+        for concept in item.get("concepts") or []:
+            console.print(
+                f"  • {concept.get('name')} — {concept.get('teaching')} "
+                f"({concept.get('mastery')})"
+            )
+
+
+@app.command("cards")
+def show_cards(
+    user_milestone_id: Annotated[
+        Optional[int],
+        typer.Option(help="User milestone ID (defaults to current pending)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_milestone_id, int):
+        user_milestone_id = None
+    with _client() as client:
+        if user_milestone_id is None:
+            user_project_id = _latest_user_project_id(client)
+            user_milestone_id = _latest_user_milestone_id(client, user_project_id)
+        response = client.get(
+            f"/api/v1/me/milestones/{user_milestone_id}/cards",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    _print_cards(response.json())
+
+
+@app.command("hint")
+def ask_hint(
+    user_milestone_id: Annotated[
+        Optional[int],
+        typer.Option(help="User milestone ID (defaults to current pending)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_milestone_id, int):
+        user_milestone_id = None
+    with _client() as client:
+        if user_milestone_id is None:
+            user_project_id = _latest_user_project_id(client)
+            user_milestone_id = _latest_user_milestone_id(client, user_project_id)
+        response = client.post(
+            f"/api/v1/me/milestones/{user_milestone_id}/hints",
+            headers=_headers(),
+        )
+    if response.status_code >= 400:
+        console.print(f"[red]{response.status_code}: {response.text}[/red]")
+        raise typer.Exit(code=1)
+    body = response.json()
+    if body.get("hint_blocked_reason"):
+        console.print(f"[yellow]Hint held ({body['hint_blocked_reason']})[/yellow]")
+    elif body.get("hint_level") is not None:
+        console.print(f"[dim]hint level {body['hint_level']}[/dim]")
+    console.print(body.get("reply") or "")
 
 
 @app.command("start")

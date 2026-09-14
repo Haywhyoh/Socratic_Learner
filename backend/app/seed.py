@@ -71,7 +71,9 @@ def _sync_milestones(db: Session, project: Project, milestones: list[MilestoneSp
         m.order_index: m
         for m in db.query(Milestone).filter(Milestone.project_id == project.id).all()
     }
-    for index, (title, description, instructions, criteria) in enumerate(milestones, start=1):
+    for index, (title, description, instructions, criteria, concepts) in enumerate(
+        milestones, start=1
+    ):
         current = existing.get(index)
         if current is None:
             db.add(
@@ -82,6 +84,7 @@ def _sync_milestones(db: Session, project: Project, milestones: list[MilestoneSp
                     description=description,
                     instructions=instructions,
                     success_criteria=criteria,
+                    concepts=list(concepts),
                 )
             )
         else:
@@ -89,6 +92,7 @@ def _sync_milestones(db: Session, project: Project, milestones: list[MilestoneSp
             current.description = description
             current.instructions = instructions
             current.success_criteria = criteria
+            current.concepts = list(concepts)
 
 
 def _ensure_project(

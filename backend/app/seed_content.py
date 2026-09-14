@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-# Milestone tuple: title, description, instructions, success_criteria
-MilestoneSpec = tuple[str, str, str, str]
+# Milestone tuple: title, description, instructions, success_criteria, concepts
+MilestoneSpec = tuple[str, str, str, str, list[str]]
 ProjectSpec = dict[str, object]
 
 
@@ -83,12 +83,9 @@ What to do:
 2. Add a `GET /health` endpoint that returns JSON like `{"status": "ok"}`.
 3. Wire dependency management (pyproject/requirements) and a README with run steps.
 4. Confirm `uvicorn` starts locally without import errors.
-
-Hints:
-- Keep settings in environment variables from day one.
-- Prefer a small `main.py` that only creates the app and includes routers.
 """.strip(),
             "GET /health returns HTTP 200 with a JSON status body, and the app starts cleanly via uvicorn.",
+            ["Milestone-sized delivery", "OpenAPI documentation"],
         ),
         (
             "CRUD for tasks",
@@ -103,12 +100,9 @@ What to do:
    - POST /tasks/{id}/complete — mark complete
 4. Return sensible status codes (201 on create, 404 when missing).
 5. Add at least one automated test for create + list.
-
-Hints:
-- Keep business logic out of route functions when it starts to grow.
-- Make `is_completed` explicit rather than deleting completed tasks.
 """.strip(),
             "A client can create a task, list tasks, and mark a task complete; data survives process restart.",
+            ["REST status codes"],
         ),
         (
             "Auth-aware ownership",
@@ -120,12 +114,9 @@ What to do:
 3. Associate each created task with the authenticated user.
 4. Ensure list/complete only operate on the caller’s tasks.
 5. Write tests proving user A cannot complete user B’s task.
-
-Hints:
-- Prefer returning 404 for cross-user access to avoid leaking existence.
-- Document the auth header format in the README.
 """.strip(),
             "Authenticated ownership is enforced: users cannot read or mutate another user's tasks, verified by tests.",
+            ["Ownership isolation", "Auth boundaries on mutations"],
         ),
     ],
 }
@@ -207,6 +198,7 @@ What to do:
 4. Add a basic GET /notes/{id} if useful for debugging.
 """.strip(),
             "Creating a note returns HTTP 201 with a stable id and persisted fields.",
+            ["Validation of query params (422)"],
         ),
         (
             "Tags and filtering",
@@ -219,6 +211,7 @@ What to do:
 4. Normalize tag casing (e.g. lowercase) and document the rule.
 """.strip(),
             "GET /notes?tag=<tag> returns only notes that include that tag.",
+            ["Normalization of tag casing"],
         ),
         (
             "Search and pagination",
@@ -231,6 +224,7 @@ What to do:
 4. Include total count in response metadata OR document why you omitted it.
 """.strip(),
             "Search and pagination params change the result set correctly and compose with tag filters.",
+            ["List endpoint complexity", "Empty result sets vs errors", "Response metadata for totals"],
         ),
     ],
 }
@@ -310,6 +304,7 @@ What to do:
 4. Create a superuser and add sample data.
 """.strip(),
             "Books and authors can be created and edited in Django admin.",
+            ["Foreign keys (Author → Book)", "Admin as a content tool"],
         ),
         (
             "Catalog list views",
@@ -322,6 +317,7 @@ What to do:
 4. Detail page shows full book fields.
 """.strip(),
             "Catalog list and detail pages render correctly for seeded books.",
+            ["Form POST actions on detail pages"],
         ),
         (
             "Borrow workflow",
@@ -334,6 +330,7 @@ What to do:
 4. Optional stretch: return action to make the book available again.
 """.strip(),
             "Borrowing a book flips availability and the detail page reflects the new state.",
+            ["Availability state transitions", "Blocking invalid domain actions"],
         ),
     ],
 }
@@ -412,6 +409,7 @@ What to do:
 4. Ensure no console errors on load.
 """.strip(),
             "Two routes render inside a shared layout without console errors.",
+            ["Shared layout with nested routes"],
         ),
         (
             "Progress widgets",
@@ -423,6 +421,7 @@ What to do:
 3. Show a simple completion summary (e.g. 1/3 complete).
 """.strip(),
             "At least three progress widgets display correctly from mock data.",
+            ["Derived progress summaries", "Separating mock data from UI"],
         ),
         (
             "Interactive filters",
@@ -434,6 +433,7 @@ What to do:
 3. Ensure changing filters does not remount the whole app / full page reload.
 """.strip(),
             "Filtering updates visible widgets without a full page reload.",
+            ["Filter without full page reload", "Dashboard information architecture"],
         ),
     ],
 }
@@ -512,6 +512,7 @@ What to include:
 Keep it to one page.
 """.strip(),
             "Brief names audience, pain, promise, and proof.",
+            ["Audience / pain / promise / proof", "Executable briefs vs generic personas"],
         ),
         (
             "Four-week calendar",
@@ -523,6 +524,7 @@ What to include:
 - Primary CTA per item
 """.strip(),
             "Calendar includes at least 12 dated content items with channels and CTAs.",
+            ["Channel mix across a launch window"],
         ),
         (
             "Measurement plan",
@@ -535,6 +537,7 @@ What to include:
 - Owner for each metric
 """.strip(),
             "Plan lists leading and lagging indicators with owners.",
+            ["Leading vs lagging indicators", "Measurement cadence"],
         ),
     ],
 }

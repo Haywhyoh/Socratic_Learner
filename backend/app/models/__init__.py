@@ -1,6 +1,15 @@
 """Import all models so Alembic and metadata see them."""
 
 from app.db.base import Base
+from app.models.coach import (
+    CardCheckpoint,
+    ConceptCard,
+    HintReveal,
+    LearnerKnowledge,
+    MentorSession,
+    MentorTurn,
+    RoadmapItem,
+)
 from app.models.concept import ConceptQuestion, ConceptSession, ConceptTurn
 from app.models.course import Course, CourseOption
 from app.models.enrollment import Enrollment
@@ -20,4 +29,11 @@ __all__ = [
     "ConceptQuestion",
     "ConceptSession",
     "ConceptTurn",
+    "LearnerKnowledge",
+    "RoadmapItem",
+    "ConceptCard",
+    "CardCheckpoint",
+    "MentorSession",
+    "MentorTurn",
+    "HintReveal",
 ]

@@ -95,6 +95,7 @@ class Milestone(Base):
     instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     success_criteria: Mapped[str] = mapped_column(Text, nullable=False)
+    concepts: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
     project = relationship("Project", back_populates="milestones")
 

@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7
     api_base_url: str = "http://localhost:8000"
     algorithm: str = "HS256"
+    llm_model: str = "stub"
+    llm_api_key: str = ""
 
 
 settings = Settings()

@@ -135,6 +135,7 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
                     instructions=f"{title} instructions",
                     order_index=index,
                     success_criteria=f"{title} done",
+                    concepts=[title.lower()],
                 )
             )
         project_id = project.id

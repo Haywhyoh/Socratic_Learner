@@ -19,6 +19,9 @@ dependencies = [
     "typer>=0.14.0",
     "httpx>=0.28.0",
     "rich>=13.9.0",
+    "langchain>=0.3.27",
+    "langchain-core>=0.3.70",
+    "langgraph>=0.4.0",
 ]
 
 [project.optional-dependencies]
