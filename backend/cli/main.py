@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Optional
 
 import httpx
 import typer
@@ -101,9 +101,16 @@ def list_courses() -> None:
 
 @app.command("options")
 def list_options(
-    course_id: int = typer.Argument(..., help="Course ID"),
-    parent_id: int | None = typer.Option(None, help="Primary option ID for secondary options"),
+    course_id: Annotated[int, typer.Argument(help="Course ID")],
+    parent_id: Annotated[
+        Optional[int],
+        typer.Option(help="Primary option ID for secondary options"),
+    ] = None,
 ) -> None:
+    # Direct Python calls (e.g. from `socratic start`) must use a real None default;
+    # typer.Option(...) as a default leaves an OptionInfo object instead.
+    if not isinstance(parent_id, int):
+        parent_id = None
     with _client() as client:
         if parent_id is None:
             response = client.get(f"/api/v1/courses/{course_id}/options")
@@ -180,7 +187,7 @@ def show_path() -> None:
         for um in data.get("user_milestones", []):
             milestone = um.get("milestone") or {}
             console.print(
-                f"  [{um['status']}] user_milestone={um['id']} "
+                f"  \\[{um['status']}] user_milestone={um['id']} "
                 f"#{milestone.get('order_index')} {milestone.get('title')}"
             )
     if data.get("concept_session_id"):
@@ -209,12 +216,17 @@ def milestone_complete(
 
 @app.command("concept")
 def concept_show(
-    action: str = typer.Argument("show", help="Use 'show'"),
-    session_id: int | None = typer.Option(None, help="Concept session ID"),
+    action: Annotated[str, typer.Argument(help="Use 'show'")] = "show",
+    session_id: Annotated[
+        Optional[int],
+        typer.Option(help="Concept session ID"),
+    ] = None,
 ) -> None:
     if action != "show":
         console.print("[red]Only 'show' is supported[/red]")
         raise typer.Exit(code=1)
+    if not isinstance(session_id, int):
+        session_id = None
     if session_id is None:
         with _client() as client:
             enrollments = client.get("/api/v1/enrollments", headers=_headers()).json()
