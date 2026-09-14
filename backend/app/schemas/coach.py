@@ -2,7 +2,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.coach import ConceptMastery, MentorSessionStatus, MentorTurnRole, TeachingFlag
+from app.models.coach import (
+    ConceptMastery,
+    MentorSessionStatus,
+    MentorTurnRole,
+    MilestoneReviewVerdict,
+    TeachingFlag,
+)
 
 
 class AssessmentAnswer(BaseModel):
@@ -108,6 +114,7 @@ class CoachStartResponse(BaseModel):
     reply: str | None = None
     current_question: str | None = None
     answer_status: str | None = None
+    resumed: bool = False
     learner_state: "LearnerStateRead | None" = None
 
 

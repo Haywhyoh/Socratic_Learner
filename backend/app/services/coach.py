@@ -726,6 +726,182 @@ def request_hint(db: Session, user: User, user_milestone_id: int) -> dict:
     )
 
 
+def _get_or_create_review(db: Session, user_milestone_id: int) -> MilestoneReview:
+    review = (
+        db.query(MilestoneReview)
+        .filter(MilestoneReview.user_milestone_id == user_milestone_id)
+        .first()
+    )
+    if review is None:
+        review = MilestoneReview(user_milestone_id=user_milestone_id)
+        db.add(review)
+        db.flush()
+    return review
+
+
+def _review_payload(review: MilestoneReview) -> dict:
+    return {
+        "id": review.id,
+        "user_milestone_id": review.user_milestone_id,
+        "verdict": review.verdict,
+        "dimensions": review.dimensions or {},
+        "summary": review.summary,
+        "understanding_questions": list(review.understanding_questions or []),
+        "understanding_answers": list(review.understanding_answers or []),
+        "attempts": review.attempts,
+        "created_at": review.created_at,
+        "updated_at": review.updated_at,
+    }
+
+
+def get_milestone_review(db: Session, user: User, user_milestone_id: int) -> dict:
+    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
+    review = (
+        db.query(MilestoneReview)
+        .filter(MilestoneReview.user_milestone_id == user_milestone.id)
+        .first()
+    )
+    if review is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No review yet")
+    return _review_payload(review)
+
+
+def request_milestone_review(db: Session, user: User, user_milestone_id: int) -> dict:
+    """Trigger (or fetch the in-flight) AI review of the learner's actual code
+
+    for this milestone: correctness, architecture, readability, complexity,
+    reliability, testing — plus questions probing their understanding of what
+    they built. Requires the sandbox tests to already be passing.
+    """
+    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
+    if user_milestone.status == UserMilestoneStatus.completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Milestone already completed"
+        )
+    milestone = user_milestone.milestone
+    learner_state = _get_or_create_learner_state(
+        db, user_milestone.user_project_id, user_milestone.milestone_id
+    )
+    if not learner_state.can_reproduce:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Get your tests passing first (socratic sandbox test), then request a review.",
+        )
+
+    review = _get_or_create_review(db, user_milestone.id)
+    if review.verdict == MilestoneReviewVerdict.passed:
+        return _review_payload(review)
+    if review.verdict == MilestoneReviewVerdict.awaiting_understanding and review.understanding_questions:
+        # Don't regenerate a fresh review while questions are still pending —
+        # answer those first via submit_milestone_review_answers.
+        return _review_payload(review)
+
+    if review.attempts >= MAX_REVIEW_ATTEMPTS:
+        review.verdict = MilestoneReviewVerdict.passed
+        review.understanding_questions = []
+        review.summary = (
+            f"{review.summary} [Advanced after {review.attempts} review rounds — "
+            "remaining gaps noted for follow-up.]"
+        ).strip()
+        db.commit()
+        return _review_payload(review)
+
+    from app.services import sandbox as sandbox_service  # local import: avoid circular import
+
+    code_bundle = sandbox_service.collect_source_bundle(user_milestone.user_project_id)
+    last_tested = next(
+        (
+            attempt
+            for attempt in reversed(list(learner_state.attempts or []))
+            if isinstance(attempt, dict) and attempt.get("tested") is True
+        ),
+        None,
+    )
+    test_summary = (last_tested or {}).get("summary", "")
+
+    result = get_coach_llm().review_milestone(
+        milestone_title=milestone.title,
+        milestone_description=milestone.description,
+        success_criteria=milestone.success_criteria,
+        constraints=list(user_milestone.user_project.project.constraints or []),
+        code_bundle=code_bundle,
+        tests_passed=learner_state.can_reproduce,
+        test_summary=test_summary,
+    )
+    dimensions = result.get("dimensions") or {}
+    review.attempts += 1
+    review.dimensions = dimensions
+    review.summary = str(result.get("summary") or "")
+    has_fail = any(
+        isinstance(info, dict) and info.get("rating") == "fail" for info in dimensions.values()
+    )
+    questions = [str(q) for q in (result.get("understanding_questions") or [])]
+    if has_fail:
+        review.verdict = MilestoneReviewVerdict.needs_work
+        review.understanding_questions = []
+    elif questions:
+        review.verdict = MilestoneReviewVerdict.awaiting_understanding
+        review.understanding_questions = questions
+    else:
+        review.verdict = MilestoneReviewVerdict.passed
+    db.commit()
+    return _review_payload(review)
+
+
+def submit_milestone_review_answers(
+    db: Session, user: User, user_milestone_id: int, answers: list[str]
+) -> dict:
+    """Grade the learner's answers to the review's understanding questions."""
+    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
+    review = (
+        db.query(MilestoneReview)
+        .filter(MilestoneReview.user_milestone_id == user_milestone.id)
+        .first()
+    )
+    if review is None or review.verdict != MilestoneReviewVerdict.awaiting_understanding:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No pending review questions — run a review first (socratic review).",
+        )
+    milestone = user_milestone.milestone
+    questions = list(review.understanding_questions or [])
+    graded = []
+    all_passed = True
+    for question, answer in zip(questions, answers):
+        verdict = get_coach_llm().evaluate_understanding(
+            question=question, answer=answer, milestone_title=milestone.title
+        )
+        passed = bool(verdict.get("passed"))
+        graded.append(
+            {
+                "question": question,
+                "answer": answer[:500],
+                "passed": passed,
+                "feedback": verdict.get("feedback"),
+            }
+        )
+        if not passed:
+            all_passed = False
+
+    review.understanding_answers = list(review.understanding_answers or []) + graded
+    if all_passed:
+        review.verdict = MilestoneReviewVerdict.passed
+        review.understanding_questions = []
+    else:
+        review.attempts += 1
+        if review.attempts >= MAX_REVIEW_ATTEMPTS:
+            review.verdict = MilestoneReviewVerdict.passed
+            review.understanding_questions = []
+            review.summary = (
+                f"{review.summary} [Advanced after {review.attempts} review rounds — "
+                "understanding gaps noted for follow-up.]"
+            ).strip()
+        # else: stays awaiting_understanding with the same questions — the
+        # learner can retry via another submit_milestone_review_answers call.
+    db.commit()
+    return _review_payload(review)
+
+
 def submit_checkpoint(
     db: Session, user: User, card_id: int, answer: str
 ) -> CardCheckpoint:
