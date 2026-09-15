@@ -2,6 +2,16 @@
 
 Project-based and concept-based learning platform.
 
+## Frontend
+
+Next.js dashboard: course onboarding, milestone workspace, Monaco editor, coach chat, and hints. See [frontend/README.md](frontend/README.md).
+
+```bash
+cd frontend && cp .env.local.example .env.local && npm install && npm run dev
+```
+
+Run the backend on port 8000 in another terminal.
+
 ## Backend
 
 The first slice lives in [`backend/`](backend/). See [backend/README.md](backend/README.md) for setup, migrations, tests, and the CLI.

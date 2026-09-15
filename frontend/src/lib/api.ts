@@ -1,0 +1,241 @@
+import { clearToken, getToken } from "./auth-token";
+import type {
+  CoachMessageResponse,
+  CoachStartResponse,
+  ConceptCardRead,
+  CourseOptionRead,
+  CourseRead,
+  EnrollmentCreate,
+  EnrollmentDetail,
+  EnrollmentRead,
+  MilestoneReviewRead,
+  SandboxFileEntry,
+  SandboxRunResult,
+  SandboxTestResult,
+  Token,
+  UserRead,
+} from "./types";
+import { ApiError } from "./types";
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
+
+function sandboxFilePath(filePath: string): string {
+  return filePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+type RequestOptions = Omit<RequestInit, "body"> & {
+  body?: unknown;
+  auth?: boolean;
+};
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { body, auth = true, headers, ...rest } = options;
+  const hdrs = new Headers(headers);
+  if (body !== undefined && !hdrs.has("Content-Type")) {
+    hdrs.set("Content-Type", "application/json");
+  }
+  if (auth) {
+    const token = getToken();
+    if (token) hdrs.set("Authorization", `Bearer ${token}`);
+  }
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...rest,
+    headers: hdrs,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  if (res.status === 401 && auth) {
+    clearToken();
+  }
+
+  const text = await res.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+  }
+
+  if (!res.ok) {
+    const detail =
+      typeof data === "object" && data !== null && "detail" in data
+        ? (data as { detail: unknown }).detail
+        : data;
+    throw new ApiError(
+      typeof detail === "string" ? detail : res.statusText,
+      res.status,
+      detail,
+    );
+  }
+
+  return data as T;
+}
+
+export const api = {
+  register(email: string, password: string) {
+    return request<UserRead>("/api/v1/auth/register", {
+      method: "POST",
+      auth: false,
+      body: { email, password },
+    });
+  },
+
+  async login(email: string, password: string): Promise<Token> {
+    const body = new URLSearchParams();
+    body.set("username", email);
+    body.set("password", password);
+    const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new ApiError(data.detail ?? "Login failed", res.status, data.detail);
+    }
+    return data as Token;
+  },
+
+  me() {
+    return request<UserRead>("/api/v1/auth/me");
+  },
+
+  listCourses() {
+    return request<CourseRead[]>("/api/v1/courses", { auth: false });
+  },
+
+  listPrimaryOptions(courseId: number) {
+    return request<CourseOptionRead[]>(`/api/v1/courses/${courseId}/options`, {
+      auth: false,
+    });
+  },
+
+  listSecondaryOptions(courseId: number, primaryOptionId: number) {
+    return request<CourseOptionRead[]>(
+      `/api/v1/courses/${courseId}/options/${primaryOptionId}/options`,
+      { auth: false },
+    );
+  },
+
+  createEnrollment(payload: EnrollmentCreate) {
+    return request<EnrollmentDetail>("/api/v1/enrollments", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  listEnrollments() {
+    return request<EnrollmentRead[]>("/api/v1/enrollments");
+  },
+
+  getEnrollment(id: number) {
+    return request<EnrollmentDetail>(`/api/v1/enrollments/${id}`);
+  },
+
+  initSandbox(userProjectId: number) {
+    return request<{ id: number; user_project_id: number; status: string }>(
+      `/api/v1/me/projects/${userProjectId}/sandbox`,
+      { method: "POST" },
+    );
+  },
+
+  listSandboxFiles(userProjectId: number) {
+    return request<{ files: SandboxFileEntry[] }>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/files`,
+    );
+  },
+
+  readSandboxFile(userProjectId: number, filePath: string) {
+    return request<{ path: string; content: string }>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/files/${sandboxFilePath(filePath)}`,
+    );
+  },
+
+  writeSandboxFile(userProjectId: number, filePath: string, content: string) {
+    return request<{ path: string; content: string }>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/files/${sandboxFilePath(filePath)}`,
+      { method: "PUT", body: { content } },
+    );
+  },
+
+  runSandbox(userProjectId: number, argv: string[]) {
+    return request<SandboxRunResult>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/run`,
+      { method: "POST", body: { argv } },
+    );
+  },
+
+  testSandbox(userProjectId: number) {
+    return request<SandboxTestResult>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/test`,
+      { method: "POST" },
+    );
+  },
+
+  coachStart(userProjectId: number, answers?: { concept: string; mastery: string }[]) {
+    return request<CoachStartResponse>(
+      `/api/v1/me/projects/${userProjectId}/coach/start`,
+      { method: "POST", body: { answers: answers ?? [] } },
+    );
+  },
+
+  coachMessage(userProjectId: number, message: string) {
+    return request<CoachMessageResponse>(
+      `/api/v1/me/projects/${userProjectId}/coach/message`,
+      { method: "POST", body: { message } },
+    );
+  },
+
+  requestHint(userMilestoneId: number) {
+    return request<CoachMessageResponse>(
+      `/api/v1/me/milestones/${userMilestoneId}/hints`,
+      { method: "POST" },
+    );
+  },
+
+  listCards(userMilestoneId: number) {
+    return request<ConceptCardRead[]>(
+      `/api/v1/me/milestones/${userMilestoneId}/cards`,
+    );
+  },
+
+  getLearnerState(userProjectId: number) {
+    return request<import("./types").LearnerStateRead>(
+      `/api/v1/me/projects/${userProjectId}/state`,
+    );
+  },
+
+  requestMilestoneReview(userMilestoneId: number) {
+    return request<MilestoneReviewRead>(
+      `/api/v1/me/milestones/${userMilestoneId}/review`,
+      { method: "POST" },
+    );
+  },
+
+  getMilestoneReview(userMilestoneId: number) {
+    return request<MilestoneReviewRead>(
+      `/api/v1/me/milestones/${userMilestoneId}/review`,
+    );
+  },
+
+  answerMilestoneReview(userMilestoneId: number, answers: string[]) {
+    return request<MilestoneReviewRead>(
+      `/api/v1/me/milestones/${userMilestoneId}/review/answer`,
+      { method: "POST", body: { answers } },
+    );
+  },
+
+  completeMilestone(userMilestoneId: number) {
+    return request<import("./types").UserMilestoneRead>(
+      `/api/v1/me/milestones/${userMilestoneId}/complete`,
+      { method: "POST" },
+    );
+  },
+};
