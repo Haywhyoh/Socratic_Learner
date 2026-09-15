@@ -92,7 +92,15 @@ def enforce_single_build_step(text: str) -> str:
 
 
 def format_step_header(*, step_index: int, total: int, task: str) -> str:
-    return f"Step {step_index + 1} of {total}: {task}"
+    return f"**Step {step_index + 1} of {total}:** {task}"
+
+
+def format_resource_bullet(title: str, url: str) -> str:
+    title = title.strip() or "Resource"
+    url = url.strip()
+    if url:
+        return f"- [{title}]({url})"
+    return f"- {title}"
 
 
 def resource_hint(resources: list[dict[str, str]], *, topic: str) -> str:
@@ -101,11 +109,13 @@ def resource_hint(resources: list[dict[str, str]], *, topic: str) -> str:
     for item in resources[:3]:
         title = str(item.get("title") or "Resource").strip()
         url = str(item.get("url") or "").strip()
-        if url:
-            links.append(f"- {title}: {url}")
-        elif title:
-            links.append(f"- {title}")
-    joined = "\n".join(links) if links else "- FastAPI docs: https://fastapi.tiangolo.com/"
+        if url or title:
+            links.append(format_resource_bullet(title, url))
+    joined = (
+        "\n".join(links)
+        if links
+        else format_resource_bullet("FastAPI docs", "https://fastapi.tiangolo.com/")
+    )
     return (
         f"For {topic}, don't paste a whole file from me — create a minimal version yourself.\n"
         f"Look here first:\n{joined}\n"

@@ -8,6 +8,7 @@ from typing import Protocol
 from app.agents.build_coach import (
     build_steps_for_milestone,
     enforce_single_build_step,
+    format_resource_bullet,
     format_step_header,
     resource_hint,
 )
@@ -323,9 +324,11 @@ class LangChainCoachLLM:
         for item in (resources or [])[:3]:
             title = str(item.get("title") or "").strip()
             url = str(item.get("url") or "").strip()
-            if title and url:
-                resource_lines.append(f"- {title}: {url}")
-        resource_block = "\n".join(resource_lines) or "- FastAPI docs: https://fastapi.tiangolo.com/"
+            if title or url:
+                resource_lines.append(format_resource_bullet(title, url))
+        resource_block = "\n".join(resource_lines) or format_resource_bullet(
+            "FastAPI docs", "https://fastapi.tiangolo.com/"
+        )
         prompt = (
             "You are a senior engineer mentoring a beginner ONE STEP AT A TIME.\n"
             "Hard rules:\n"
@@ -337,6 +340,8 @@ class LangChainCoachLLM:
             "Tell them what fields/sections to include and point them at the resources below.\n"
             "- You MAY show one tiny /health FastAPI example (under 12 lines) only if this step needs it.\n"
             "- Never paste a multi-file app or long solution.\n"
+            "- Use simple Markdown: short paragraphs, bullet lists, `inline code` for paths/commands, "
+            "fenced blocks only for tiny snippets (under 12 lines). No duplicate 'Step N' headings.\n"
             "- End by asking them to reply **done** (or paste terminal output) before the next step.\n\n"
             f"Project: {project_title or 'learner project'}\n"
             f"Milestone: {milestone_title or 'current'}\n"

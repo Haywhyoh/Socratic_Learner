@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import type { ConceptCardRead, MentorTurnRead } from "@/lib/types";
 import type { MilestoneTask } from "@/lib/milestones";
+import { CoachMessageContent } from "@/components/workspace/coach-message";
 
 interface CoachPanelProps {
   userProjectId: number;
@@ -212,8 +213,11 @@ export function CoachPanel({
                 : "mr-4 rounded-lg border border-stone-700/80 bg-stone-950/60 px-3 py-2 text-sm text-stone-300"
             }
           >
-            {isCoachTurn(turn.role) && turn.role !== "user" ? null : null}
-            {turn.content}
+            {isCoachTurn(turn.role) ? (
+              <CoachMessageContent content={turn.content} />
+            ) : (
+              <span className="whitespace-pre-wrap">{turn.content}</span>
+            )}
           </div>
         ))}
       </div>
