@@ -8,11 +8,15 @@ import {
   Save,
   Loader2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/workspace/code-editor";
 import { CoachPanel } from "@/components/workspace/coach-panel";
 import { MilestoneRail } from "@/components/workspace/milestone-rail";
+import {
+  SandboxTerminal,
+  type SandboxTerminalHandle,
+} from "@/components/workspace/sandbox-terminal";
 import { api } from "@/lib/api";
 import { getActiveUserMilestone } from "@/lib/milestones";
 import type {
@@ -34,6 +38,7 @@ export function WorkspaceShell({
   const userProjectId = enrollment.user_project?.id;
   const userMilestones = enrollment.user_milestones ?? [];
   const activeUm = getActiveUserMilestone(userMilestones);
+  const terminalRef = useRef<SandboxTerminalHandle>(null);
 
   const [selectedUm, setSelectedUm] = useState<UserMilestoneRead | null>(
     activeUm,
@@ -42,7 +47,6 @@ export function WorkspaceShell({
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [output, setOutput] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [coachReady, setCoachReady] = useState(false);
   const [coachBoot, setCoachBoot] = useState<{
@@ -86,6 +90,7 @@ export function WorkspaceShell({
     try {
       await api.writeSandboxFile(userProjectId, activeFile, editorContent);
       setDirty(false);
+      terminalRef.current?.echo(`saved ${activeFile}`);
     } finally {
       setBusy(null);
     }
@@ -113,7 +118,9 @@ export function WorkspaceShell({
           py?.path ?? listed?.find((f) => !f.is_dir)?.path ?? null;
         if (first) await loadFile(first);
       } catch (e) {
-        setOutput(e instanceof ApiError ? e.message : "Failed to initialize workspace");
+        terminalRef.current?.echo(
+          e instanceof ApiError ? e.message : "Failed to initialize workspace",
+        );
       } finally {
         if (!cancelled) setBusy(null);
       }
@@ -130,16 +137,10 @@ export function WorkspaceShell({
     if (dirty && activeFile) await saveFile();
     setBusy("run");
     try {
-      const argv = activeFile?.endsWith(".py")
-        ? ["python", activeFile]
-        : ["python", "main.py"];
-      const res = await api.runSandbox(userProjectId, argv);
-      setOutput(
-        [res.stdout, res.stderr].filter(Boolean).join("\n") ||
-          `(exit ${res.exit_code}${res.timed_out ? ", timed out" : ""})`,
-      );
-    } catch (e) {
-      setOutput(e instanceof ApiError ? e.message : "Run failed");
+      const cmd = activeFile?.endsWith(".py")
+        ? `python ${activeFile}`
+        : "python main.py";
+      await terminalRef.current?.runCommand(cmd);
     } finally {
       setBusy(null);
     }
@@ -150,10 +151,7 @@ export function WorkspaceShell({
     if (dirty && activeFile) await saveFile();
     setBusy("test");
     try {
-      const res = await api.testSandbox(userProjectId);
-      setOutput(res.output || res.summary);
-    } catch (e) {
-      setOutput(e instanceof ApiError ? e.message : "Tests failed");
+      await terminalRef.current?.runCommand("pytest -q");
     } finally {
       setBusy(null);
     }
@@ -164,14 +162,16 @@ export function WorkspaceShell({
     setBusy("review");
     try {
       const review = await api.requestMilestoneReview(displayUm.id);
-      setOutput(
-        `Review (${review.verdict}): ${review.summary}\n\n` +
+      terminalRef.current?.echo(
+        `Review (${review.verdict}): ${review.summary}\n` +
           (review.understanding_questions.length
             ? `Questions:\n${review.understanding_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
             : ""),
       );
     } catch (e) {
-      setOutput(e instanceof ApiError ? e.message : "Review failed");
+      terminalRef.current?.echo(
+        e instanceof ApiError ? e.message : "Review failed",
+      );
     } finally {
       setBusy(null);
     }
@@ -186,8 +186,11 @@ export function WorkspaceShell({
       onEnrollmentChange(updated);
       const nextActive = getActiveUserMilestone(updated.user_milestones);
       setSelectedUm(nextActive);
+      terminalRef.current?.echo("Milestone completed.");
     } catch (e) {
-      setOutput(e instanceof ApiError ? e.message : "Could not complete milestone");
+      terminalRef.current?.echo(
+        e instanceof ApiError ? e.message : "Could not complete milestone",
+      );
     } finally {
       setBusy(null);
     }
@@ -293,9 +296,11 @@ export function WorkspaceShell({
 
         <div className="flex min-w-0 flex-col">
           {milestoneDetail && (
-            <div className="border-b border-stone-800 bg-stone-900/30 px-4 py-3 text-sm">
+            <div className="max-h-28 shrink-0 overflow-y-auto border-b border-stone-800 bg-stone-900/30 px-4 py-3 text-sm">
               <p className="font-medium text-stone-200">{milestoneDetail.title}</p>
-              <p className="mt-1 text-stone-500">{milestoneDetail.instructions}</p>
+              <p className="mt-1 whitespace-pre-wrap text-stone-500">
+                {milestoneDetail.instructions}
+              </p>
             </div>
           )}
 
@@ -325,7 +330,7 @@ export function WorkspaceShell({
             </aside>
 
             <div className="flex min-w-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1">
+              <div className="min-h-0 flex-[3]">
                 {activeFile ? (
                   <CodeEditor
                     path={activeFile}
@@ -342,13 +347,12 @@ export function WorkspaceShell({
                   </div>
                 )}
               </div>
-              <div className="h-40 shrink-0 border-t border-stone-800 bg-stone-950 p-3 font-mono text-xs text-stone-400">
-                <p className="mb-1 text-[10px] uppercase tracking-wide text-stone-600">
-                  Output
-                </p>
-                <pre className="h-[calc(100%-1rem)] overflow-auto whitespace-pre-wrap">
-                  {output || "Run code or tests to see output here."}
-                </pre>
+              <div className="min-h-[11rem] flex-[2]">
+                <SandboxTerminal
+                  ref={terminalRef}
+                  userProjectId={userProjectId}
+                  onFsMutated={() => void refreshFiles()}
+                />
               </div>
             </div>
           </div>

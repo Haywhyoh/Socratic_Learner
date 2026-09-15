@@ -35,7 +35,6 @@ ALLOWED_BINARIES = frozenset(
         "echo",
         "which",
         "stat",
-        "tree",
     }
 )
 

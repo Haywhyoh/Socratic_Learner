@@ -84,7 +84,7 @@ SANDBOX_TIMEOUT_SEC=30
 SANDBOX_PIDS_LIMIT=64
 ```
 
-Workspaces live under `data/workspaces/{user_project_id}/` (gitignored). Containers use no network, CPU/memory/PID limits, and auto-cleanup. Allowlisted commands: `python`, `python3`, `pytest`.
+Workspaces live under `data/workspaces/{user_project_id}/` (gitignored). Containers use no network, CPU/memory/PID limits, and auto-cleanup. Allowlisted commands: `python`, `python3`, `pytest`, `uvicorn`, `pip`, plus common filesystem tools (`ls`, `mkdir`, `touch`, `cat`, `rm`, `mv`, `cp`, …). The Next.js workspace terminal sends `POST /sandbox/run` with a `command` string.
 
 This is a **local trust model**: the API host must be able to talk to the Docker daemon. Do not expose an unauthenticated Docker socket to learners. If the API cannot find Docker after Colima starts, set `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` and restart uvicorn.
 ### Run the API
@@ -231,9 +231,8 @@ python -m app.seed
 
 ## Out of scope (this slice)
 
-- Browser editor (Monaco / xterm)
+- Live interactive PTY / WebSocket streaming (terminal uses request/response run API)
 - Git teaching workflows
-- Frontend
 - OAuth / social login
 - Admin CRUD UI
 - Concept-mode tutor loop

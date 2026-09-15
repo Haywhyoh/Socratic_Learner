@@ -48,7 +48,6 @@ export const SandboxTerminal = forwardRef<
 >(function SandboxTerminal({ userProjectId, onFsMutated }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const lineRef = useRef("");
   const historyRef = useRef<string[]>([]);
   const historyIdxRef = useRef(-1);
@@ -61,11 +60,21 @@ export const SandboxTerminal = forwardRef<
     termRef.current?.write(promptLabel(cwdRef.current));
   }, []);
 
+  const replaceLine = useCallback((next: string) => {
+    const term = termRef.current;
+    if (!term) return;
+    while (lineRef.current.length > 0) {
+      lineRef.current = lineRef.current.slice(0, -1);
+      term.write("\b \b");
+    }
+    lineRef.current = next;
+    if (next) term.write(next);
+  }, []);
+
   const echo = useCallback((text: string) => {
     const term = termRef.current;
     if (!term) return;
-    const normalized = text.replace(/\r?\n/g, "\r\n");
-    term.write(`\r\n${normalized}`);
+    term.write("\r\n" + text.replace(/\r?\n/g, "\r\n"));
   }, []);
 
   const execute = useCallback(
@@ -90,8 +99,8 @@ export const SandboxTerminal = forwardRef<
         term.writeln("Examples:");
         term.writeln("  ls -la");
         term.writeln("  mkdir -p app");
-        term.writeln("  touch app/main.py");
-        term.writeln("  python -c \"from fastapi import FastAPI\"");
+        term.writeln("  touch app/__init__.py");
+        term.writeln('  python -c "from fastapi import FastAPI"');
         term.writeln("  uvicorn app.main:app --host 127.0.0.1 --port 8000");
         term.writeln("  pytest -q");
         term.writeln("  pip list");
@@ -103,6 +112,12 @@ export const SandboxTerminal = forwardRef<
         );
         term.writeln(
           "Long-running servers stop after the sandbox timeout (smoke-test only).",
+        );
+        term.writeln(
+          "If you see a Docker error: start Colima/Docker on your Mac (host), not here.",
+        );
+        term.writeln(
+          "  colima start && cd backend && docker build -t socratic-sandbox-python:latest sandbox",
         );
         writePrompt();
         return;
@@ -139,7 +154,10 @@ export const SandboxTerminal = forwardRef<
           command,
           cwd: cwdRef.current || null,
         });
-        const chunks = [res.stdout, res.stderr].filter(Boolean).join("\n").trimEnd();
+        const chunks = [res.stdout, res.stderr]
+          .filter(Boolean)
+          .join("\n")
+          .trimEnd();
         if (chunks) {
           term.write("\r\n" + chunks.replace(/\r?\n/g, "\r\n"));
         }
@@ -169,7 +187,9 @@ export const SandboxTerminal = forwardRef<
     () => ({
       echo,
       runCommand: async (command: string) => {
-        termRef.current?.write(`\r\n$ ${command}`);
+        const term = termRef.current;
+        if (!term) return;
+        term.write(`\r\n$ ${command}`);
         await execute(command);
       },
       focus: () => termRef.current?.focus(),
@@ -198,80 +218,74 @@ export const SandboxTerminal = forwardRef<
     term.open(hostRef.current);
     fit.fit();
     termRef.current = term;
-    fitRef.current = fit;
 
-    term.writeln("\x1b[1mSocratic sandbox\x1b[0m — type \x1b[33mhelp\x1b[0m for commands.");
+    term.writeln(
+      "\x1b[1mSocratic sandbox\x1b[0m — type \x1b[33mhelp\x1b[0m for commands.",
+    );
     term.write(promptLabel(""));
 
     const onData = term.onData((data) => {
       if (runningRef.current) return;
+
+      if (data === "\r") {
+        const line = lineRef.current;
+        lineRef.current = "";
+        if (line.trim()) {
+          historyRef.current.push(line);
+          historyIdxRef.current = historyRef.current.length;
+        }
+        void execute(line);
+        return;
+      }
+
+      if (data === "\x7f" || data === "\b") {
+        if (lineRef.current.length > 0) {
+          lineRef.current = lineRef.current.slice(0, -1);
+          term.write("\b \b");
+        }
+        return;
+      }
+
+      if (data === "\u0003") {
+        lineRef.current = "";
+        term.write("^C");
+        writePrompt();
+        return;
+      }
+
+      if (data === "\u000c") {
+        term.clear();
+        writePrompt();
+        if (lineRef.current) term.write(lineRef.current);
+        return;
+      }
+
+      if (data === "\x1b[A") {
+        if (historyRef.current.length === 0) return;
+        historyIdxRef.current = Math.max(0, historyIdxRef.current - 1);
+        replaceLine(historyRef.current[historyIdxRef.current] ?? "");
+        return;
+      }
+
+      if (data === "\x1b[B") {
+        if (historyRef.current.length === 0) return;
+        historyIdxRef.current = Math.min(
+          historyRef.current.length,
+          historyIdxRef.current + 1,
+        );
+        const next =
+          historyIdxRef.current >= historyRef.current.length
+            ? ""
+            : (historyRef.current[historyIdxRef.current] ?? "");
+        replaceLine(next);
+        return;
+      }
+
+      if (data.startsWith("\x1b")) return;
+
       for (const ch of data) {
         const code = ch.charCodeAt(0);
-        if (ch === "\r") {
-          const line = lineRef.current;
-          term.write("\r\n");
-          if (line.trim()) {
-            historyRef.current.push(line);
-            historyIdxRef.current = historyRef.current.length;
-          }
-          lineRef.current = "";
-          void execute(line);
-          return;
-        }
-        if (code === 127 || code === 8) {
-          if (lineRef.current.length > 0) {
-            lineRef.current = lineRef.current.slice(0, -1);
-            term.write("\b \b");
-          }
-          return;
-        }
-        if (code === 3) {
-          // Ctrl+C
-          lineRef.current = "";
-          term.write("^C");
-          writePrompt();
-          return;
-        }
-        if (code === 12) {
-          // Ctrl+L
-          term.clear();
-          writePrompt();
-          term.write(lineRef.current);
-          return;
-        }
-        if (ch === "\x1b[A") {
-          // Up
-          if (historyRef.current.length === 0) return;
-          historyIdxRef.current = Math.max(0, historyIdxRef.current - 1);
-          const prev = historyRef.current[historyIdxRef.current] ?? "";
-          while (lineRef.current.length > 0) {
-            lineRef.current = lineRef.current.slice(0, -1);
-            term.write("\b \b");
-          }
-          lineRef.current = prev;
-          term.write(prev);
-          return;
-        }
-        if (ch === "\x1b[B") {
-          // Down
-          if (historyRef.current.length === 0) return;
-          historyIdxRef.current = Math.min(
-            historyRef.current.length,
-            historyIdxRef.current + 1,
-          );
-          const next =
-            historyIdxRef.current >= historyRef.current.length
-              ? ""
-              : (historyRef.current[historyIdxRef.current] ?? "");
-          while (lineRef.current.length > 0) {
-            lineRef.current = lineRef.current.slice(0, -1);
-            term.write("\b \b");
-          }
-          lineRef.current = next;
-          term.write(next);
-          return;
-        }
-        if (code < 32) return;
+        if (code < 32) continue;
         lineRef.current += ch;
         term.write(ch);
       }
@@ -288,9 +302,8 @@ export const SandboxTerminal = forwardRef<
       ro.disconnect();
       term.dispose();
       termRef.current = null;
-      fitRef.current = null;
     };
-  }, [execute, writePrompt]);
+  }, [execute, replaceLine, writePrompt]);
 
   return (
     <div className="flex h-full min-h-0 flex-col border-t border-stone-800 bg-stone-950">
@@ -304,7 +317,7 @@ export const SandboxTerminal = forwardRef<
       </div>
       <div
         ref={hostRef}
-        className="min-h-0 flex-1 px-2 py-1 [&_.xterm]:h-full [&_.xterm-viewport]:overflow-auto!"
+        className="min-h-0 flex-1 px-2 py-1 [&_.xterm]:h-full"
         onClick={() => termRef.current?.focus()}
       />
     </div>
