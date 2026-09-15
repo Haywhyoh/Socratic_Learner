@@ -168,6 +168,7 @@ export function WorkspaceShell({
     }
   };
 
+  const runPython = async () => {
     if (!userProjectId) return;
     if (dirty && activeFile) await saveFile();
     setBusy("run");

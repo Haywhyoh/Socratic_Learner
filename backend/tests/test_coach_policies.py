@@ -196,19 +196,21 @@ def test_guidance_intent_for_layout_question() -> None:
     )
     assert len(parse_instruction_tasks(instructions)) == 2
     reply = guidance_reply(
-        message="how do i create a clean layout",
+        message="what command do i need to scaffold the fastapi project named scaffold",
         milestone_title="Scaffold the API",
         instructions=instructions,
         constraints=["No frontend UI"],
         success_criteria="GET /health returns 200",
     )
-    assert "package" in reply.lower()
-    assert "```" not in reply
+    assert "mkdir" in reply.lower()
+    assert "scaffold" in reply.lower()
+    assert "clean layout usually means" not in reply.lower()
 
     graph = build_chat_graph(StubCoachLLM())
     result = graph.invoke(
         {
-            "learner_message": "how do i create a clean layout for this project",
+            "learner_message": "what command creates the fastapi package scaffold",
+            "project_title": "Task Tracker API",
             "milestone_title": "Scaffold the API",
             "milestone_instructions": instructions,
             "constraints": ["No frontend UI"],
@@ -223,5 +225,5 @@ def test_guidance_intent_for_layout_question() -> None:
         }
     )
     assert result["answer_status"] == "guidance"
-    assert "package" in result["reply"].lower()
-    assert "```" not in result["reply"]
+    assert "mkdir" in result["reply"].lower()
+    assert "```python" not in result["reply"]

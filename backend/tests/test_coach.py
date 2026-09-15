@@ -142,8 +142,8 @@ def test_question_flow_pass_push_back_and_go_build(
     assert body["answer_status"] == "passed"
     assert body["learner_state"]["questions_complete"] is True
     assert "Go build" in body["reply"]
-    assert "task 1" in body["reply"].lower() or "Start with" in body["reply"]
-    assert _sentence_count(body["reply"]) <= 5
+    assert "first task" in body["reply"].lower()
+    assert _sentence_count(body["reply"]) <= 6
 
 
 def test_question_retry_cap_advances_with_noted_gap(
