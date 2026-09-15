@@ -515,19 +515,18 @@ DEFENSE_QUESTIONS = [
 def start_defense(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
     user_project = _user_project(db, user, user_project_id)
     position = curriculum_graph.resolve_current_position(db, user_project)
-    if not position.get("project_complete"):
-        last = sorted(
-            user_project.user_milestones,
-            key=lambda um: um.milestone.order_index if um.milestone else 0,
-        )
-        if not last or (last[-1].milestone and last[-1].milestone.order_index < 12):
-            # Allow starting defense on M12 even if not yet marked complete.
-            current = current_user_milestone(user_project)
-            if current is None or not current.milestone or current.milestone.order_index < 12:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Finish earlier milestones before the final defense",
-                )
+    current = current_user_milestone(user_project)
+    if not position.get("project_complete") and current is not None and current.milestone:
+        later = [
+            um
+            for um in user_project.user_milestones
+            if um.milestone and um.milestone.order_index > current.milestone.order_index
+        ]
+        if later:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Finish earlier milestones before the final defense",
+            )
     row = (
         db.query(ProjectDefense)
         .filter(ProjectDefense.user_project_id == user_project.id)

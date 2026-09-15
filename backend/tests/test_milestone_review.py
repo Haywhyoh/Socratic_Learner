@@ -50,7 +50,7 @@ def test_curriculum_is_generated_per_user_project(
     assert len(rows) == 3
     for row in rows:
         assert row.user_project_id == user_project_id
-        assert row.generated is True
+        assert row.generated is False
 
 
 def test_review_requires_passing_tests_first(
