@@ -41,6 +41,20 @@ from app.services import curriculum_graph
 from app.services import learning as learning_service
 
 
+def _normalize_gap(value: Any) -> dict[str, Any] | None:
+    if not value:
+        return None
+    if isinstance(value, dict) and value.get("concept"):
+        try:
+            confidence = float(value.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return {"concept": str(value["concept"]), "confidence": confidence}
+    if isinstance(value, str) and value.strip():
+        return {"concept": value.strip()[:120], "confidence": 0.0}
+    return None
+
+
 def _user_project(db: Session, user: User, user_project_id: int) -> UserProject:
     return learning_service.get_user_project(db, user, user_project_id)
 
@@ -287,7 +301,9 @@ def _run_mentor(
             "action": contract.get("action") or "ASK_QUESTION",
             "message": reply,
             "diagnostic_concept": contract.get("diagnostic_concept"),
-            "identified_gap": contract.get("identified_gap") or result.get("identified_gap"),
+            "identified_gap": _normalize_gap(
+                contract.get("identified_gap") or result.get("identified_gap")
+            ),
             "hint_level": contract.get("hint_level") or 0,
             "should_unlock": bool(contract.get("should_unlock") or result.get("should_unlock")),
             "next_state": next_state,

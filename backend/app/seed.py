@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.course import Course, CourseOption
 from app.models.curriculum import Concept, ConceptDependency, MilestoneConcept
+from app.models.enrollment import Enrollment
 from app.models.project import Milestone, Project, ProjectCurriculumMode, ProjectDifficulty
 from app.seed_js_backend_framework import CONCEPTS, DEPENDENCIES, MILESTONES, PROJECT_SPEC
 
@@ -219,7 +220,20 @@ def _ensure_project(
     return project
 
 
+def _retire_legacy_catalog(db: Session) -> None:
+    """Remove leftover stub courses/projects from earlier seeds."""
+    stale = db.query(Course).filter(Course.slug != "javascript").all()
+    if not stale:
+        return
+    ids = [course.id for course in stale]
+    db.query(Enrollment).filter(Enrollment.course_id.in_(ids)).delete(synchronize_session=False)
+    db.query(Project).filter(Project.course_id.in_(ids)).delete(synchronize_session=False)
+    db.query(Course).filter(Course.id.in_(ids)).delete(synchronize_session=False)
+    print(f"Removed {len(ids)} legacy course(s).")
+
+
 def seed(db: Session) -> None:
+    _retire_legacy_catalog(db)
     course, primary, secondary = _seed_course(db)
     _sync_concepts(db)
     _sync_dependencies(db)

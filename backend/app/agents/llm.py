@@ -570,13 +570,22 @@ class LangChainCoachLLM:
             raw = self._invoke(prompt)
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             payload = json.loads(match.group(0) if match else raw)
+            gap = payload.get("identified_gap")
+            if isinstance(gap, str):
+                gap = {"concept": gap.strip(), "confidence": 0.0} if gap.strip() else None
+            elif not isinstance(gap, dict):
+                gap = None
+            try:
+                hint_level = int(payload.get("hint_level") or 0)
+            except (TypeError, ValueError):
+                hint_level = 0
             return {
                 "intent": str(payload.get("intent") or "MENTOR"),
                 "action": str(payload.get("action") or action_hint),
                 "message": str(payload.get("message") or ""),
                 "diagnostic_concept": payload.get("diagnostic_concept"),
-                "identified_gap": payload.get("identified_gap"),
-                "hint_level": int(payload.get("hint_level") or 0),
+                "identified_gap": gap,
+                "hint_level": hint_level,
                 "should_unlock": bool(payload.get("should_unlock")),
                 "next_state": str(payload.get("next_state") or ""),
             }

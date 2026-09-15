@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.coach import MentorSessionStatus, MentorTurnRole, MilestoneReviewVerdict
 from app.models.learning_state import ConceptStatus, DefenseVerdict, RetrievalCheckStatus
@@ -77,6 +77,16 @@ class MentorContractRead(BaseModel):
     hint_level: int = 0
     should_unlock: bool = False
     next_state: str = ""
+
+    @field_validator("identified_gap", mode="before")
+    @classmethod
+    def coerce_identified_gap(cls, value: Any) -> Any:
+        if value is None or value is False:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return {"concept": cleaned[:120], "confidence": 0.0} if cleaned else None
+        return value
 
 
 class ConceptRead(BaseModel):
