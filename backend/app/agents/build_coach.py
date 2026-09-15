@@ -4,28 +4,6 @@ from __future__ import annotations
 
 import re
 
-from app.agents.policies import parse_instruction_tasks
-
-_ADVANCE_MARKERS = (
-    "done",
-    "finished",
-    "completed",
-    "next step",
-    "what's next",
-    "whats next",
-    "ready for next",
-    "i did that",
-    "i did it",
-    "i created",
-    "i ran",
-    "it worked",
-    "worked",
-    "success",
-    "ok next",
-    "move on",
-    "continue",
-)
-
 _STUCK_MARKERS = (
     "stuck",
     "error",
@@ -41,8 +19,19 @@ _STUCK_MARKERS = (
 )
 
 
+def _parse_tasks(instructions: str) -> list[str]:
+    tasks: list[str] = []
+    for line in (instructions or "").splitlines():
+        match = re.match(r"^\s*(?:\d+[.)]\s+|[-*]\s+)(.+)$", line)
+        if match:
+            text = match.group(1).strip()
+            if text:
+                tasks.append(text)
+    return tasks
+
+
 def build_steps_for_milestone(instructions: str) -> list[str]:
-    steps = parse_instruction_tasks(instructions)
+    steps = _parse_tasks(instructions)
     if steps:
         return steps
     return [
@@ -53,11 +42,17 @@ def build_steps_for_milestone(instructions: str) -> list[str]:
 
 
 def detect_build_step_advance(message: str) -> bool:
+    """True only when the learner clearly finished the current step."""
     lower = message.lower().strip()
-    if any(m in lower for m in _ADVANCE_MARKERS):
+    if lower in {"next", "ok", "okay", "yes", "yep", "done", "done.", "done!"}:
         return True
-    # Short confirmations after prior guidance
-    if lower in {"next", "ok", "okay", "yes", "yep", "done.", "done!"}:
+    if re.search(r"\b(what's next|whats next|next step|ready for next|move on)\b", lower):
+        return True
+    if re.search(r"\bdone\b", lower) and re.search(
+        r"\b(step|task|folder|created|ran|worked|finished this)\b", lower
+    ):
+        return True
+    if re.search(r"\bi (created|ran|finished) (the |this )?(step|task|folders?|files?)\b", lower):
         return True
     return False
 
@@ -88,7 +83,7 @@ def enforce_single_build_step(text: str) -> str:
             cut_points.append(match.start())
     if cut_points:
         cleaned = cleaned[: min(cut_points)].rstrip()
-        if "when that works" not in cleaned.lower() and "reply" not in cleaned.lower():
+        if "when that works" not in cleaned.lower() and "**done**" not in cleaned.lower():
             cleaned += (
                 "\n\nWhen that works, reply with **done** (or paste the terminal output) "
                 "and I'll give the next step only."

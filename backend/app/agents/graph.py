@@ -169,9 +169,7 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
                 # First build step only — do not dump the whole milestone.
                 boot_state = {
                     **state,
-                    "learner_message": (
-                        "I finished the checkpoints. What is the first build step?"
-                    ),
+                    "learner_message": "What is the first build step?",
                     "build_step_index": 0,
                     "build_steps": build_steps_for_milestone(
                         state.get("milestone_instructions") or ""

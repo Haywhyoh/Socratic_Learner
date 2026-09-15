@@ -160,8 +160,8 @@ export function CoachPanel({
       ];
 
   return (
-    <div className="flex h-full flex-col border-l border-stone-800 bg-stone-900/50">
-      <div className="border-b border-stone-800 px-4 py-3">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden border-l border-stone-800 bg-stone-900/50">
+      <div className="shrink-0 border-b border-stone-800 px-4 py-3">
         <h2 className="font-serif text-lg text-stone-100">Senior Engineer</h2>
         <p className="text-xs text-stone-500">
           Ask specific questions — commands, errors, design. I won&apos;t paste the full app.
@@ -179,7 +179,7 @@ export function CoachPanel({
       </div>
 
       {currentQuestion && !questionsDone && (
-        <div className="border-b border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-100/90">
+        <div className="shrink-0 border-b border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-100/90">
           <span className="text-xs font-medium uppercase tracking-wide text-amber-500">
             Think first — checkpoint
           </span>
@@ -190,7 +190,7 @@ export function CoachPanel({
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {turns.length === 0 && (
           <div className="space-y-2 text-sm text-stone-500">
             <p>
@@ -219,10 +219,10 @@ export function CoachPanel({
       </div>
 
       {hintMeta && (
-        <p className="px-4 pb-2 text-xs text-amber-600/90">{hintMeta}</p>
+        <p className="shrink-0 px-4 pb-2 text-xs text-amber-600/90">{hintMeta}</p>
       )}
 
-      <div className="space-y-2 border-t border-stone-800 p-3">
+      <div className="shrink-0 space-y-2 border-t border-stone-800 p-3">
         <div className="flex flex-wrap gap-1.5">
           {suggestions.map((prompt) => (
             <button
@@ -274,7 +274,7 @@ export function CoachPanel({
       </div>
 
       {cards.length > 0 && (
-        <div className="max-h-40 overflow-y-auto border-t border-stone-800 p-3">
+        <div className="max-h-40 shrink-0 overflow-y-auto border-t border-stone-800 p-3">
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-stone-500">
             Concept cards
           </p>

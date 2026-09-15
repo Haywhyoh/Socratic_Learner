@@ -161,6 +161,7 @@ def test_build_step_advances_on_done() -> None:
     assert detect_build_step_advance("done")
     assert detect_build_step_advance("I created the folders, what's next?")
     assert not detect_build_step_advance("how do i create the folders?")
+    assert not detect_build_step_advance("I finished the checkpoints. What is the first build step?")
 
 
 def test_brevity_enforced() -> None:

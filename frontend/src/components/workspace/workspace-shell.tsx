@@ -2,16 +2,16 @@
 
 import Link from "next/link";
 import {
-  FileCode,
   Play,
   FlaskConical,
   Save,
   Loader2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/workspace/code-editor";
 import { CoachPanel } from "@/components/workspace/coach-panel";
+import { FileTree } from "@/components/workspace/file-tree";
 import { MilestoneRail } from "@/components/workspace/milestone-rail";
 import {
   SandboxTerminal,
@@ -74,11 +74,6 @@ export function WorkspaceShell({
     enrollment.assigned_project?.title ??
     enrollment.user_project?.project?.title ??
     "Project";
-
-  const filePaths = useMemo(
-    () => files.filter((f) => !f.is_dir).map((f) => f.path),
-    [files],
-  );
 
   const refreshFiles = useCallback(async () => {
     if (!userProjectId) return;
@@ -255,7 +250,7 @@ export function WorkspaceShell({
   const milestoneDetail = displayUm?.milestone;
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] flex-col">
+    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-800 px-4">
         <div>
           <Link
@@ -339,20 +334,22 @@ export function WorkspaceShell({
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr_360px]">
-        <MilestoneRail
-          userMilestones={userMilestones}
-          selectedId={displayUm?.id ?? null}
-          activeTaskId={activeTask?.id ?? null}
-          onSelect={(um) => {
-            setSelectedUm(um);
-            const tasks = parseMilestoneTasks(um.milestone?.instructions);
-            setActiveTask(tasks[0] ?? null);
-          }}
-          onSelectTask={setActiveTask}
-        />
+      <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr_360px] overflow-hidden">
+        <div className="min-h-0 overflow-hidden">
+          <MilestoneRail
+            userMilestones={userMilestones}
+            selectedId={displayUm?.id ?? null}
+            activeTaskId={activeTask?.id ?? null}
+            onSelect={(um) => {
+              setSelectedUm(um);
+              const tasks = parseMilestoneTasks(um.milestone?.instructions);
+              setActiveTask(tasks[0] ?? null);
+            }}
+            onSelectTask={setActiveTask}
+          />
+        </div>
 
-        <div className="flex min-w-0 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           {milestoneDetail && (
             <div className="shrink-0 border-b border-stone-800 bg-stone-900/30 px-4 py-3 text-sm">
               <p className="font-medium text-stone-200">{milestoneDetail.title}</p>
@@ -370,33 +367,20 @@ export function WorkspaceShell({
             </div>
           )}
 
-          <div className="flex min-h-0 flex-1">
-            <aside className="w-44 shrink-0 overflow-y-auto border-r border-stone-800 bg-stone-950 p-2">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <aside className="w-52 shrink-0 overflow-y-auto border-r border-stone-800 bg-stone-950 p-2">
               <p className="px-2 py-1 text-xs font-medium uppercase text-stone-600">
                 Files
               </p>
-              <ul className="space-y-0.5">
-                {filePaths.map((path) => (
-                  <li key={path}>
-                    <button
-                      type="button"
-                      onClick={() => void loadFile(path)}
-                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${
-                        activeFile === path
-                          ? "bg-stone-800 text-amber-200"
-                          : "text-stone-400 hover:bg-stone-900"
-                      }`}
-                    >
-                      <FileCode className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{path}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <FileTree
+                entries={files}
+                activePath={activeFile}
+                onSelectFile={(path) => void loadFile(path)}
+              />
             </aside>
 
-            <div className="flex min-w-0 flex-1 flex-col">
-              <div className="min-h-0 flex-[3]">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-[3] overflow-hidden">
                 {activeFile ? (
                   <CodeEditor
                     path={activeFile}
@@ -413,7 +397,7 @@ export function WorkspaceShell({
                   </div>
                 )}
               </div>
-              <div className="min-h-[11rem] flex-[2]">
+              <div className="min-h-0 flex-[2] overflow-hidden">
                 <SandboxTerminal
                   ref={terminalRef}
                   userProjectId={userProjectId}
@@ -425,16 +409,18 @@ export function WorkspaceShell({
         </div>
 
         {coachReady && (
-          <CoachPanel
-            userProjectId={userProjectId}
-            userMilestoneId={activeUm?.id ?? null}
-            milestoneTitle={displayUm?.milestone?.title}
-            activeTask={activeTask}
-            questionsComplete={questionsComplete}
-            initialReply={coachBoot.reply}
-            initialQuestion={coachBoot.question}
-            initialCards={coachBoot.cards}
-          />
+          <div className="min-h-0 overflow-hidden">
+            <CoachPanel
+              userProjectId={userProjectId}
+              userMilestoneId={activeUm?.id ?? null}
+              milestoneTitle={displayUm?.milestone?.title}
+              activeTask={activeTask}
+              questionsComplete={questionsComplete}
+              initialReply={coachBoot.reply}
+              initialQuestion={coachBoot.question}
+              initialCards={coachBoot.cards}
+            />
+          </div>
         )}
       </div>
       <ProjectBriefModal

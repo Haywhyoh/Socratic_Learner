@@ -30,14 +30,14 @@ export function MilestoneRail({
   const active = getActiveUserMilestone(userMilestones);
 
   return (
-    <nav className="flex h-full flex-col border-r border-stone-800 bg-stone-950">
-      <div className="border-b border-stone-800 px-4 py-4">
+    <nav className="flex h-full min-h-0 flex-col overflow-hidden border-r border-stone-800 bg-stone-950">
+      <div className="shrink-0 border-b border-stone-800 px-4 py-4">
         <h2 className="font-serif text-lg text-stone-100">Milestones</h2>
         <p className="text-xs text-stone-500">
           Tasks unlock with the milestone — work them in order.
         </p>
       </div>
-      <ol className="flex-1 space-y-1 overflow-y-auto p-2">
+      <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
         {sorted.map((um, index) => {
           const phase = milestonePhase(um, active?.id ?? null);
           const title = um.milestone?.title ?? `Milestone ${index + 1}`;

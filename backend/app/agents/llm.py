@@ -155,7 +155,7 @@ class StubCoachLLM:
                 f"{header}\n"
                 + resource_hint(resources or [], topic=current)
             )
-        return guidance_reply(
+        body = guidance_reply(
             message=f"{message}\n(Focus only on: {current})",
             milestone_title=milestone_title,
             instructions=f"1. {current}",
@@ -163,6 +163,7 @@ class StubCoachLLM:
             success_criteria=success_criteria,
             project_title=project_title,
         )
+        return f"{header}\n{body}\n\nWhen that works, reply **done** for the next step only."
 
     def generate_curriculum(
         self,

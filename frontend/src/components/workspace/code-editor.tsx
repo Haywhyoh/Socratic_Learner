@@ -29,22 +29,25 @@ export function CodeEditor({ path, value, onChange, onSave }: CodeEditorProps) {
   };
 
   return (
-    <Editor
-      height="100%"
-      path={path}
-      language={languageForPath(path)}
-      value={value}
-      theme="vs-dark"
-      onChange={(v) => onChange(v ?? "")}
-      onMount={handleMount}
-      options={{
-        fontSize: 14,
-        fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        padding: { top: 12 },
-        wordWrap: "on",
-      }}
-    />
+    <div className="h-full min-h-0 overflow-hidden">
+      <Editor
+        height="100%"
+        path={path}
+        language={languageForPath(path)}
+        value={value}
+        theme="vs-dark"
+        onChange={(v) => onChange(v ?? "")}
+        onMount={handleMount}
+        options={{
+          fontSize: 14,
+          fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+          minimap: { enabled: false },
+          scrollBeyondLastLine: false,
+          padding: { top: 12 },
+          wordWrap: "on",
+          automaticLayout: true,
+        }}
+      />
+    </div>
   );
 }
