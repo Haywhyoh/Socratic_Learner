@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
 from app.models.curriculum import Concept, ConceptDependency, MilestoneConcept
@@ -419,6 +420,33 @@ def mark_discussing(db: Session, user_project: UserProject, concept_id: str) -> 
     }:
         row.status = ConceptStatus.discussing
         db.flush()
+    return row
+
+
+def record_learner_answer(
+    db: Session,
+    user_project: UserProject,
+    concept_id: str,
+    message: str,
+    *,
+    misconception_id: str | None = None,
+    phase: str | None = None,
+) -> ConceptState:
+    """Count a chat answer and keep a short history for misconception routing."""
+    row = get_or_create_state(db, user_project, concept_id)
+    row.attempt_count = int(row.attempt_count or 0) + 1
+    row.last_explanation = message.strip()[:4000]
+    answers = list(row.diagnostic_answers or [])
+    answers.append(
+        {
+            "answer": message.strip()[:2000],
+            "misconception_id": misconception_id,
+            "phase": phase,
+        }
+    )
+    row.diagnostic_answers = answers[-20:]
+    flag_modified(row, "diagnostic_answers")
+    db.flush()
     return row
 
 

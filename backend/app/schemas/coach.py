@@ -95,7 +95,7 @@ class ConceptRead(BaseModel):
     category: str = ""
     description: str = ""
     learning_objectives: list[str] = []
-    misconceptions: list[str] = []
+    misconceptions: list[Any] = []
     diagnostic_questions: list[str] = []
     research_questions: list[str] = []
     resources: list[ResourceRead] = []

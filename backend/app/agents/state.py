@@ -1,4 +1,4 @@
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 class CatalogMilestone(TypedDict):
@@ -81,12 +81,15 @@ class MentorState(TypedDict, total=False):
     resources: list[dict[str, str]]
     diagnostic_questions: list[str]
     research_questions: list[str]
-    misconceptions: list[str]
+    misconceptions: list[Any]
     hints: list[str]
     learning_objectives: list[str]
     needs_build: bool
     gap_reason: str
     learner_message: str
+    diagnostic_answers: NotRequired[list[Any]]
+    misconception_branch: NotRequired[str | None]
+    identified_misconception: NotRequired[dict[str, Any] | None]
     intent: str
     effort: EffortSignals
     hint_level: int

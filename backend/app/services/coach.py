@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.agents.llm import get_coach_llm
 from app.agents.mentor_graph import _behaviors_for, build_mentor_graph
+from app.agents.misconceptions import classify_learner_turn, is_boot_message
 from app.agents.policies import (
     MAX_REVIEW_ATTEMPTS,
     message_looks_like_attempt,
@@ -221,6 +222,7 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
             "diagnostic_questions": list((concept.diagnostic_questions if concept else None) or []),
             "research_questions": list((concept.research_questions if concept else None) or []),
             "misconceptions": list((concept.misconceptions if concept else None) or []),
+            "diagnostic_answers": list((state_row.diagnostic_answers if state_row else None) or []),
             "hints": list((concept.hints if concept else None) or []),
             "learning_objectives": list((concept.learning_objectives if concept else None) or []),
             "needs_build": curriculum_graph.needs_build(concept) if concept else False,
@@ -262,6 +264,35 @@ def _run_mentor(
     session = _session(db, user_project)
     ctx = _mentor_context(db, user_project)
     graph_state = dict(ctx["graph_state"])
+    state_row = ctx["state_row"]
+    concept = ctx["concept"]
+    prior_answers = list((state_row.diagnostic_answers if state_row else None) or [])
+    classified: dict[str, Any] = {
+        "branch": None,
+        "misconception": None,
+        "phase": None,
+    }
+    if state_row and not is_boot_message(message):
+        classified = classify_learner_turn(
+            message,
+            list((concept.misconceptions if concept else None) or []),
+            prior_answers,
+            attempt_count_after=int(state_row.attempt_count or 0) + 1,
+        )
+        misc = classified.get("misconception") or {}
+        curriculum_graph.record_learner_answer(
+            db,
+            user_project,
+            state_row.concept_id,
+            message,
+            misconception_id=misc.get("id") if isinstance(misc, dict) else None,
+            phase=classified.get("phase"),
+        )
+        graph_state["attempt_count"] = int(state_row.attempt_count or 0)
+        graph_state["learner_last_explanation"] = message
+    graph_state["diagnostic_answers"] = prior_answers
+    graph_state["misconception_branch"] = classified.get("branch")
+    graph_state["identified_misconception"] = classified.get("misconception")
     graph_state["learner_message"] = message
     graph_state["effort"] = effort or {
         "learner_turns_since_hint": 1,

@@ -10,7 +10,7 @@ currently allows (see app/services/curriculum_graph.py).
 Each concept dict has:
     id, title, category, description
     learning_objectives: list[str]
-    misconceptions: list[str]
+    misconceptions: list[str] | list[dict]
     diagnostic_questions: list[str]   -- used for the optional prerequisite-skip quiz
     research_questions: list[str]    -- "research this before I explain it"
     resources: list[{"title", "url"}]
@@ -49,8 +49,121 @@ CONCEPTS: list[ConceptSpec] = [
             "Explain, in your own words, what a closure captures and why",
         ],
         "misconceptions": [
-            "Thinking a callback runs immediately when passed, not when invoked",
-            "Believing closures copy variables instead of capturing references",
+            {
+                "id": "callback-runs-when-passed",
+                "description": (
+                    "The learner thinks passing a function as an argument immediately runs it."
+                ),
+                "signals": [
+                    "runs immediately",
+                    "as soon as you pass",
+                    "when you pass it",
+                    "passing executes",
+                    "it runs because you passed",
+                ],
+                "diagnostic_questions": [
+                    "Does the function run at the moment it is passed, or later?",
+                    "Which line would you delete to stop the callback from ever running?",
+                ],
+                "remediation": {
+                    "type": "trace_execution",
+                    "script": (
+                        "I think we've found the part that's unclear.\n\n"
+                        "Passing a function and calling a function are two different events.\n\n"
+                        "```javascript\n"
+                        "function later(cb) {\n"
+                        "  cb();\n"
+                        "}\n"
+                        "later(() => console.log('inside'));\n"
+                        "```\n\n"
+                        "Two separate answers, please:\n"
+                        "1. Which line *passes* the function?\n"
+                        "2. Which exact line *invokes* it?"
+                    ),
+                },
+            },
+            {
+                "id": "callback-caller-confusion",
+                "description": (
+                    "The learner confuses passing a callback with invoking it: they think "
+                    "the caller of the outer function is what executes the callback."
+                ),
+                "signals": [
+                    "the person who called",
+                    "who called myfunction",
+                    "the caller of myfunction",
+                    "the one that called myfunction",
+                    "the person who called myfunction",
+                    "because we have the callback function line called next",
+                    "the caller executes the callback",
+                    "the callback runs because it appears as an argument",
+                ],
+                "diagnostic_questions": [
+                    "Which line passes the function?",
+                    "Which line invokes the function?",
+                    "What happens if cb() is removed?",
+                ],
+                "remediation": {
+                    "type": "trace_execution",
+                    "script": (
+                        "I think we've found the part that's unclear.\n\n"
+                        "You're distinguishing when `myFunction` is called, but we're asking "
+                        "when the *callback itself* is called. Those are two different events.\n\n"
+                        "```javascript\n"
+                        "function myFunction(cb) {\n"
+                        "  console.log('before');\n"
+                        "  cb();\n"
+                        "  console.log('after');\n"
+                        "}\n"
+                        "myFunction(() => console.log('inside'));\n"
+                        "```\n\n"
+                        "Two separate answers, please — don't merge them:\n"
+                        "1. What does `myFunction(() => console.log('inside'))` do?\n"
+                        "2. What does the `cb();` line do?\n\n"
+                        "If the execution order (before → inside → after) was already clear, "
+                        "keep that. The remaining error is *who invokes* the callback."
+                    ),
+                    "retest_script": (
+                        "Exactly. Passing and invoking are different events.\n\n"
+                        "Now prove you can see that without the parameter being named `cb`:\n\n"
+                        "```javascript\n"
+                        "function run(operation) {\n"
+                        "  console.log('start');\n"
+                        "  operation();\n"
+                        "  console.log('end');\n"
+                        "}\n"
+                        "run(() => console.log('work'));\n"
+                        "```\n\n"
+                        "Two separate answers:\n"
+                        "1. Which line passes the function?\n"
+                        "2. Which line invokes it?"
+                    ),
+                },
+            },
+            {
+                "id": "closure-copies-values",
+                "description": (
+                    "The learner thinks a closure copies outer variables instead of capturing them."
+                ),
+                "signals": [
+                    "copies the variable",
+                    "copies the value",
+                    "snapshot of the variable",
+                    "saves a copy",
+                ],
+                "diagnostic_questions": [
+                    "If the outer variable changes after the inner function is created, what does the inner function see?",
+                ],
+                "remediation": {
+                    "type": "targeted_question",
+                    "script": (
+                        "I think we've found the part that's unclear.\n\n"
+                        "A closure does not copy the outer variable. It keeps a live link to it.\n\n"
+                        "If `let n = 1` and an inner function reads `n`, then later `n = 2`, "
+                        "what does the inner function print when you call it?"
+                    ),
+                },
+            },
         ],
         "diagnostic_questions": [
             "What is a callback function?",

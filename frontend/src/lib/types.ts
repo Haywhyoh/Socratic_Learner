@@ -241,7 +241,7 @@ export interface ConceptRead {
   category: string;
   description: string;
   learning_objectives: string[];
-  misconceptions: string[];
+  misconceptions: Array<string | Record<string, unknown>>;
   diagnostic_questions: string[];
   research_questions: string[];
   resources: { title: string; url: string }[];

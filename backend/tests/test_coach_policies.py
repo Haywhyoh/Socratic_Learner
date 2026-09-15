@@ -102,3 +102,122 @@ def test_mentor_graph_holds_when_blocked() -> None:
     )
     assert "middleware" not in result["reply"].lower() or "later" in result["reply"].lower()
     assert result["contract"]["intent"] == "DIAGNOSE"
+
+
+def _functions_misconceptions() -> list:
+    from app.seed_js_backend_framework import CONCEPTS
+
+    for concept in CONCEPTS:
+        if concept["id"] == "programming.functions":
+            return list(concept["misconceptions"])
+    raise AssertionError("programming.functions is missing from the seed")
+
+
+def test_string_misconceptions_still_detect_caller_confusion() -> None:
+    from app.agents.misconceptions import match_misconception
+
+    matched = match_misconception(
+        "the person who called myFunction.",
+        ["Thinking a callback runs immediately when passed, not when invoked"],
+    )
+    assert matched is not None
+    assert matched["id"] == "callback-caller-confusion"
+
+
+def test_callback_caller_confusion_is_detected() -> None:
+    from app.agents.misconceptions import match_misconception
+
+    specs = _functions_misconceptions()
+    matched = match_misconception("the person who called myFunction.", specs)
+    assert matched is not None
+    assert matched["id"] == "callback-caller-confusion"
+
+
+def test_correct_callback_intuition_is_not_a_misconception() -> None:
+    from app.agents.misconceptions import match_misconception
+
+    specs = _functions_misconceptions()
+    assert match_misconception("it only logs when something else calls it", specs) is None
+
+
+def test_mixed_order_plus_caller_confusion_is_still_detected() -> None:
+    from app.agents.misconceptions import match_misconception
+
+    specs = _functions_misconceptions()
+    matched = match_misconception(
+        "so the order is before, inside and after. the person who called myFunction.",
+        specs,
+    )
+    assert matched is not None
+    assert matched["id"] == "callback-caller-confusion"
+
+
+def test_mentor_remediates_instead_of_repeating_the_question() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "the person who called myFunction.",
+            "concept_state": "introduced",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "diagnostic_answers": [
+                {"answer": "it only logs when something else calls it", "phase": None}
+            ],
+            "attempt_count": 2,
+            "diagnostic_questions": ["What is a callback function?"],
+            "research_questions": [],
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert result["contract"]["action"] == "ASK_DIAGNOSTIC_QUESTION"
+    assert "two different events" in reply or "passing" in reply
+    assert "cb()" in result["reply"] or "cb();" in result["reply"]
+    assert "good observation" not in reply
+    assert "great job" not in reply
+    assert result["next_state"] == "discussing"
+
+
+def test_mentor_retests_after_learner_names_the_distinction() -> None:
+    from app.agents.misconceptions import classify_learner_turn
+
+    specs = _functions_misconceptions()
+    classified = classify_learner_turn(
+        "The first passes the function. The second executes it.",
+        specs,
+        [{"answer": "the person who called myFunction.", "misconception_id": "callback-caller-confusion", "phase": "detected"}],
+        attempt_count_after=3,
+    )
+    assert classified["branch"] == "retest"
+
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "The first passes the function. The second executes it.",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": specs,
+            "identified_misconception": next(
+                item for item in specs if item["id"] == "callback-caller-confusion"
+            ),
+            "diagnostic_answers": [
+                {
+                    "answer": "the person who called myFunction.",
+                    "misconception_id": "callback-caller-confusion",
+                    "phase": "detected",
+                }
+            ],
+            "attempt_count": 3,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    assert "operation" in result["reply"]
+    assert "good observation" not in result["reply"].lower()

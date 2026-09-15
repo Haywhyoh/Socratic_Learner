@@ -643,6 +643,58 @@ def fallback_mentor_contract(
             "should_unlock": False,
             "next_state": "diagnosis",
         }
+    if action_hint in {"REMEDIATE", "ASK_DIAGNOSTIC_QUESTION"}:
+        misc = context.get("identified_misconception") or {}
+        description = ""
+        if isinstance(misc, dict):
+            description = str(misc.get("description") or "")
+            script = (misc.get("remediation") or {}).get("script") if isinstance(misc.get("remediation"), dict) else None
+            if isinstance(script, str) and script.strip():
+                message_out = script.strip()
+            else:
+                message_out = (
+                    "I think we've found the part that's unclear.\n\n"
+                    f"{description or 'You are mixing two different actions.'}\n"
+                    "Which exact line of code does each action?"
+                )
+        else:
+            message_out = (
+                "I think we've found the part that's unclear. "
+                "Which exact line of code does the action you just described?"
+            )
+        return {
+            "intent": "DIAGNOSE",
+            "action": "ASK_DIAGNOSTIC_QUESTION",
+            "message": message_out,
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "discussing",
+        }
+    if action_hint == "RETEST":
+        misc = context.get("identified_misconception") or {}
+        script = None
+        if isinstance(misc, dict) and isinstance(misc.get("remediation"), dict):
+            script = misc["remediation"].get("retest_script")
+        message_out = (
+            script.strip()
+            if isinstance(script, str) and script.strip()
+            else (
+                "Exactly. Now test the same distinction in a new example.\n"
+                "Which line passes the function, and which line invokes it?"
+            )
+        )
+        return {
+            "intent": "DIAGNOSE",
+            "action": "ASK_DIAGNOSTIC_QUESTION",
+            "message": message_out,
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "discussing",
+        }
     opener = questions[0] if questions else f"What do you already understand about {title}?"
     if (context.get("concept_state") or "") == "available":
         opener = (

@@ -12,6 +12,13 @@ from typing import Callable
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.llm import CoachLLM, StubCoachLLM
+from app.agents.misconceptions import (
+    classify_learner_turn,
+    match_misconception,
+    normalize_misconceptions,
+    remediation_script,
+    retest_script,
+)
 from app.agents.policies import (
     asks_for_implementation,
     classify_intent,
@@ -75,6 +82,26 @@ def route_node(state: MentorState) -> MentorState:
     return {"intent": intent}
 
 
+def _classify_turn(state: MentorState) -> dict:
+    branch = state.get("misconception_branch")
+    if isinstance(branch, str) and branch:
+        return {
+            "branch": branch,
+            "misconception": state.get("identified_misconception"),
+        }
+    classified = classify_learner_turn(
+        state.get("learner_message") or "",
+        state.get("misconceptions") or [],
+        state.get("diagnostic_answers") or [],
+        attempt_count_after=int(state.get("attempt_count") or 0),
+    )
+    if not classified.get("misconception"):
+        identified = state.get("identified_misconception")
+        if isinstance(identified, dict) and identified.get("description"):
+            classified["misconception"] = identified
+    return classified
+
+
 def _pick_branch(state: MentorState) -> str:
     status = state.get("concept_state") or ConceptStatus.available.value
     intent = state.get("intent") or "answer"
@@ -84,10 +111,20 @@ def _pick_branch(state: MentorState) -> str:
         return "milestone_gate"
     if intent == "hint":
         return "hint_gate"
+    classified = _classify_turn(state)
+    branch = classified.get("branch")
+    if branch == "remediate":
+        return "misconception_remediation"
+    if branch == "retest":
+        return "misconception_retest"
+    if branch == "cleared":
+        return "misconception_cleared"
     if intent == "code_ask":
         return "question"
     if status in _BLOCKED_STATES:
         return "gap_diagnosis"
+    if branch == "evaluate":
+        return "explanation_eval"
     if status in {ConceptStatus.available.value, ConceptStatus.introduced.value}:
         return "question"
     if status == ConceptStatus.researching.value:
@@ -121,6 +158,12 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
         "diagnostic_questions": state.get("diagnostic_questions") or [],
         "research_questions": state.get("research_questions") or [],
         "misconceptions": state.get("misconceptions") or [],
+        "identified_misconception": state.get("identified_misconception")
+        or _classify_turn(state).get("misconception"),
+        "recent_learner_answers": [
+            item.get("answer") if isinstance(item, dict) else str(item)
+            for item in (state.get("diagnostic_answers") or [])[-4:]
+        ],
         "hints": state.get("hints") or [],
         "learning_objectives": state.get("learning_objectives") or [],
         "needs_build": bool(state.get("needs_build")),
@@ -145,14 +188,11 @@ def make_question_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
             )
         else:
             contract = _invoke_contract(llm, state, "ASK_QUESTION")
-            next_state = ConceptStatus.introduced.value
             if status == ConceptStatus.available.value:
                 next_state = ConceptStatus.introduced.value
-            elif status == ConceptStatus.introduced.value:
-                next_state = ConceptStatus.researching.value
             else:
                 next_state = status
-            contract["next_state"] = contract.get("next_state") or next_state
+            contract["next_state"] = next_state
         return {
             "reply": str(contract.get("message") or ""),
             "contract": contract,
@@ -184,8 +224,108 @@ def make_research_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     return research_prompt
 
 
+def _misconception_from_state(state: MentorState) -> dict | None:
+    identified = state.get("identified_misconception")
+    if isinstance(identified, dict) and identified.get("description"):
+        return identified
+    matched = match_misconception(
+        state.get("learner_message") or "",
+        state.get("misconceptions") or [],
+    )
+    if matched:
+        return matched
+    specs = normalize_misconceptions(state.get("misconceptions") or [])
+    return specs[0] if specs else None
+
+
+def make_remediation_node() -> Callable[[MentorState], MentorState]:
+    def misconception_remediation(state: MentorState) -> MentorState:
+        misc = _misconception_from_state(state)
+        message = (
+            remediation_script(misc)
+            if misc
+            else (
+                "I think we've found the part that's unclear. Let's isolate it.\n"
+                "Which exact line of code does the action you just described?"
+            )
+        )
+        contract = empty_contract(
+            intent="DIAGNOSE",
+            action="ASK_DIAGNOSTIC_QUESTION",
+            message=message,
+            next_state=ConceptStatus.discussing.value,
+        )
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": ConceptStatus.discussing.value,
+        }
+
+    return misconception_remediation
+
+
+def make_retest_node() -> Callable[[MentorState], MentorState]:
+    def misconception_retest(state: MentorState) -> MentorState:
+        misc = _misconception_from_state(state)
+        message = (
+            retest_script(misc)
+            if misc
+            else (
+                "Exactly. Now test the same distinction in a new example.\n"
+                "Which line passes the function, and which line invokes it?"
+            )
+        )
+        contract = empty_contract(
+            intent="DIAGNOSE",
+            action="ASK_DIAGNOSTIC_QUESTION",
+            message=message,
+            next_state=ConceptStatus.discussing.value,
+        )
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": ConceptStatus.discussing.value,
+        }
+
+    return misconception_retest
+
+
+def misconception_cleared_node(state: MentorState) -> MentorState:
+    message = (
+        "That's the distinction. We can use it now — I won't re-ask the same question."
+    )
+    contract = empty_contract(
+        intent="MENTOR",
+        action="REVIEW",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+    }
+
+
 def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     def explanation_eval(state: MentorState) -> MentorState:
+        matched = match_misconception(
+            state.get("learner_message") or "",
+            state.get("misconceptions") or [],
+        )
+        if matched:
+            message = remediation_script(matched)
+            contract = empty_contract(
+                intent="DIAGNOSE",
+                action="ASK_DIAGNOSTIC_QUESTION",
+                message=message,
+                next_state=ConceptStatus.discussing.value,
+            )
+            return {
+                "reply": message,
+                "contract": contract,
+                "next_state": ConceptStatus.discussing.value,
+            }
         result = llm.evaluate_explanation(
             concept_title=state.get("concept_title") or "",
             concept_description=state.get("concept_description") or "",
@@ -461,6 +601,9 @@ def build_mentor_graph(llm: CoachLLM | None = None):
     builder.add_node("route", route_node)
     builder.add_node("question", make_question_node(llm))
     builder.add_node("research_prompt", make_research_node(llm))
+    builder.add_node("misconception_remediation", make_remediation_node())
+    builder.add_node("misconception_retest", make_retest_node())
+    builder.add_node("misconception_cleared", misconception_cleared_node)
     builder.add_node("explanation_eval", make_explanation_node(llm))
     builder.add_node("implementation_gate", make_implementation_node(llm))
     builder.add_node("test_feedback", make_test_node(llm))
@@ -477,6 +620,9 @@ def build_mentor_graph(llm: CoachLLM | None = None):
         {
             "question": "question",
             "research_prompt": "research_prompt",
+            "misconception_remediation": "misconception_remediation",
+            "misconception_retest": "misconception_retest",
+            "misconception_cleared": "misconception_cleared",
             "explanation_eval": "explanation_eval",
             "implementation_gate": "implementation_gate",
             "test_feedback": "test_feedback",
@@ -494,6 +640,9 @@ def build_mentor_graph(llm: CoachLLM | None = None):
     for name in (
         "question",
         "research_prompt",
+        "misconception_remediation",
+        "misconception_retest",
+        "misconception_cleared",
         "explanation_eval",
         "implementation_gate",
         "test_feedback",
