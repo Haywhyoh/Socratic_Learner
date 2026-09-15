@@ -10,6 +10,7 @@ from app.agents.llm import get_coach_llm
 from app.agents.policies import (
     MAX_REVIEW_ATTEMPTS,
     current_teach_concepts,
+    go_build_reply,
     message_looks_like_attempt,
 )
 from app.agents.state import CatalogMilestone, CoachState
@@ -338,6 +339,7 @@ def _base_state(user_project: UserProject, user_milestone: UserMilestone | None)
         "milestone_title": milestone.title if milestone else "",
         "constraints": list(user_project.project.constraints or []),
         "success_criteria": milestone.success_criteria if milestone else "",
+        "milestone_instructions": milestone.instructions if milestone else "",
         "milestone_questions": list(milestone.questions or []) if milestone else [],
         "catalog_milestones": catalog,
         "resources": resources,
@@ -387,11 +389,11 @@ def start_coach(
             if learner_state.question_index < len(questions):
                 reply = questions[learner_state.question_index]
             else:
-                constraints = list(user_project.project.constraints or [])
-                constraint = constraints[0] if constraints else "follow constraints"
-                reply = (
-                    f"Go build. Constraint: {constraint}; "
-                    f"success: {current.milestone.success_criteria}."
+                reply = go_build_reply(
+                    constraints=list(user_project.project.constraints or []),
+                    success_criteria=current.milestone.success_criteria or "",
+                    instructions=current.milestone.instructions or "",
+                    milestone_title=current.milestone.title,
                 )
         db.commit()
         return {

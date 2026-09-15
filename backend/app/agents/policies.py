@@ -205,14 +205,54 @@ def next_hint_level(current_level: int, effort: EffortSignals) -> tuple[int, str
 
 
 def classify_intent(message: str) -> str:
-    lower = message.lower()
+    lower = message.lower().strip()
     if any(word in lower for word in ("hint", "stuck", "clue", "give me a hint")):
         return "hint"
     if any(word in lower for word in ("concept card", "research question", "show card")):
         return "card"
     if "checkpoint" in lower or "i researched" in lower:
         return "checkpoint"
+    guidance_markers = (
+        "how do i",
+        "how do you",
+        "how to",
+        "how can i",
+        "how should i",
+        "what should i",
+        "where should",
+        "where do i",
+        "help me",
+        "get started",
+        "getting started",
+        "create a clean",
+        "project layout",
+        "what next",
+        "what's next",
+        "walk me through",
+        "guide me",
+        "can you explain",
+        "explain how",
+        "start with",
+    )
+    if any(marker in lower for marker in guidance_markers) or (
+        lower.endswith("?") and any(
+            lower.startswith(w) for w in ("how", "what", "where", "which", "why")
+        )
+    ):
+        return "guidance"
     return "answer"
+
+
+def parse_instruction_tasks(instructions: str) -> list[str]:
+    """Pull numbered/bulleted steps out of milestone instructions."""
+    tasks: list[str] = []
+    for line in (instructions or "").splitlines():
+        match = re.match(r"^\s*(?:\d+[.)]\s+|[-*]\s+)(.+)$", line)
+        if match:
+            text = match.group(1).strip()
+            if text:
+                tasks.append(text)
+    return tasks
 
 
 def fallback_card(
@@ -248,10 +288,100 @@ def pose_question(questions: list[str], question_index: int) -> str | None:
     return questions[question_index]
 
 
-def go_build_reply(*, constraints: list[str], success_criteria: str) -> str:
+def go_build_reply(
+    *,
+    constraints: list[str],
+    success_criteria: str,
+    instructions: str = "",
+    milestone_title: str = "",
+) -> str:
+    """Kick the learner into the build phase with a concrete first task — no code dump."""
     constraint = constraints[0] if constraints else "follow the project constraints"
     success = success_criteria or "meet the milestone success criteria"
-    return f"Go build. Constraint: {constraint}; success: {success}."
+    tasks = parse_instruction_tasks(instructions)
+    title = milestone_title or "this milestone"
+    if tasks:
+        first = tasks[0]
+        more = f" Then continue with: {tasks[1]}" if len(tasks) > 1 else ""
+        return (
+            f"Go build. Start with task 1 — {first}{more} "
+            "Decide names for a code package, settings/config, and an ASGI entrypoint; "
+            "create those paths in the terminal before writing logic. "
+            f"Constraint: {constraint}. Success: {success}. "
+            "Ask me one design question at a time — I will not paste the full project."
+        )
+    return (
+        f"Go build on '{title}'. Constraint: {constraint}; success: {success}. "
+        "Create the smallest layout you can import, then ask a design question if stuck."
+    )
+
+
+def guidance_reply(
+    *,
+    message: str,
+    milestone_title: str,
+    instructions: str = "",
+    constraints: list[str] | None = None,
+    success_criteria: str = "",
+) -> str:
+    """Socratic starter help for how-to questions — direction only, never full solutions."""
+    lower = message.lower()
+    tasks = parse_instruction_tasks(instructions)
+    title = milestone_title or "this milestone"
+    constraint = (constraints or ["follow the project constraints"])[0]
+    success = success_criteria or "meet the milestone success criteria"
+
+    if any(
+        word in lower
+        for word in ("layout", "structure", "folder", "package", "scaffold", "clean")
+    ):
+        return (
+            "A clean layout usually means one importable package for app code, "
+            "a settings/config module, and one ASGI entrypoint the server can import. "
+            "Pick those names, create empty modules with `mkdir`/`touch` in the terminal, "
+            "then wire FastAPI. What names are you choosing for the package and entrypoint?"
+        )
+    if any(word in lower for word in ("health", "endpoint", "route", "/health")):
+        return (
+            "Health is a tiny GET route that returns JSON like {\"status\": \"ok\"} "
+            "and proves the process boots. Decide which module owns the route and how "
+            "the entrypoint includes it — then implement only that. "
+            "Where will `/health` live relative to your entrypoint?"
+        )
+    if any(word in lower for word in ("uvicorn", "start", "run server", "import error")):
+        return (
+            "Uvicorn needs an import path like `package.module:app` with an `app` object. "
+            "Confirm imports work with a short `python -c` check before uvicorn; "
+            "a long-running server will time out here (smoke-test only). "
+            "What import path are you planning?"
+        )
+    if any(
+        word in lower
+        for word in ("requirement", "dependenc", "pyproject", "readme", "pip")
+    ):
+        return (
+            "Declare what a real clone needs to install and document the exact run command. "
+            "In this sandbox FastAPI/uvicorn/pytest are already installed — still list them "
+            "for the project README. What run steps will you write down?"
+        )
+    if any(word in lower for word in ("first", "start", "begin", "next", "stuck")):
+        focus = tasks[0] if tasks else f"the first verifiable step of '{title}'"
+        return (
+            f"Begin with: {focus} "
+            f"Constraint reminder: {constraint}. Success looks like: {success}. "
+            "Tell me which task you're on and what you already tried — "
+            "I'll challenge the design, not write the files for you."
+        )
+    if tasks:
+        return (
+            f"For '{title}', work these in order: "
+            + "; ".join(f"{i}. {t}" for i, t in enumerate(tasks[:4], start=1))
+            + ". Which task are you on, and what's the next decision you need to make?"
+        )
+    return (
+        f"Break '{title}' into the smallest next step you can verify in the terminal. "
+        f"Success: {success}. What have you created so far?"
+    )
 
 
 def fallback_evaluate(question: str, answer: str) -> dict[str, object]:
@@ -271,21 +401,36 @@ def fallback_evaluate(question: str, answer: str) -> dict[str, object]:
     return {"passed": True, "push_back": None}
 
 
-def fallback_hint(level: int, milestone_title: str, concepts: list[str]) -> str:
+def fallback_hint(level: int, milestone_title: str, concepts: list[str], instructions: str = "") -> str:
     concept = concepts[0] if concepts else "the core idea"
+    tasks = parse_instruction_tasks(instructions)
+    first_task = tasks[0] if tasks else None
     templates = {
-        0: f"What part of '{milestone_title}' is failing?",
-        1: f"Look at the success criteria for '{milestone_title}'.",
-        2: f"This is about {concept}. Research that, then answer.",
-        3: f"Sketch: boundary, data to persist, proof for '{milestone_title}'.",
-        4: f"Fix only the {concept} boundary. Compare to success criteria.",
+        0: (
+            f"Which numbered task in '{milestone_title}' are you on"
+            + (f" — starting from '{first_task}'?" if first_task else "?")
+        ),
+        1: (
+            f"Direction: finish task 1 first"
+            + (f" ({first_task})" if first_task else "")
+            + f" before jumping ahead in '{milestone_title}'."
+        ),
+        2: f"Concept: this milestone hinges on {concept}. Research that, then return with your plan.",
+        3: (
+            "Structure (no full code): package for app code → settings → entrypoint → "
+            "one health route → prove import/uvicorn."
+        ),
+        4: (
+            f"Targeted: implement only the missing piece for {concept} / "
+            f"the current task, then re-check the success criteria for '{milestone_title}'."
+        ),
     }
     return templates.get(level, templates[0])
 
 
 def fallback_card_reply(cards: list[CardDraft]) -> str:
     if not cards:
-        return "No cards. Go build."
+        return "No cards yet. Ask how to approach the current task, or keep building."
     card = cards[0]
     return f"{card['name']}: {card['why_it_matters']} Checkpoint: {card['checkpoint']}"
 
@@ -321,23 +466,24 @@ def filter_specialist_reply(
     *,
     later_concepts: list[str],
     allow_code: bool = False,
+    max_sentences: int = 2,
 ) -> tuple[str, list[str]]:
     flags: list[str] = []
-    text = enforce_brevity(reply, max_sentences=2)
+    text = enforce_brevity(reply, max_sentences=max_sentences)
     if not allow_code:
         text, stripped = _strip_solution_fences(text)
         if stripped:
             flags.append("stripped_solution")
-            text = "No full solutions. Answer the question."
+            text = "No full solutions. Ask a design question about the current task instead."
         if "```" in text:
             flags.append("stripped_solution")
-            text = "No code dumps. Answer the question."
+            text = "No code dumps. Describe the approach; you write the files."
     for concept in later_concepts:
         if concept and concept.lower() in text.lower():
             flags.append("blocked_later_concept")
             pattern = re.compile(re.escape(concept), re.IGNORECASE)
             text = pattern.sub("[later]", text)
-    return enforce_brevity(text, max_sentences=2), flags
+    return enforce_brevity(text, max_sentences=max_sentences), flags
 
 
 def checkpoint_passes(answer: str) -> bool:

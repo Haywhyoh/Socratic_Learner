@@ -34,7 +34,14 @@ class CoachLLM(Protocol):
         milestone_title: str,
     ) -> EvalResult: ...
 
-    def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str: ...
+    def hint_reply(
+        self,
+        level: int,
+        milestone_title: str,
+        concepts: list[str],
+        *,
+        instructions: str = "",
+    ) -> str: ...
 
     def generate_curriculum(
         self,
@@ -92,8 +99,15 @@ class StubCoachLLM:
         result = fallback_evaluate(question, answer)
         return {"passed": bool(result["passed"]), "push_back": result.get("push_back")}  # type: ignore[return-value]
 
-    def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str:
-        return fallback_hint(level, milestone_title, concepts)
+    def hint_reply(
+        self,
+        level: int,
+        milestone_title: str,
+        concepts: list[str],
+        *,
+        instructions: str = "",
+    ) -> str:
+        return fallback_hint(level, milestone_title, concepts, instructions=instructions)
 
     def generate_curriculum(
         self,
@@ -221,8 +235,15 @@ class LangChainCoachLLM:
                 "push_back": result.get("push_back"),  # type: ignore[return-value]
             }
 
-    def hint_reply(self, level: int, milestone_title: str, concepts: list[str]) -> str:
-        return fallback_hint(level, milestone_title, concepts)
+    def hint_reply(
+        self,
+        level: int,
+        milestone_title: str,
+        concepts: list[str],
+        *,
+        instructions: str = "",
+    ) -> str:
+        return fallback_hint(level, milestone_title, concepts, instructions=instructions)
 
     def generate_curriculum(
         self,

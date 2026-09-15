@@ -53,6 +53,7 @@ class CoachState(TypedDict, total=False):
     milestone_title: str
     constraints: list[str]
     success_criteria: str
+    milestone_instructions: str
     milestone_questions: list[str]
     question_index: int
     questions_passed: int
