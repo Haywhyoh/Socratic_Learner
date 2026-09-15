@@ -390,7 +390,7 @@ def milestone_action(
             headers=_headers(),
         )
         if response.status_code >= 400:
-            console.print(f"[red]{response.status_code}: {response.text}[/red]")
+            _print_http_error(response)
             raise typer.Exit(code=1)
         data = response.json()
         if action == "complete":
@@ -547,13 +547,19 @@ def _print_coach_reply(body: dict) -> None:
     status = body.get("answer_status")
     reply = body.get("reply") or ""
     if status == "push_back":
-        console.print(f"[yellow]{reply}[/yellow]")
+        attempts = (body.get("learner_state") or {}).get("question_attempts")
+        suffix = f" [dim](attempt {attempts}/3)[/dim]" if attempts else ""
+        console.print(f"[yellow]{reply}[/yellow]{suffix}")
     elif status == "passed":
         console.print("[green]Pass.[/green]")
         if body.get("current_question"):
             console.print(f"\n[bold]Q[/bold] {body['current_question']}")
         elif reply:
             console.print(reply)
+    elif status == "advanced_with_gap":
+        console.print(f"[yellow]{reply}[/yellow]")
+        if body.get("current_question"):
+            console.print(f"\n[bold]Q[/bold] {body['current_question']}")
     elif status == "complete":
         console.print(f"[green]{reply}[/green]")
     else:
@@ -639,9 +645,15 @@ def coach_cmd(
                     console.print(f"[red]{response.status_code}: {response.text}[/red]")
                     raise typer.Exit(code=1)
                 data = response.json()
-            console.print(
-                f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
-            )
+            if data.get("resumed"):
+                console.print(
+                    "[dim]Resuming — you already have a milestone in progress "
+                    "with an unanswered question:[/dim]"
+                )
+            else:
+                console.print(
+                    f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
+                )
             reply = data.get("reply")
             if reply:
                 if data.get("learner_state", {}).get("questions_complete"):
@@ -829,6 +841,86 @@ def interactive_start() -> None:
             "\n[dim]Concept mode has no AI coach yet. "
             "Use project mode for roadmap/cards/mentor, or: socratic concept show[/dim]"
         )
+
+
+def _print_review(body: dict) -> None:
+    verdict = body.get("verdict")
+    color = {"passed": "green", "needs_work": "red", "awaiting_understanding": "yellow"}.get(
+        verdict, "white"
+    )
+    console.print(f"\n[bold]Milestone review[/bold] verdict=[{color}]{verdict}[/{color}]")
+    if body.get("summary"):
+        console.print(body["summary"])
+    dims = body.get("dimensions") or {}
+    if dims:
+        table = Table("Dimension", "Rating", "Notes")
+        rating_color = {"pass": "green", "concern": "yellow", "fail": "red"}
+        for name, info in dims.items():
+            rating = info.get("rating", "")
+            c = rating_color.get(rating, "white")
+            table.add_row(name, f"[{c}]{rating}[/{c}]", info.get("notes", ""))
+        console.print(table)
+
+
+def _review_loop(client: httpx.Client, user_milestone_id: int, body: dict) -> None:
+    while True:
+        _print_review(body)
+        verdict = body.get("verdict")
+        if verdict == "passed":
+            console.print(
+                f"\n[green]Review passed.[/green] Run: "
+                f"socratic milestone complete {user_milestone_id}"
+            )
+            return
+        if verdict == "needs_work":
+            console.print(
+                "\n[red]Address the concerns above in your code, then re-run: "
+                "socratic review[/red]"
+            )
+            return
+        questions = body.get("understanding_questions") or []
+        if not questions:
+            return
+        console.print("\n[bold]Explain your implementation (in your own words):[/bold]")
+        answers = [typer.prompt(question) for question in questions]
+        response = client.post(
+            f"/api/v1/me/milestones/{user_milestone_id}/review/answer",
+            headers=_headers(),
+            json={"answers": answers},
+        )
+        if response.status_code >= 400:
+            _print_http_error(response)
+            raise typer.Exit(code=1)
+        body = response.json()
+
+
+@app.command("review")
+def milestone_review(
+    user_milestone_id: Annotated[
+        Optional[int],
+        typer.Option(help="User milestone ID (defaults to current pending)"),
+    ] = None,
+) -> None:
+    """Request the AI milestone review: correctness, architecture, readability,
+
+    complexity, reliability, testing — and your understanding of what you
+    built. Requires `socratic sandbox test` to be passing first. Milestone
+    completion is blocked until this review passes.
+    """
+    if not isinstance(user_milestone_id, int):
+        user_milestone_id = None
+    with _client() as client:
+        if user_milestone_id is None:
+            user_project_id = _latest_user_project_id(client)
+            user_milestone_id = _latest_user_milestone_id(client, user_project_id)
+        response = client.post(
+            f"/api/v1/me/milestones/{user_milestone_id}/review",
+            headers=_headers(),
+        )
+        if response.status_code >= 400:
+            _print_http_error(response)
+            raise typer.Exit(code=1)
+        _review_loop(client, user_milestone_id, response.json())
 
 
 @sandbox_app.command("init")

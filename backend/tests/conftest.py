@@ -14,6 +14,7 @@ from app.models.course import Course, CourseOption
 from app.models.project import Milestone, Project, ProjectDifficulty
 from app.models.user import User
 from app.seed import seed
+from app.services.sandbox_runner import FakeSandboxRunner, RunResult, set_sandbox_runner
 
 engine = create_engine(settings.test_database_url, pool_pre_ping=True)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -71,6 +72,24 @@ def client(db: Session) -> Generator[TestClient, None, None]:
 def seeded_db(db: Session) -> Session:
     seed(db)
     return db
+
+
+@pytest.fixture
+def workspace_tmp(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "workspaces"
+    monkeypatch.setattr("app.core.config.settings.sandbox_workspaces_root", str(root))
+    monkeypatch.setattr("app.services.sandbox.settings.sandbox_workspaces_root", str(root))
+    return root
+
+
+@pytest.fixture
+def fake_runner() -> Generator[FakeSandboxRunner, None, None]:
+    runner = FakeSandboxRunner(
+        RunResult(exit_code=0, stdout="2 passed in 0.01s\n", stderr="")
+    )
+    set_sandbox_runner(runner)
+    yield runner
+    set_sandbox_runner(None)
 
 
 @pytest.fixture

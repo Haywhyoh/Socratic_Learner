@@ -1,7 +1,22 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.models.coach import MilestoneReview, MilestoneReviewVerdict
 from tests.conftest import make_course_path
+
+
+def _approve_review(db: Session, user_milestone_id: int) -> None:
+    """Test helper: milestone completion is gated on the AI review passing —
+
+    the review pipeline itself (sandbox code + LLM) is covered in
+    test_coach.py, so ordering/restart tests here just approve directly.
+    """
+    review = MilestoneReview(
+        user_milestone_id=user_milestone_id,
+        verdict=MilestoneReviewVerdict.passed,
+    )
+    db.add(review)
+    db.commit()
 
 
 def test_list_courses_and_nested_options(client: TestClient, seeded_db: Session) -> None:
@@ -95,6 +110,7 @@ def test_complete_milestones_in_order(
     assert bad.status_code == 409
 
     for um in ordered:
+        _approve_review(db, um["id"])
         ok = client.post(
             f"/api/v1/me/milestones/{um['id']}/complete",
             headers=auth_headers,
@@ -132,6 +148,7 @@ def test_restart_milestone_resets_from_that_point(
         ),
     )
     for um in ordered:
+        _approve_review(db, um["id"])
         assert (
             client.post(
                 f"/api/v1/me/milestones/{um['id']}/complete",
@@ -157,6 +174,7 @@ def test_restart_milestone_resets_from_that_point(
     assert by_id[ordered[2]["id"]]["completed_at"] is None
 
     # Can complete again from the restarted point
+    _approve_review(db, ordered[1]["id"])
     assert (
         client.post(
             f"/api/v1/me/milestones/{ordered[1]['id']}/complete",

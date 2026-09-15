@@ -145,6 +145,43 @@ def test_question_flow_pass_push_back_and_go_build(
     assert _sentence_count(body["reply"]) <= 2
 
 
+def test_question_retry_cap_advances_with_noted_gap(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+) -> None:
+    """After MAX_QUESTION_ATTEMPTS failed answers, the coach stops rephrasing
+
+    the same question and moves the learner on, noting the gap instead.
+    """
+    enrolled = _enroll(client, auth_headers, db)
+    user_project_id = enrolled["user_project"]["id"]
+    ready = _activate(client, auth_headers, user_project_id)
+    q1 = ready["current_question"]
+    assert q1
+
+    for _ in range(2):
+        resp = client.post(
+            f"/api/v1/me/projects/{user_project_id}/coach/message",
+            headers=auth_headers,
+            json={"message": "idk"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["answer_status"] == "push_back"
+
+    capped = client.post(
+        f"/api/v1/me/projects/{user_project_id}/coach/message",
+        headers=auth_headers,
+        json={"message": "idk"},
+    )
+    assert capped.status_code == 200
+    body = capped.json()
+    assert body["answer_status"] == "advanced_with_gap"
+    assert body["learner_state"]["question_index"] == 1
+    assert body["learner_state"]["question_attempts"] == 0
+    assert body["current_question"] != q1
+
+
 def test_learner_state_endpoint_and_hint_does_not_skip(
     client: TestClient,
     auth_headers: dict[str, str],
