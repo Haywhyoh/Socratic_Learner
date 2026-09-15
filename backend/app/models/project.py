@@ -38,6 +38,19 @@ class ProjectDifficulty(str, enum.Enum):
     advanced = "advanced"
 
 
+class ProjectCurriculumMode(str, enum.Enum):
+    """Who controls milestone/concept sequencing for this project.
+
+    ``deterministic`` — the seeded Concept/ConceptDependency/MilestoneConcept
+    graph is the single source of truth; the AI mentor never invents or
+    reorders milestones (see services/curriculum_graph.py). ``ai_generated``
+    is the legacy per-learner LLM-tailored curriculum path.
+    """
+
+    deterministic = "deterministic"
+    ai_generated = "ai_generated"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -59,6 +72,11 @@ class Project(Base):
     evaluation_criteria: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     extension_challenges: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     recommended_resources: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    curriculum_mode: Mapped[ProjectCurriculumMode] = mapped_column(
+        Enum(ProjectCurriculumMode, name="project_curriculum_mode", native_enum=False),
+        default=ProjectCurriculumMode.ai_generated,
+        nullable=False,
+    )
     course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
     primary_option_id: Mapped[int] = mapped_column(
         ForeignKey("course_options.id", ondelete="RESTRICT"), nullable=False

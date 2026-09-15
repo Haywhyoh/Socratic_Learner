@@ -2,19 +2,22 @@
 
 from app.db.base import Base
 from app.models.coach import (
-    CardCheckpoint,
-    ConceptCard,
     HintReveal,
-    LearnerKnowledge,
-    LearnerState,
     MentorSession,
     MentorTurn,
     MilestoneReview,
-    RoadmapItem,
 )
-from app.models.concept import ConceptQuestion, ConceptSession, ConceptTurn
 from app.models.course import Course, CourseOption
+from app.models.curriculum import Concept, ConceptDependency, MilestoneConcept
 from app.models.enrollment import Enrollment
+from app.models.learning_state import (
+    ConceptState,
+    KnowledgeGap,
+    ProjectDefense,
+    Reflection,
+    ResearchRecord,
+    RetrievalCheck,
+)
 from app.models.project import Milestone, Project, UserMilestone, UserProject
 from app.models.sandbox import SandboxWorkspace
 from app.models.user import User
@@ -30,14 +33,15 @@ __all__ = [
     "UserProject",
     "UserMilestone",
     "SandboxWorkspace",
-    "ConceptQuestion",
-    "ConceptSession",
-    "ConceptTurn",
-    "LearnerKnowledge",
-    "LearnerState",
-    "RoadmapItem",
-    "ConceptCard",
-    "CardCheckpoint",
+    "Concept",
+    "ConceptDependency",
+    "MilestoneConcept",
+    "ConceptState",
+    "KnowledgeGap",
+    "ResearchRecord",
+    "Reflection",
+    "ProjectDefense",
+    "RetrievalCheck",
     "MentorSession",
     "MentorTurn",
     "HintReveal",
