@@ -221,3 +221,224 @@ def test_mentor_retests_after_learner_names_the_distinction() -> None:
     )
     assert "operation" in result["reply"]
     assert "good observation" not in result["reply"].lower()
+
+
+def test_execution_trace_is_callback_progress_not_a_full_exam() -> None:
+    from app.agents.misconceptions import answer_resolves_misconception
+
+    specs = _functions_misconceptions()
+    callback = next(item for item in specs if item["id"] == "callback-caller-confusion")
+    trace = (
+        "the myFunction logs before, then calls cb the callback function. "
+        "cb then logs inside then it logs after"
+    )
+    assert answer_resolves_misconception(trace, callback)
+
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": trace,
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": specs,
+            "learning_objectives": [
+                "Explain what a callback is and why it lets code run 'later'",
+                "Explain, in your own words, what a closure captures and why",
+            ],
+            "diagnostic_answers": [
+                {
+                    "answer": "the person who called myFunction.",
+                    "misconception_id": "callback-caller-confusion",
+                    "phase": "detected",
+                }
+            ],
+            "attempt_count": 3,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "closure captures" not in reply
+    assert "no explanation" not in reply
+    assert "operation" in result["reply"] or "cb()" in result["reply"]
+
+
+def test_mentor_explains_when_learner_asks() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "can you explain it",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": [
+                "Explain what a callback is and why it lets code run 'later'",
+                "Explain, in your own words, what a closure captures and why",
+            ],
+            "diagnostic_answers": [
+                {
+                    "answer": "the person who called myFunction.",
+                    "misconception_id": "callback-caller-confusion",
+                    "phase": "detected",
+                }
+            ],
+            "attempt_count": 4,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "no explanation" not in reply
+    assert "asked a question" not in reply
+    assert "later" in reply
+    assert "cb()" in result["reply"] or "cb();" in result["reply"]
+
+
+def test_what_next_does_not_regrade_the_learner() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "so what next",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": [
+                "Explain what a callback is and why it lets code run 'later'",
+                "Explain, in your own words, what a closure captures and why",
+            ],
+            "next_concept_title": "Objects, properties, methods, references",
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "no explanation" not in reply
+    assert "does not address" not in reply
+    assert "closure" in reply or "next concept" in reply
+
+
+def test_correct_closure_answer_is_not_callback_remediation() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "it print n = 2",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": [
+                "Explain what a callback is and why it lets code run 'later'",
+                "Explain, in your own words, what a closure captures and why",
+            ],
+            "last_tutor_message": (
+                "The callback model is solid. Stay on this concept for one more piece: closures.\n"
+                "If let n = 1 and an inner function reads n, then later n = 2, "
+                "what does the inner function print when you call it?"
+            ),
+            "next_concept_title": "Objects, properties, methods, references",
+            "attempt_count": 6,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "two different events" not in reply
+    assert "later(()" not in result["reply"]
+    assert "2" in result["reply"]
+    assert "live" in reply or "link" in reply
+
+
+def test_partial_pass_answer_asks_for_invoke_not_the_same_drill() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    drill = (
+        "I think we've found the part that's unclear.\n\n"
+        "Passing a function and calling a function are two different events.\n\n"
+        "Two separate answers, please:\n"
+        "1. Which line *passes* the function?\n"
+        "2. Which exact line *invokes* it?"
+    )
+    result = graph.invoke(
+        {
+            "learner_message": "the line later(() => console.log('inside')) passes the function",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "misconceptions": _functions_misconceptions(),
+            "last_tutor_message": drill,
+            "diagnostic_answers": [
+                {"answer": "it print n = 2", "misconception_id": "callback-runs-when-passed", "phase": "stuck"}
+            ],
+            "attempt_count": 7,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "invokes" in reply
+    assert reply.count("two different events") == 0
+    assert "yes" in reply
+
+
+def test_naming_both_pass_and_invoke_does_not_repeat_the_drill() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": (
+                "passing a function is this later(() => console.log('inside')); "
+                "and calling the function is cb();"
+            ),
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "misconceptions": _functions_misconceptions(),
+            "last_tutor_message": (
+                "Two separate answers, please:\n"
+                "1. Which line *passes* the function?\n"
+                "2. Which exact line *invokes* it?"
+            ),
+            "attempt_count": 8,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "two different events" not in reply
+    assert "cb();" not in result["reply"] or "operation" in result["reply"]
+
+
+def test_explain_during_pass_invoke_drill_teaches_instead_of_repeating() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "can you explain",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "misconceptions": _functions_misconceptions(),
+            "last_tutor_message": (
+                "Two separate answers, please:\n"
+                "Which line passes the function?\n"
+                "Which exact line invokes it?"
+            ),
+            "attempt_count": 8,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "the learner thinks" not in reply
+    assert "later" in reply or "stores" in reply or "cb()" in result["reply"]

@@ -90,6 +90,9 @@ class MentorState(TypedDict, total=False):
     diagnostic_answers: NotRequired[list[Any]]
     misconception_branch: NotRequired[str | None]
     identified_misconception: NotRequired[dict[str, Any] | None]
+    next_concept_title: NotRequired[str]
+    last_tutor_message: NotRequired[str]
+    learning_control: NotRequired[dict[str, Any]]
     intent: str
     effort: EffortSignals
     hint_level: int

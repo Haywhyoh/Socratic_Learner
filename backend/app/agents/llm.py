@@ -116,6 +116,7 @@ class CoachLLM(Protocol):
         concept_description: str,
         objectives: list[str],
         answer: str,
+        current_question: str = "",
     ) -> dict[str, Any]: ...
 
 
@@ -242,6 +243,7 @@ class StubCoachLLM:
         concept_description: str,
         objectives: list[str],
         answer: str,
+        current_question: str = "",
     ) -> dict[str, Any]:
         return fallback_explanation(answer)
 
@@ -578,6 +580,10 @@ class LangChainCoachLLM:
             "do not move on. If context.identified_misconception is set, follow it: name "
             "that distinction and run a targeted diagnostic — do not ask a semantically "
             "identical Socratic question.\n"
+            "If the learner asks you to explain, explain the current mechanism in the "
+            "smallest form, then ask one check question. Never reply that they failed "
+            "to provide an explanation. If they ask what is next, tell them the next "
+            "action on the current concept or the next concept — do not re-grade them.\n"
             f"Forced action family: {action_hint}\n"
             f"Context JSON: {json.dumps(context, default=str)}\n"
             f"Learner message: {message}\n"
@@ -615,18 +621,23 @@ class LangChainCoachLLM:
         concept_description: str,
         objectives: list[str],
         answer: str,
+        current_question: str = "",
     ) -> dict[str, Any]:
         prompt = (
             "Evaluate a learner's explanation. Grade accuracy, completeness, clarity, "
             "and causal understanding — not keyword matching. Return ONLY JSON: "
             '{"passed": true|false, "accuracy": 0-1, "completeness": 0-1, '
             '"clarity": 0-1, "causal": 0-1, "feedback": "one short sentence"}. '
-            "If any part of the causal model is wrong, passed=false. Do not praise the "
-            "wrong part. If they mix a correct observation with an incorrect cause, say "
-            "which part is right and which is wrong. Never give the full answer, never "
-            "give a complete file.\n"
+            "If the learner asked YOU a question, you are in the wrong mode — do not grade "
+            "them for failing to explain. Never say 'no explanation was provided'. "
+            "Grade whether they answered the current question, not every objective on the "
+            "concept. Do not fail a correct callback / pass-vs-invoke answer for omitting "
+            "closures. If they only traced execution after being asked to trace, that can "
+            "be a pass for that diagnostic. If any part of the causal model they offered "
+            "is wrong, passed=false. Do not praise the wrong part.\n"
             f"Concept: {concept_title}\n{concept_description}\n"
             f"Objectives: {'; '.join(objectives)}\n"
+            f"Current question they were answering: {current_question or 'none'}\n"
             f"Answer: {answer}\n"
         )
         try:

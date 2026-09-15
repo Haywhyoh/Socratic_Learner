@@ -80,6 +80,28 @@ CONCEPTS: list[ConceptSpec] = [
                         "1. Which line *passes* the function?\n"
                         "2. Which exact line *invokes* it?"
                     ),
+                    "teach_script": (
+                        "Passing a function only stores it. Calling it is what runs it.\n\n"
+                        "`later(() => console.log('inside'))` gives `later` a function. "
+                        "Nothing inside that arrow function runs yet.\n\n"
+                        "`cb()` is the line that prints `inside`.\n\n"
+                        "If you deleted `cb();`, would `inside` still print?"
+                    ),
+                    "retest_script": (
+                        "Exactly. Passing and invoking are different events.\n\n"
+                        "Now prove you can see that without the parameter being named `cb`:\n\n"
+                        "```javascript\n"
+                        "function run(operation) {\n"
+                        "  console.log('start');\n"
+                        "  operation();\n"
+                        "  console.log('end');\n"
+                        "}\n"
+                        "run(() => console.log('work'));\n"
+                        "```\n\n"
+                        "Two separate answers:\n"
+                        "1. Which line passes the function?\n"
+                        "2. Which line invokes it?"
+                    ),
                 },
             },
             {
@@ -137,6 +159,16 @@ CONCEPTS: list[ConceptSpec] = [
                         "Two separate answers:\n"
                         "1. Which line passes the function?\n"
                         "2. Which line invokes it?"
+                    ),
+                    "teach_script": (
+                        "You traced the order correctly: before → inside → after.\n\n"
+                        "That order is the mechanism. Passing and invoking are different events.\n\n"
+                        "`myFunction(() => console.log('inside'))` only gives `myFunction` a function. "
+                        "Nothing inside that arrow function runs yet.\n\n"
+                        "`cb()` is the later. That is the line that prints `inside`.\n\n"
+                        "A callback can run 'later' because the function is stored until some other "
+                        "line invokes it. Closures are a different idea — we will do those next.\n\n"
+                        "One check: if you deleted the `cb();` line, would `inside` still print?"
                     ),
                 },
             },

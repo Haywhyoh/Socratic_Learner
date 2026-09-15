@@ -301,6 +301,27 @@ def later_concept_titles(db: Session, later_ids: list[str]) -> list[str]:
     return [row.title for row in rows] + later_ids
 
 
+def next_unlocked_concept_title(
+    db: Session, user_project: UserProject, current_concept_id: str | None
+) -> str:
+    um = current_user_milestone(user_project)
+    if um is None or um.milestone is None:
+        return ""
+    ids = concept_ids_for_milestone(db, um.milestone.id)
+    states = states_by_concept(db, user_project.id)
+    seen_current = not current_concept_id
+    for concept_id in ids:
+        if not seen_current:
+            if concept_id == current_concept_id:
+                seen_current = True
+            continue
+        row = states.get(concept_id)
+        if row is None or row.status not in SATISFIED_STATUSES:
+            concept = db.get(Concept, concept_id)
+            return (concept.title if concept else concept_id) or concept_id
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Evidence + transitions
 # ---------------------------------------------------------------------------
@@ -421,6 +442,20 @@ def mark_discussing(db: Session, user_project: UserProject, concept_id: str) -> 
         row.status = ConceptStatus.discussing
         db.flush()
     return row
+
+
+def get_learning_control(row: ConceptState) -> dict[str, Any]:
+    from app.agents.learning_control import normalize_control
+
+    evidence = dict(row.evidence or empty_evidence())
+    return normalize_control(evidence.get("learning_control"), concept_id=row.concept_id)
+
+
+def save_learning_control(row: ConceptState, control: dict[str, Any]) -> None:
+    evidence = dict(row.evidence or empty_evidence())
+    evidence["learning_control"] = control
+    row.evidence = evidence
+    flag_modified(row, "evidence")
 
 
 def record_learner_answer(

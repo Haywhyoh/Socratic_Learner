@@ -218,6 +218,9 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
                 status, needs_build=curriculum_graph.needs_build(concept) if concept else False
             ),
             "later_concepts": later_titles,
+            "next_concept_title": curriculum_graph.next_unlocked_concept_title(
+                db, user_project, str(concept_id) if concept_id else None
+            ),
             "resources": list((concept.resources if concept else None) or []),
             "diagnostic_questions": list((concept.diagnostic_questions if concept else None) or []),
             "research_questions": list((concept.research_questions if concept else None) or []),
@@ -272,12 +275,18 @@ def _run_mentor(
         "misconception": None,
         "phase": None,
     }
+    last_tutor = ""
+    for turn in reversed(list(session.turns or [])):
+        if turn.role == MentorTurnRole.tutor:
+            last_tutor = turn.content or ""
+            break
     if state_row and not is_boot_message(message):
         classified = classify_learner_turn(
             message,
             list((concept.misconceptions if concept else None) or []),
             prior_answers,
             attempt_count_after=int(state_row.attempt_count or 0) + 1,
+            last_tutor_message=last_tutor,
         )
         misc = classified.get("misconception") or {}
         curriculum_graph.record_learner_answer(
@@ -293,6 +302,7 @@ def _run_mentor(
     graph_state["diagnostic_answers"] = prior_answers
     graph_state["misconception_branch"] = classified.get("branch")
     graph_state["identified_misconception"] = classified.get("misconception")
+    graph_state["last_tutor_message"] = last_tutor
     graph_state["learner_message"] = message
     graph_state["effort"] = effort or {
         "learner_turns_since_hint": 1,
@@ -306,7 +316,13 @@ def _run_mentor(
     reply = str(result.get("reply") or contract.get("message") or "")
     next_state = str(result.get("next_state") or contract.get("next_state") or "")
     concept_id = ctx["graph_state"].get("current_concept") or None
-    if next_state:
+    if (
+        concept_id
+        and contract.get("action") == "REVIEW"
+        and next_state == ConceptStatus.verification.value
+    ):
+        curriculum_graph.explanation_passed(db, user_project, str(concept_id), message)
+    elif next_state:
         _apply_next_state(db, user_project, str(concept_id) if concept_id else None, next_state)
     if result.get("identified_gap") and concept_id:
         suspects = curriculum_graph.suspect_gaps(db, user_project, str(concept_id))

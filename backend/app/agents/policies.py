@@ -95,10 +95,52 @@ def next_hint_level(current_level: int, effort: EffortSignals) -> tuple[int, str
     return current_level + 1, None
 
 
+def asks_what_next(message: str) -> bool:
+    collapsed = " ".join(message.lower().split())
+    return any(
+        phrase in collapsed
+        for phrase in (
+            "what next",
+            "what's next",
+            "whats next",
+            "what now",
+            "where to next",
+            "next step",
+            "what do i do now",
+            "what should i do next",
+        )
+    )
+
+
+def asks_for_mentor_explanation(message: str) -> bool:
+    if asks_what_next(message):
+        return False
+    collapsed = " ".join(message.lower().split())
+    return any(
+        phrase in collapsed
+        for phrase in (
+            "can you explain",
+            "could you explain",
+            "please explain",
+            "explain it",
+            "explain this",
+            "explain how",
+            "explain why",
+            "i don't get it",
+            "i dont get it",
+            "what does that mean",
+            "i don't understand",
+            "i dont understand",
+        )
+    )
+
+
 def classify_intent(message: str) -> str:
     lower = message.lower().strip()
     if asks_for_implementation(message):
         return "code_ask"
+    if asks_what_next(message) or asks_for_mentor_explanation(message):
+        return "guidance"
     if any(word in lower for word in ("hint", "stuck", "clue", "give me a hint")):
         return "hint"
     if any(word in lower for word in ("i researched", "my notes", "i looked up", "research")):
@@ -124,7 +166,10 @@ def classify_intent(message: str) -> str:
         "walk me through",
         "guide me",
         "can you explain",
+        "explain it",
+        "explain this",
         "explain how",
+        "so what next",
         "start with",
     )
     if any(marker in lower for marker in guidance_markers) or (
@@ -688,6 +733,29 @@ def fallback_mentor_contract(
         return {
             "intent": "DIAGNOSE",
             "action": "ASK_DIAGNOSTIC_QUESTION",
+            "message": message_out,
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "discussing",
+        }
+    if action_hint == "TEACH":
+        misc = context.get("identified_misconception") or {}
+        script = None
+        if isinstance(misc, dict) and isinstance(misc.get("remediation"), dict):
+            script = misc["remediation"].get("teach_script") or misc["remediation"].get("script")
+        message_out = (
+            script.strip()
+            if isinstance(script, str) and script.strip()
+            else (
+                "A callback is stored when it is passed and runs only when some other "
+                "line invokes it. Which exact line in the current example actually runs it?"
+            )
+        )
+        return {
+            "intent": "MENTOR",
+            "action": "ASK_QUESTION",
             "message": message_out,
             "diagnostic_concept": None,
             "identified_gap": None,

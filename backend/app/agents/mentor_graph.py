@@ -12,15 +12,26 @@ from typing import Callable
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.llm import CoachLLM, StubCoachLLM
+from app.agents.learning_control import (
+    callback_distinction_proved,
+    closure_proved,
+    representation_script,
+)
 from app.agents.misconceptions import (
     classify_learner_turn,
+    last_tutor_asks_closures,
+    last_tutor_asks_pass_invoke,
     match_misconception,
     normalize_misconceptions,
     remediation_script,
     retest_script,
+    teach_script,
+    uncovered_objectives,
 )
 from app.agents.policies import (
     asks_for_implementation,
+    asks_for_mentor_explanation,
+    asks_what_next,
     classify_intent,
     enforce_brevity,
     explain_gap_reason,
@@ -94,6 +105,8 @@ def _classify_turn(state: MentorState) -> dict:
         state.get("misconceptions") or [],
         state.get("diagnostic_answers") or [],
         attempt_count_after=int(state.get("attempt_count") or 0),
+        last_tutor_message=state.get("last_tutor_message") or "",
+        control=state.get("learning_control") or {},
     )
     if not classified.get("misconception"):
         identified = state.get("identified_misconception")
@@ -105,6 +118,7 @@ def _classify_turn(state: MentorState) -> dict:
 def _pick_branch(state: MentorState) -> str:
     status = state.get("concept_state") or ConceptStatus.available.value
     intent = state.get("intent") or "answer"
+    message = state.get("learner_message") or ""
     if state.get("awaiting_reflection"):
         return "reflection"
     if state.get("project_complete"):
@@ -119,12 +133,30 @@ def _pick_branch(state: MentorState) -> str:
         return "misconception_retest"
     if branch == "cleared":
         return "misconception_cleared"
+    if branch == "proved_this":
+        return "proved_this"
+    if branch == "change_representation":
+        return "change_representation"
+    if branch == "application_check":
+        return "application_check"
+    if branch == "transfer_check":
+        return "transfer_check"
+    if branch == "await_invoke":
+        return "await_invoke"
+    if branch == "await_pass":
+        return "await_pass"
+    if branch == "closure_pass":
+        return "closure_pass"
+    if asks_what_next(message):
+        return "next_step"
+    if asks_for_mentor_explanation(message):
+        return "teach"
+    if intent == "guidance":
+        return "question"
     if intent == "code_ask":
         return "question"
     if status in _BLOCKED_STATES:
         return "gap_diagnosis"
-    if branch == "evaluate":
-        return "explanation_eval"
     if status in {ConceptStatus.available.value, ConceptStatus.introduced.value}:
         return "question"
     if status == ConceptStatus.researching.value:
@@ -133,7 +165,7 @@ def _pick_branch(state: MentorState) -> str:
         return "explanation_eval"
     if status in {ConceptStatus.attempted.value, ConceptStatus.testing.value}:
         tests = state.get("tests") or {}
-        if (tests.get("failed") or 0) > 0 or "test" in (state.get("learner_message") or "").lower():
+        if (tests.get("failed") or 0) > 0 or "test" in message.lower():
             return "test_feedback"
         return "implementation_gate"
     return "question"
@@ -160,6 +192,10 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
         "misconceptions": state.get("misconceptions") or [],
         "identified_misconception": state.get("identified_misconception")
         or _classify_turn(state).get("misconception"),
+        "learning_control": state.get("learning_control") or {},
+        "do_not_ask_purposes": list(
+            (state.get("learning_control") or {}).get("purposes_demonstrated") or []
+        ),
         "recent_learner_answers": [
             item.get("answer") if isinstance(item, dict) else str(item)
             for item in (state.get("diagnostic_answers") or [])[-4:]
@@ -224,6 +260,27 @@ def make_research_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     return research_prompt
 
 
+def _recent_misconception(state: MentorState) -> dict | None:
+    last_tutor = state.get("last_tutor_message") or ""
+    specs = normalize_misconceptions(state.get("misconceptions") or [])
+    by_id = {item["id"]: item for item in specs}
+    if last_tutor_asks_closures(last_tutor) and by_id.get("closure-copies-values"):
+        return by_id["closure-copies-values"]
+    if last_tutor_asks_pass_invoke(last_tutor):
+        return by_id.get("callback-caller-confusion") or by_id.get("callback-runs-when-passed")
+    identified = state.get("identified_misconception")
+    if isinstance(identified, dict) and identified.get("description"):
+        return identified
+    for item in reversed(list(state.get("diagnostic_answers") or [])):
+        if not isinstance(item, dict):
+            continue
+        if item.get("phase") == "stuck":
+            continue
+        if item.get("misconception_id") in by_id:
+            return by_id[str(item["misconception_id"])]
+    return by_id.get("callback-caller-confusion") or (specs[0] if specs else None)
+
+
 def _misconception_from_state(state: MentorState) -> dict | None:
     identified = state.get("identified_misconception")
     if isinstance(identified, dict) and identified.get("description"):
@@ -234,8 +291,241 @@ def _misconception_from_state(state: MentorState) -> dict | None:
     )
     if matched:
         return matched
-    specs = normalize_misconceptions(state.get("misconceptions") or [])
-    return specs[0] if specs else None
+    return _recent_misconception(state)
+
+
+def make_teach_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
+    def teach(state: MentorState) -> MentorState:
+        misc = _recent_misconception(state)
+        if misc:
+            message = teach_script(misc)
+        else:
+            contract = _invoke_contract(llm, state, "TEACH")
+            message = str(contract.get("message") or "").strip() or (
+                "Here is the mechanism in the smallest form.\n"
+                "A callback is stored when it is passed and runs only when some other "
+                "line invokes it.\n\n"
+                "Which exact line in the current example actually runs it?"
+            )
+        contract = empty_contract(
+            intent="MENTOR",
+            action="ASK_QUESTION",
+            message=message,
+            next_state=ConceptStatus.discussing.value,
+        )
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": ConceptStatus.discussing.value,
+        }
+
+    return teach
+
+
+def next_step_node(state: MentorState) -> MentorState:
+    title = state.get("concept_title") or "this concept"
+    nxt = (state.get("next_concept_title") or "").strip()
+    status = state.get("concept_state") or ""
+    answers = " ".join(
+        str(item.get("answer") if isinstance(item, dict) else item)
+        for item in (state.get("diagnostic_answers") or [])[-4:]
+    )
+    leftover = uncovered_objectives(
+        list(state.get("learning_objectives") or []),
+        f"{answers} {state.get('learner_last_explanation') or ''}",
+    )
+    if leftover:
+        message = (
+            f"The callback model is solid. Stay on '{title}' for one more piece: closures.\n\n"
+            "If `let n = 1` and an inner function reads `n`, then later `n = 2`, "
+            "what does the inner function print when you call it?"
+        )
+        next_state = ConceptStatus.discussing.value
+    elif status in {
+        ConceptStatus.explained.value,
+        ConceptStatus.verification.value,
+        ConceptStatus.mastered.value,
+        ConceptStatus.verified.value,
+    } and nxt:
+        message = (
+            f"Next concept: {nxt}. Don't skip ahead — what do you already understand about it?"
+        )
+        next_state = status
+    else:
+        questions = list(state.get("diagnostic_questions") or [])
+        ask = questions[0] if questions else "What can you still prove about this, in your own words?"
+        message = f"We're still on '{title}'. Next: {ask}"
+        next_state = status or ConceptStatus.discussing.value
+    contract = empty_contract(
+        intent="MENTOR",
+        action="ASK_QUESTION",
+        message=message,
+        next_state=next_state,
+    )
+    return {"reply": message, "contract": contract, "next_state": next_state}
+
+
+def await_invoke_node(state: MentorState) -> MentorState:
+    message = (
+        "Yes. That line *passes* the function. It does not run it.\n\n"
+        "Second answer, separately: which exact line *invokes* it?"
+    )
+    contract = empty_contract(
+        intent="DIAGNOSE",
+        action="ASK_DIAGNOSTIC_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+    }
+
+
+def await_pass_node(state: MentorState) -> MentorState:
+    message = (
+        "Yes. That line *invokes* it.\n\n"
+        "Second answer, separately: which exact line *passes* the function in?"
+    )
+    contract = empty_contract(
+        intent="DIAGNOSE",
+        action="ASK_DIAGNOSTIC_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+    }
+
+
+def closure_pass_node(state: MentorState) -> MentorState:
+    prefix = (
+        "Right. It prints 2. The inner function does not copy `n` — it keeps a live link to it.\n\n"
+    )
+    result = application_check_node(state)
+    result["reply"] = prefix + str(result.get("reply") or "")
+    contract = dict(result.get("contract") or {})
+    contract["message"] = result["reply"]
+    result["contract"] = contract  # type: ignore[typeddict-item]
+    return result
+
+
+def proved_this_node(state: MentorState) -> MentorState:
+    control = state.get("learning_control") or {}
+    nxt = (state.get("next_concept_title") or "").strip()
+    objectives = list(state.get("learning_objectives") or [])
+    leftover_closure = any("closure" in item.lower() for item in objectives) and not closure_proved(control)
+    strategy = str(control.get("strategy") or "")
+    if leftover_closure:
+        message = (
+            "You've demonstrated the distinction between passing and invoking a callback "
+            "in multiple examples. I'm marking that part verified.\n\n"
+            "Next required piece: closures. If `let n = 1` and an inner function reads `n`, "
+            "then later `n = 2`, what does the inner function print when you call it?"
+        )
+        next_state = ConceptStatus.discussing.value
+        action = "ASK_QUESTION"
+        unlock = False
+    elif strategy == "transfer":
+        follow = f" Next concept: {nxt}." if nxt else ""
+        message = (
+            "You've demonstrated the distinction in multiple forms. I'm marking this "
+            f"concept verified.{follow}"
+        )
+        next_state = (
+            ConceptStatus.attempted.value
+            if state.get("needs_build")
+            else ConceptStatus.verification.value
+        )
+        action = "REVIEW"
+        unlock = not bool(state.get("needs_build"))
+    elif state.get("needs_build"):
+        message = (
+            "You've demonstrated the distinction. I'm marking that part verified.\n"
+            "Now use it: build the smallest version that stores a function and runs it later."
+        )
+        next_state = ConceptStatus.attempted.value
+        action = "ASK_IMPLEMENTATION"
+        unlock = False
+    else:
+        return application_check_node(state)
+    contract = empty_contract(
+        intent="MENTOR",
+        action=action,
+        message=message,
+        should_unlock=unlock,
+        next_state=next_state,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": next_state,
+        "should_unlock": unlock,
+    }
+
+
+def change_representation_node(state: MentorState) -> MentorState:
+    control = state.get("learning_control") or {}
+    representation = str(control.get("representation") or "verbal")
+    from app.agents.learning_control import next_representation
+
+    nxt = next_representation(representation) or representation
+    misc = _misconception_from_state(state)
+    misc_id = misc.get("id") if isinstance(misc, dict) else None
+    if last_tutor_asks_closures(state.get("last_tutor_message") or ""):
+        misc_id = "closure-copies-values"
+    message = (
+        "Same concept, different representation — not another copy of the last question.\n\n"
+        + representation_script(misc_id, nxt)
+    )
+    contract = empty_contract(
+        intent="DIAGNOSE",
+        action="ASK_DIAGNOSTIC_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+        "learning_control": {**dict(control), "representation": nxt, "strategy": "change_representation"},
+    }
+
+
+def application_check_node(state: MentorState) -> MentorState:
+    message = (
+        "That explanation is enough to treat this as explained — not yet verified.\n\n"
+        "Use it: a router stores a function when you register a path and runs it later "
+        "when a request matches. Which moment is passing, and which is invoking?"
+    )
+    contract = empty_contract(
+        intent="MENTOR",
+        action="ASK_QUESTION",
+        message=message,
+        next_state=ConceptStatus.explained.value,
+    )
+    return {"reply": message, "contract": contract, "next_state": ConceptStatus.explained.value}
+
+
+def transfer_check_node(state: MentorState) -> MentorState:
+    message = (
+        "Same distinction, new names — don't reuse the previous wording.\n\n"
+        "```javascript\n"
+        "queue.push(job);\n"
+        "job();\n"
+        "```\n\n"
+        "Which line passes the function, and which line invokes it?"
+    )
+    contract = empty_contract(
+        intent="DIAGNOSE",
+        action="ASK_DIAGNOSTIC_QUESTION",
+        message=message,
+        next_state=ConceptStatus.explained.value,
+    )
+    return {"reply": message, "contract": contract, "next_state": ConceptStatus.explained.value}
 
 
 def make_remediation_node() -> Callable[[MentorState], MentorState]:
@@ -291,12 +581,23 @@ def make_retest_node() -> Callable[[MentorState], MentorState]:
 
 
 def misconception_cleared_node(state: MentorState) -> MentorState:
-    message = (
-        "That's the distinction. We can use it now — I won't re-ask the same question."
+    leftover = uncovered_objectives(
+        list(state.get("learning_objectives") or []),
+        str(state.get("learner_message") or ""),
     )
+    if leftover:
+        message = (
+            "That's the callback distinction: passing stores the function, `cb()` runs it later.\n\n"
+            "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "
+            "then later `n = 2`, what does the inner function print when you call it?"
+        )
+    else:
+        message = (
+            "That's the distinction. We can use it now — I won't re-ask the same question."
+        )
     contract = empty_contract(
         intent="MENTOR",
-        action="REVIEW",
+        action="ASK_QUESTION",
         message=message,
         next_state=ConceptStatus.discussing.value,
     )
@@ -309,10 +610,12 @@ def misconception_cleared_node(state: MentorState) -> MentorState:
 
 def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     def explanation_eval(state: MentorState) -> MentorState:
-        matched = match_misconception(
-            state.get("learner_message") or "",
-            state.get("misconceptions") or [],
-        )
+        answer = state.get("learner_message") or ""
+        if asks_what_next(answer):
+            return next_step_node(state)
+        if asks_for_mentor_explanation(answer):
+            return make_teach_node(llm)(state)
+        matched = match_misconception(answer, state.get("misconceptions") or [])
         if matched:
             message = remediation_script(matched)
             contract = empty_contract(
@@ -326,30 +629,41 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
                 "contract": contract,
                 "next_state": ConceptStatus.discussing.value,
             }
+        objectives = list(state.get("learning_objectives") or [])
+        recent = _recent_misconception(state)
+        if recent and recent.get("id") == "callback-caller-confusion":
+            objectives = [item for item in objectives if "closure" not in item.lower()] or objectives[:1]
         result = llm.evaluate_explanation(
             concept_title=state.get("concept_title") or "",
             concept_description=state.get("concept_description") or "",
-            objectives=list(state.get("learning_objectives") or []),
-            answer=state.get("learner_message") or "",
+            objectives=objectives,
+            answer=answer,
+            current_question=str(state.get("last_tutor_message") or ""),
         )
         passed = bool(result.get("passed"))
+        leftover = uncovered_objectives(
+            list(state.get("learning_objectives") or []),
+            answer,
+        )
         if passed:
-            contract = empty_contract(
-                intent="MENTOR",
-                action="REVIEW",
-                message=str(
-                    result.get("feedback")
-                    or "That's enough to work with. Now build the smallest version of this you can."
-                    if state.get("needs_build")
-                    else "Clear enough. We'll treat this concept as explained."
-                ),
-                should_unlock=not bool(state.get("needs_build")),
-                next_state=(
-                    ConceptStatus.attempted.value
-                    if state.get("needs_build")
-                    else ConceptStatus.verification.value
-                ),
-            )
+            if leftover:
+                message = (
+                    "The callback part is solid — passing stores the function, `cb()` runs it later.\n\n"
+                    "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "
+                    "then later `n = 2`, what does the inner function print when you call it?"
+                )
+                contract = empty_contract(
+                    intent="MENTOR",
+                    action="ASK_QUESTION",
+                    message=message,
+                    next_state=ConceptStatus.discussing.value,
+                )
+                return {
+                    "reply": message,
+                    "contract": contract,
+                    "next_state": ConceptStatus.discussing.value,
+                }
+            return application_check_node(state)
         else:
             contract = empty_contract(
                 intent="DIAGNOSE",
@@ -448,7 +762,19 @@ def make_hint_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
             [state.get("concept_title") or state.get("current_concept") or ""],
             instructions=seeded,
         )
-        message = seeded or llm_hint
+        last_tutor = state.get("last_tutor_message") or ""
+        if last_tutor_asks_pass_invoke(last_tutor):
+            message = (
+                "Two different lines. One *gives* the function in. A different line *runs* it.\n"
+                "If you already named `later(() => ...)`, the invoke line is `cb();` inside `later`."
+            )
+        elif last_tutor_asks_closures(last_tutor):
+            message = (
+                "The inner function does not snapshot `n`. It keeps a live link. "
+                "If `n` later becomes 2, what does the inner function print?"
+            )
+        else:
+            message = seeded or llm_hint
         contract = empty_contract(
             intent="MENTOR",
             action="HINT",
@@ -604,6 +930,15 @@ def build_mentor_graph(llm: CoachLLM | None = None):
     builder.add_node("misconception_remediation", make_remediation_node())
     builder.add_node("misconception_retest", make_retest_node())
     builder.add_node("misconception_cleared", misconception_cleared_node)
+    builder.add_node("teach", make_teach_node(llm))
+    builder.add_node("next_step", next_step_node)
+    builder.add_node("await_invoke", await_invoke_node)
+    builder.add_node("await_pass", await_pass_node)
+    builder.add_node("closure_pass", closure_pass_node)
+    builder.add_node("proved_this", proved_this_node)
+    builder.add_node("change_representation", change_representation_node)
+    builder.add_node("application_check", application_check_node)
+    builder.add_node("transfer_check", transfer_check_node)
     builder.add_node("explanation_eval", make_explanation_node(llm))
     builder.add_node("implementation_gate", make_implementation_node(llm))
     builder.add_node("test_feedback", make_test_node(llm))
@@ -623,6 +958,15 @@ def build_mentor_graph(llm: CoachLLM | None = None):
             "misconception_remediation": "misconception_remediation",
             "misconception_retest": "misconception_retest",
             "misconception_cleared": "misconception_cleared",
+            "teach": "teach",
+            "next_step": "next_step",
+            "await_invoke": "await_invoke",
+            "await_pass": "await_pass",
+            "closure_pass": "closure_pass",
+            "proved_this": "proved_this",
+            "change_representation": "change_representation",
+            "application_check": "application_check",
+            "transfer_check": "transfer_check",
             "explanation_eval": "explanation_eval",
             "implementation_gate": "implementation_gate",
             "test_feedback": "test_feedback",
@@ -643,6 +987,15 @@ def build_mentor_graph(llm: CoachLLM | None = None):
         "misconception_remediation",
         "misconception_retest",
         "misconception_cleared",
+        "teach",
+        "next_step",
+        "await_invoke",
+        "await_pass",
+        "closure_pass",
+        "proved_this",
+        "change_representation",
+        "application_check",
+        "transfer_check",
         "explanation_eval",
         "implementation_gate",
         "test_feedback",

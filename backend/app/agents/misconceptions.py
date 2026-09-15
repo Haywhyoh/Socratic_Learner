@@ -21,13 +21,20 @@ _PASS_TOKENS = ("pass", "passes", "passed", "gives", "supplies", "argument")
 _INVOKE_TOKENS = (
     "invoke",
     "invokes",
+    "invoking",
     "execute",
     "executes",
+    "executing",
+    "calling",
+    "calls",
     "cb()",
     "calls cb",
+    "call cb",
     "calls the callback",
     "operation()",
     "calls operation",
+    "runs it",
+    "run it",
 )
 _CALLER_CONFUSION = (
     "person who called",
@@ -92,6 +99,16 @@ CALLBACK_CALLER_CONFUSION: dict[str, Any] = {
             "1. Which line passes the function?\n"
             "2. Which line invokes it?"
         ),
+        "teach_script": (
+            "You traced the order correctly: before → inside → after.\n\n"
+            "That order is the mechanism. Passing and invoking are different events.\n\n"
+            "`myFunction(() => console.log('inside'))` only gives `myFunction` a function. "
+            "Nothing inside that arrow function runs yet.\n\n"
+            "`cb()` is the later. That is the line that prints `inside`.\n\n"
+            "A callback can run 'later' because the function is stored until some other "
+            "line invokes it. Closures are a different idea — we will do those next.\n\n"
+            "One check: if you deleted the `cb();` line, would `inside` still print?"
+        ),
     },
 }
 
@@ -145,18 +162,69 @@ def normalize_misconceptions(raw: list[Any] | None) -> list[dict[str, Any]]:
     return out
 
 
-def answer_resolves_misconception(answer: str, misconception: dict[str, Any]) -> bool:
-    """True when the learner now names both sides of the seeded distinction."""
+def names_passing(answer: str) -> bool:
+    raw = answer.lower()
+    text = _norm(answer)
+    if "later(" in raw or "myfunction(" in raw or "run(" in raw:
+        if any(token in text for token in _PASS_TOKENS) or "passing" in text:
+            return True
+    return any(token in text for token in (*_PASS_TOKENS, "passing"))
+
+
+def names_invoking(answer: str) -> bool:
+    raw = answer.lower()
+    if "cb()" in raw or "operation()" in raw:
+        return True
+    text = _norm(answer)
+    if any(token in text for token in _INVOKE_TOKENS):
+        return True
+    return bool(re.search(r"\bcb\b", text)) and any(
+        token in text for token in ("call", "calling", "invoke", "run", "line")
+    )
+
+
+def last_tutor_asks_closures(message: str) -> bool:
+    text = message.lower()
+    return any(
+        phrase in text
+        for phrase in ("closure", "let n", "inner function", "live link", "captures")
+    )
+
+
+def last_tutor_asks_pass_invoke(message: str) -> bool:
+    text = message.lower()
+    if "two separate answers" in text:
+        return True
+    return "which line" in text and any(
+        token in text for token in ("pass", "invoke", "invokes")
+    )
+
+
+def answer_shows_live_closure(answer: str) -> bool:
     text = _norm(answer)
     if not text:
         return False
-    if misconception.get("id") != "callback-caller-confusion":
+    if re.search(r"\b1\b", text) and not re.search(r"\b2\b", text):
         return False
-    if any(phrase in text for phrase in _CALLER_CONFUSION):
+    if "copy" in text and "2" not in text:
         return False
-    passes = any(token in text for token in _PASS_TOKENS)
-    invokes = any(token in text for token in _INVOKE_TOKENS)
-    return passes and invokes
+    return bool(re.search(r"\b2\b", text))
+
+
+def answer_resolves_misconception(answer: str, misconception: dict[str, Any]) -> bool:
+    """True when the learner now names both sides of the seeded distinction."""
+    if not answer.strip():
+        return False
+    misc_id = misconception.get("id")
+    if misc_id == "closure-copies-values":
+        return answer_shows_live_closure(answer)
+    if misc_id not in {"callback-caller-confusion", "callback-runs-when-passed"}:
+        return False
+    if any(phrase in _norm(answer) for phrase in _CALLER_CONFUSION):
+        return False
+    traced = all(word in _norm(answer) for word in ("before", "inside", "after")) and names_invoking(answer)
+    named = names_passing(answer) and names_invoking(answer)
+    return traced or named
 
 
 def match_misconception(answer: str, raw_misconceptions: list[Any] | None) -> dict[str, Any] | None:
@@ -210,45 +278,110 @@ def retest_script(misconception: dict[str, Any]) -> str:
     )
 
 
+def teach_script(misconception: dict[str, Any]) -> str:
+    script = (misconception.get("remediation") or {}).get("teach_script")
+    if isinstance(script, str) and script.strip():
+        return script.strip()
+    return (
+        f"{misconception.get('description') or 'Here is the mechanism in the smallest form.'}\n\n"
+        "Passing a function only stores it. `cb()` is the line that actually runs it.\n"
+        "If you deleted `cb();`, the callback would never run."
+    )
+
+
+def uncovered_objectives(objectives: list[str], answer: str) -> list[str]:
+    text = _norm(answer)
+    leftover: list[str] = []
+    for objective in objectives:
+        lower = objective.lower()
+        if "closure" in lower:
+            if answer_shows_live_closure(answer) or "closure" in text or "capture" in text:
+                continue
+            leftover.append(objective)
+    return leftover
+
+
 def classify_learner_turn(
     message: str,
     raw_misconceptions: list[Any] | None,
     prior_answers: list[Any] | None,
     *,
     attempt_count_after: int,
+    last_tutor_message: str = "",
+    control: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Decide whether to remediate, re-test, evaluate, or keep questioning."""
-    if is_boot_message(message):
+    from app.agents.learning_control import teaching_branch
+    from app.agents.policies import asks_for_mentor_explanation, asks_what_next
+
+    if is_boot_message(message) or asks_what_next(message) or asks_for_mentor_explanation(message):
         return {"branch": None, "misconception": None, "phase": None}
 
     specs = normalize_misconceptions(raw_misconceptions)
+    by_id = {item["id"]: item for item in specs}
     last = (list(prior_answers or []) or [{}])[-1] if prior_answers else {}
     if not isinstance(last, dict):
         last = {}
+    callback_misc = (
+        by_id.get("callback-caller-confusion")
+        or by_id.get("callback-runs-when-passed")
+        or (specs[0] if specs else None)
+    )
+    closure_misc = by_id.get("closure-copies-values")
 
-    resolved: dict[str, Any] | None = None
-    for item in specs:
-        if answer_resolves_misconception(message, item):
-            resolved = item
-            break
-
-    if resolved:
-        last_id = last.get("misconception_id")
-        last_phase = last.get("phase")
-        if last_id == resolved["id"] and last_phase in {"resolved", "retest"}:
-            return {"branch": "cleared", "misconception": resolved, "phase": "cleared"}
-        if last_id == resolved["id"]:
-            return {"branch": "retest", "misconception": resolved, "phase": "resolved"}
-        return {"branch": None, "misconception": resolved, "phase": "cleared"}
-
-    matched = match_misconception(message, raw_misconceptions)
-    if matched:
-        return {"branch": "remediate", "misconception": matched, "phase": "detected"}
-
-    if attempt_count_after >= 2:
-        return {
-            "branch": "evaluate",
-            "misconception": specs[0] if specs else None,
-            "phase": "stuck",
+    result: dict[str, Any]
+    if last_tutor_asks_closures(last_tutor_message) and answer_shows_live_closure(message):
+        result = {
+            "branch": "closure_pass",
+            "misconception": closure_misc,
+            "phase": "cleared",
         }
-    return {"branch": None, "misconception": None, "phase": None}
+    else:
+        resolved: dict[str, Any] | None = None
+        for item in specs:
+            if answer_resolves_misconception(message, item):
+                resolved = item
+                break
+        if resolved:
+            last_phase = last.get("phase")
+            if last_phase in {"resolved", "retest"} or "operation" in last_tutor_message.lower():
+                result = {"branch": "cleared", "misconception": resolved, "phase": "cleared"}
+            else:
+                result = {"branch": "retest", "misconception": resolved, "phase": "resolved"}
+        else:
+            asked_pass_invoke = last_tutor_asks_pass_invoke(last_tutor_message) or last.get("phase") in {
+                "detected",
+                "stuck",
+                "resolved",
+            }
+            if asked_pass_invoke and names_passing(message) and not names_invoking(message):
+                result = {
+                    "branch": "await_invoke",
+                    "misconception": callback_misc,
+                    "phase": last.get("phase") or "detected",
+                }
+            elif asked_pass_invoke and names_invoking(message) and not names_passing(message):
+                result = {
+                    "branch": "await_pass",
+                    "misconception": callback_misc,
+                    "phase": last.get("phase") or "detected",
+                }
+            else:
+                matched = match_misconception(message, raw_misconceptions)
+                if matched:
+                    result = {"branch": "remediate", "misconception": matched, "phase": "detected"}
+                else:
+                    result = {"branch": None, "misconception": None, "phase": None}
+
+    override = teaching_branch(
+        result,
+        control or {},
+        message=message,
+        last_tutor=last_tutor_message,
+    )
+    if override:
+        result["branch"] = override
+        if override == "proved_this" and callback_misc:
+            result["misconception"] = result.get("misconception") or callback_misc
+            result["phase"] = "cleared"
+    return result
