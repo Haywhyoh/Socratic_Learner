@@ -9,6 +9,11 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.agents.llm import get_coach_llm
+from app.agents.learning_control import (
+    apply_learner_turn,
+    apply_tutor_move,
+    record_tutor_question,
+)
 from app.agents.mentor_graph import _behaviors_for, build_mentor_graph
 from app.agents.misconceptions import classify_learner_turn, is_boot_message
 from app.agents.policies import (
@@ -280,6 +285,11 @@ def _run_mentor(
         if turn.role == MentorTurnRole.tutor:
             last_tutor = turn.content or ""
             break
+    control: dict[str, Any] = {}
+    if state_row:
+        control = curriculum_graph.get_learning_control(state_row)
+    objectives = list((concept.learning_objectives if concept else None) or [])
+    concept_title = concept.title if concept else ""
     if state_row and not is_boot_message(message):
         classified = classify_learner_turn(
             message,
@@ -287,9 +297,18 @@ def _run_mentor(
             prior_answers,
             attempt_count_after=int(state_row.attempt_count or 0) + 1,
             last_tutor_message=last_tutor,
+            control=control,
+            objectives=objectives,
+            concept_title=concept_title,
+        )
+        control = apply_learner_turn(
+            control,
+            message=message,
+            last_tutor=last_tutor,
+            classified=classified,
         )
         misc = classified.get("misconception") or {}
-        curriculum_graph.record_learner_answer(
+        state_row = curriculum_graph.record_learner_answer(
             db,
             user_project,
             state_row.concept_id,
@@ -299,6 +318,7 @@ def _run_mentor(
         )
         graph_state["attempt_count"] = int(state_row.attempt_count or 0)
         graph_state["learner_last_explanation"] = message
+    graph_state["learning_control"] = control
     graph_state["diagnostic_answers"] = prior_answers
     graph_state["misconception_branch"] = classified.get("branch")
     graph_state["identified_misconception"] = classified.get("misconception")
@@ -315,6 +335,13 @@ def _run_mentor(
     contract = dict(result.get("contract") or {})
     reply = str(result.get("reply") or contract.get("message") or "")
     next_state = str(result.get("next_state") or contract.get("next_state") or "")
+    if isinstance(result.get("learning_control"), dict):
+        control = {**control, **result["learning_control"]}
+    node = str(classified.get("branch") or "")
+    control = apply_tutor_move(control, node)
+    control = record_tutor_question(control, reply)
+    if state_row:
+        curriculum_graph.save_learning_control(state_row, control)
     concept_id = ctx["graph_state"].get("current_concept") or None
     if (
         concept_id

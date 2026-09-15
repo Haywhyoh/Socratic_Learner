@@ -323,7 +323,7 @@ def test_what_next_does_not_regrade_the_learner() -> None:
     reply = result["reply"].lower()
     assert "no explanation" not in reply
     assert "does not address" not in reply
-    assert "closure" in reply or "next concept" in reply
+    assert "closure" in reply or "next concept" in reply or "missing" in reply or "pass" in reply
 
 
 def test_correct_closure_answer_is_not_callback_remediation() -> None:
@@ -442,3 +442,169 @@ def test_explain_during_pass_invoke_drill_teaches_instead_of_repeating() -> None
     reply = result["reply"].lower()
     assert "the learner thinks" not in reply
     assert "later" in reply or "stores" in reply or "cb()" in result["reply"]
+
+
+def _functions_objectives() -> list[str]:
+    return [
+        "Explain what a callback is and why it lets code run 'later'",
+        "Explain, in your own words, what a closure captures and why",
+    ]
+
+
+def _proved_callback_control(*, closures: bool = False) -> dict:
+    from app.agents.learning_control import (
+        CLOSURE_UNDERSTANDING,
+        INVOKE_UNDERSTANDING,
+        PASS_UNDERSTANDING,
+        empty_control,
+    )
+
+    control = empty_control("programming.functions")
+    control["confirmed_understandings"] = [PASS_UNDERSTANDING, INVOKE_UNDERSTANDING]
+    control["purposes_demonstrated"] = [
+        "identify_pass",
+        "identify_invoke",
+        "identify_pass_invoke",
+        "transfer_pass_invoke",
+        "remove_cb",
+        "trace_execution",
+    ]
+    control["subskills_verified"] = ["pass_vs_invoke"]
+    if closures:
+        control["confirmed_understandings"].append(CLOSURE_UNDERSTANDING)
+        control["purposes_demonstrated"].append("closure_live_link")
+        control["subskills_verified"].append("closures")
+    return control
+
+
+def test_what_next_names_missing_evidence_instead_of_regrading() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "so what next",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": _functions_objectives(),
+            "next_concept_title": "Objects, properties, methods, references",
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "no explanation" not in reply
+    assert "does not address" not in reply
+    assert "missing" in reply or "pass" in reply or "closure" in reply or "next concept" in reply
+
+
+def test_proved_callback_does_not_repeat_the_same_question() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": (
+                "passing is later(() => console.log('inside')); invoking is cb();"
+            ),
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": _functions_objectives(),
+            "learning_control": _proved_callback_control(),
+            "last_tutor_message": (
+                "Two separate answers, please:\n"
+                "1. Which line *passes* the function?\n"
+                "2. Which exact line *invokes* it?"
+            ),
+            "next_concept_title": "Objects, properties, methods, references",
+            "attempt_count": 9,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "two different events" not in reply
+    assert "two separate answers" not in reply
+    assert "closure" in reply
+    assert "verified" in reply or "missing" in reply or "still" in reply
+
+
+def test_frustration_after_proved_callbacks_asks_only_missing_evidence() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "we keep going over the same thing, I already answered this",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": _functions_objectives(),
+            "learning_control": _proved_callback_control(),
+            "next_concept_title": "Objects, properties, methods, references",
+            "attempt_count": 10,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "two different events" not in reply
+    assert "later(()" not in result["reply"]
+    assert "closure" in reply
+    assert "missing" in reply or "verified" in reply or "still" in reply
+
+
+def test_frustration_after_all_evidence_advances_the_graph() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "can we move on, you're repeating yourself",
+            "concept_state": "discussing",
+            "current_concept": "programming.functions",
+            "concept_title": "Functions, parameters, callbacks, closures",
+            "misconceptions": _functions_misconceptions(),
+            "learning_objectives": _functions_objectives(),
+            "learning_control": _proved_callback_control(closures=True),
+            "next_concept_title": "Objects, properties, methods, references",
+            "attempt_count": 12,
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "two different events" not in reply
+    assert "collected" in reply or "verified" in reply or "next concept" in reply
+    assert "objects" in reply
+    assert result["contract"]["action"] == "REVIEW"
+
+
+def test_misconception_status_is_suspected_on_caller_confusion() -> None:
+    from app.agents.learning_control import apply_learner_turn, empty_control
+    from app.agents.misconceptions import classify_learner_turn
+
+    classified = classify_learner_turn(
+        "The person who called myFunction is responsible for invoking cb.",
+        _functions_misconceptions(),
+        [],
+        attempt_count_after=1,
+        last_tutor_message="Who invokes the callback?",
+        control=empty_control("programming.functions"),
+        objectives=_functions_objectives(),
+        concept_title="Functions, parameters, callbacks, closures",
+    )
+    assert classified["branch"] == "remediate"
+    control = apply_learner_turn(
+        empty_control("programming.functions"),
+        message="The person who called myFunction is responsible for invoking cb.",
+        last_tutor="Who invokes the callback?",
+        classified=classified,
+    )
+    assert control["active_misconception_status"] == "suspected"
+    assert "callback-caller-confusion" in control["active_misconceptions"]

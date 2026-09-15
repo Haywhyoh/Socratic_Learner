@@ -309,12 +309,16 @@ def classify_learner_turn(
     attempt_count_after: int,
     last_tutor_message: str = "",
     control: dict[str, Any] | None = None,
+    objectives: list[str] | None = None,
+    concept_title: str = "",
 ) -> dict[str, Any]:
     """Decide whether to remediate, re-test, evaluate, or keep questioning."""
     from app.agents.learning_control import teaching_branch
     from app.agents.policies import asks_for_mentor_explanation, asks_what_next
 
-    if is_boot_message(message) or asks_what_next(message) or asks_for_mentor_explanation(message):
+    if is_boot_message(message) or (
+        asks_for_mentor_explanation(message) and not asks_what_next(message)
+    ):
         return {"branch": None, "misconception": None, "phase": None}
 
     specs = normalize_misconceptions(raw_misconceptions)
@@ -378,6 +382,8 @@ def classify_learner_turn(
         control or {},
         message=message,
         last_tutor=last_tutor_message,
+        objectives=objectives,
+        concept_title=concept_title,
     )
     if override:
         result["branch"] = override

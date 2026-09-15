@@ -15,7 +15,9 @@ from app.agents.llm import CoachLLM, StubCoachLLM
 from app.agents.learning_control import (
     callback_distinction_proved,
     closure_proved,
+    missing_required_evidence,
     representation_script,
+    required_conversational_evidence_satisfied,
 )
 from app.agents.misconceptions import (
     classify_learner_turn,
@@ -107,6 +109,8 @@ def _classify_turn(state: MentorState) -> dict:
         attempt_count_after=int(state.get("attempt_count") or 0),
         last_tutor_message=state.get("last_tutor_message") or "",
         control=state.get("learning_control") or {},
+        objectives=list(state.get("learning_objectives") or []),
+        concept_title=str(state.get("concept_title") or ""),
     )
     if not classified.get("misconception"):
         identified = state.get("identified_misconception")
@@ -147,6 +151,8 @@ def _pick_branch(state: MentorState) -> str:
         return "await_pass"
     if branch == "closure_pass":
         return "closure_pass"
+    if branch == "missing_evidence":
+        return "missing_evidence"
     if asks_what_next(message):
         return "next_step"
     if asks_for_mentor_explanation(message):
@@ -196,6 +202,15 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
         "do_not_ask_purposes": list(
             (state.get("learning_control") or {}).get("purposes_demonstrated") or []
         ),
+        "subskills_verified": list(
+            (state.get("learning_control") or {}).get("subskills_verified") or []
+        ),
+        "missing_required_evidence": missing_required_evidence(
+            state.get("learning_control") or {},
+            list(state.get("learning_objectives") or []),
+            concept_id=str(state.get("current_concept") or ""),
+            concept_title=str(state.get("concept_title") or ""),
+        ),
         "recent_learner_answers": [
             item.get("answer") if isinstance(item, dict) else str(item)
             for item in (state.get("diagnostic_answers") or [])[-4:]
@@ -211,6 +226,9 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
 
 def make_question_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     def question_node(state: MentorState) -> MentorState:
+        skipped = _advance_or_missing_if_ready(state)
+        if skipped is not None:
+            return skipped
         status = state.get("concept_state") or ConceptStatus.available.value
         if asks_for_implementation(state.get("learner_message") or ""):
             contract = empty_contract(
@@ -322,26 +340,129 @@ def make_teach_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     return teach
 
 
-def next_step_node(state: MentorState) -> MentorState:
+def _control_missing(state: MentorState) -> list[dict[str, str]]:
+    return missing_required_evidence(
+        state.get("learning_control") or {},
+        list(state.get("learning_objectives") or []),
+        concept_id=str(state.get("current_concept") or ""),
+        concept_title=str(state.get("concept_title") or ""),
+    )
+
+
+def _advance_or_missing_if_ready(state: MentorState) -> MentorState | None:
+    control = state.get("learning_control") or {}
+    if required_conversational_evidence_satisfied(
+        control,
+        list(state.get("learning_objectives") or []),
+        concept_id=str(state.get("current_concept") or ""),
+        concept_title=str(state.get("concept_title") or ""),
+    ):
+        return proved_this_node(state)
+    if callback_distinction_proved(control) and _control_missing(state):
+        return missing_evidence_node(state)
+    return None
+
+
+def _advance_payload(state: MentorState) -> MentorState:
     title = state.get("concept_title") or "this concept"
     nxt = (state.get("next_concept_title") or "").strip()
-    status = state.get("concept_state") or ""
-    answers = " ".join(
-        str(item.get("answer") if isinstance(item, dict) else item)
-        for item in (state.get("diagnostic_answers") or [])[-4:]
-    )
-    leftover = uncovered_objectives(
-        list(state.get("learning_objectives") or []),
-        f"{answers} {state.get('learner_last_explanation') or ''}",
-    )
-    if leftover:
+    follow = f" The curriculum graph's next concept is {nxt}." if nxt else ""
+    if state.get("needs_build"):
         message = (
-            f"The callback model is solid. Stay on '{title}' for one more piece: closures.\n\n"
+            f"Required evidence for '{title}' is collected. I'm marking that verified.\n"
+            "Now use it: build the smallest version that stores a function and runs it later."
+        )
+        next_state = ConceptStatus.attempted.value
+        action = "ASK_IMPLEMENTATION"
+        unlock = False
+    else:
+        message = (
+            f"Required evidence for '{title}' is collected. I'm marking this concept "
+            f"verified.{follow}"
+        )
+        next_state = ConceptStatus.verification.value
+        action = "REVIEW"
+        unlock = True
+    contract = empty_contract(
+        intent="MENTOR",
+        action=action,
+        message=message,
+        should_unlock=unlock,
+        next_state=next_state,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": next_state,
+        "should_unlock": unlock,
+    }
+
+
+def missing_evidence_node(state: MentorState) -> MentorState:
+    title = state.get("concept_title") or "this concept"
+    missing = _control_missing(state)
+    if not missing:
+        if required_conversational_evidence_satisfied(
+            state.get("learning_control") or {},
+            list(state.get("learning_objectives") or []),
+            concept_id=str(state.get("current_concept") or ""),
+            concept_title=str(state.get("concept_title") or ""),
+        ):
+            return _advance_payload(state)
+        questions = list(state.get("diagnostic_questions") or [])
+        ask = questions[0] if questions else "What can you still prove about this, in your own words?"
+        message = f"We're still on '{title}'. Still missing evidence. Next: {ask}"
+        contract = empty_contract(
+            intent="MENTOR",
+            action="ASK_QUESTION",
+            message=message,
+            next_state=ConceptStatus.discussing.value,
+        )
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": ConceptStatus.discussing.value,
+        }
+    first = missing[0]
+    if first["skill"] == "closures":
+        message = (
+            f"Not another callback question — that distinction is verified on '{title}'.\n\n"
+            f"Still missing: {first['why']}\n\n"
             "If `let n = 1` and an inner function reads `n`, then later `n = 2`, "
             "what does the inner function print when you call it?"
         )
-        next_state = ConceptStatus.discussing.value
-    elif status in {
+    else:
+        message = (
+            f"We're not repeating for its own sake. Still missing on '{title}': "
+            f"{first['why']}\n\n"
+            "Two separate answers, please:\n"
+            "1. Which line *passes* the function?\n"
+            "2. Which exact line *invokes* it?"
+        )
+    contract = empty_contract(
+        intent="MENTOR",
+        action="ASK_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+    }
+
+
+def next_step_node(state: MentorState) -> MentorState:
+    skipped = _advance_or_missing_if_ready(state)
+    if skipped is not None:
+        return skipped
+    missing = _control_missing(state)
+    if missing:
+        return missing_evidence_node(state)
+    title = state.get("concept_title") or "this concept"
+    nxt = (state.get("next_concept_title") or "").strip()
+    status = state.get("concept_state") or ""
+    if status in {
         ConceptStatus.explained.value,
         ConceptStatus.verification.value,
         ConceptStatus.mastered.value,
@@ -405,7 +526,13 @@ def closure_pass_node(state: MentorState) -> MentorState:
     prefix = (
         "Right. It prints 2. The inner function does not copy `n` — it keeps a live link to it.\n\n"
     )
-    result = application_check_node(state)
+    control = state.get("learning_control") or {}
+    if callback_distinction_proved(control) and not _control_missing(state):
+        result = _advance_payload(state)
+    elif callback_distinction_proved(control):
+        result = missing_evidence_node(state)
+    else:
+        result = application_check_node(state)
     result["reply"] = prefix + str(result.get("reply") or "")
     contract = dict(result.get("contract") or {})
     contract["message"] = result["reply"]
@@ -414,57 +541,10 @@ def closure_pass_node(state: MentorState) -> MentorState:
 
 
 def proved_this_node(state: MentorState) -> MentorState:
-    control = state.get("learning_control") or {}
-    nxt = (state.get("next_concept_title") or "").strip()
-    objectives = list(state.get("learning_objectives") or [])
-    leftover_closure = any("closure" in item.lower() for item in objectives) and not closure_proved(control)
-    strategy = str(control.get("strategy") or "")
-    if leftover_closure:
-        message = (
-            "You've demonstrated the distinction between passing and invoking a callback "
-            "in multiple examples. I'm marking that part verified.\n\n"
-            "Next required piece: closures. If `let n = 1` and an inner function reads `n`, "
-            "then later `n = 2`, what does the inner function print when you call it?"
-        )
-        next_state = ConceptStatus.discussing.value
-        action = "ASK_QUESTION"
-        unlock = False
-    elif strategy == "transfer":
-        follow = f" Next concept: {nxt}." if nxt else ""
-        message = (
-            "You've demonstrated the distinction in multiple forms. I'm marking this "
-            f"concept verified.{follow}"
-        )
-        next_state = (
-            ConceptStatus.attempted.value
-            if state.get("needs_build")
-            else ConceptStatus.verification.value
-        )
-        action = "REVIEW"
-        unlock = not bool(state.get("needs_build"))
-    elif state.get("needs_build"):
-        message = (
-            "You've demonstrated the distinction. I'm marking that part verified.\n"
-            "Now use it: build the smallest version that stores a function and runs it later."
-        )
-        next_state = ConceptStatus.attempted.value
-        action = "ASK_IMPLEMENTATION"
-        unlock = False
-    else:
-        return application_check_node(state)
-    contract = empty_contract(
-        intent="MENTOR",
-        action=action,
-        message=message,
-        should_unlock=unlock,
-        next_state=next_state,
-    )
-    return {
-        "reply": message,
-        "contract": contract,
-        "next_state": next_state,
-        "should_unlock": unlock,
-    }
+    missing = _control_missing(state)
+    if missing:
+        return missing_evidence_node(state)
+    return _advance_payload(state)
 
 
 def change_representation_node(state: MentorState) -> MentorState:
@@ -585,6 +665,16 @@ def misconception_cleared_node(state: MentorState) -> MentorState:
         list(state.get("learning_objectives") or []),
         str(state.get("learner_message") or ""),
     )
+    skipped = _advance_or_missing_if_ready(state)
+    if skipped is not None:
+        prefix = (
+            "That's the callback distinction: passing stores the function, `cb()` runs it later.\n\n"
+        )
+        skipped["reply"] = prefix + str(skipped.get("reply") or "")
+        contract = dict(skipped.get("contract") or {})
+        contract["message"] = skipped["reply"]
+        skipped["contract"] = contract  # type: ignore[typeddict-item]
+        return skipped
     if leftover:
         message = (
             "That's the callback distinction: passing stores the function, `cb()` runs it later.\n\n"
@@ -641,12 +731,18 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
             current_question=str(state.get("last_tutor_message") or ""),
         )
         passed = bool(result.get("passed"))
-        leftover = uncovered_objectives(
-            list(state.get("learning_objectives") or []),
-            answer,
-        )
         if passed:
-            if leftover:
+            control = state.get("learning_control") or {}
+            missing = _control_missing(state)
+            leftover = uncovered_objectives(
+                list(state.get("learning_objectives") or []),
+                answer,
+            )
+            if not missing and (
+                callback_distinction_proved(control) or closure_proved(control)
+            ):
+                return proved_this_node(state)
+            if leftover and any("closure" in item.lower() for item in leftover) and not closure_proved(control):
                 message = (
                     "The callback part is solid — passing stores the function, `cb()` runs it later.\n\n"
                     "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "
@@ -663,6 +759,8 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
                     "contract": contract,
                     "next_state": ConceptStatus.discussing.value,
                 }
+            if missing:
+                return missing_evidence_node(state)
             return application_check_node(state)
         else:
             contract = empty_contract(
@@ -936,6 +1034,7 @@ def build_mentor_graph(llm: CoachLLM | None = None):
     builder.add_node("await_pass", await_pass_node)
     builder.add_node("closure_pass", closure_pass_node)
     builder.add_node("proved_this", proved_this_node)
+    builder.add_node("missing_evidence", missing_evidence_node)
     builder.add_node("change_representation", change_representation_node)
     builder.add_node("application_check", application_check_node)
     builder.add_node("transfer_check", transfer_check_node)
@@ -964,6 +1063,7 @@ def build_mentor_graph(llm: CoachLLM | None = None):
             "await_pass": "await_pass",
             "closure_pass": "closure_pass",
             "proved_this": "proved_this",
+            "missing_evidence": "missing_evidence",
             "change_representation": "change_representation",
             "application_check": "application_check",
             "transfer_check": "transfer_check",

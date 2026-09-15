@@ -131,7 +131,16 @@ def normalize_control(raw: Any, *, concept_id: str = "") -> dict[str, Any]:
         value = raw[key]
         if isinstance(base[key], list) and isinstance(value, list):
             base[key] = value[-40:]
-        elif type(base[key]) is type(value) or key in {"strategy", "representation", "concept_id"}:
+        elif isinstance(base[key], dict) and isinstance(value, dict):
+            merged = dict(base[key])
+            merged.update(value)
+            base[key] = merged
+        elif type(base[key]) is type(value) or key in {
+            "strategy",
+            "representation",
+            "concept_id",
+            "active_misconception_status",
+        }:
             base[key] = value
     if concept_id:
         base["concept_id"] = concept_id
@@ -248,6 +257,74 @@ def closure_proved(control: dict[str, Any]) -> bool:
     return CLOSURE_UNDERSTANDING in confirmed or "closure_live_link" in purposes
 
 
+def _concept_cares_about_functions(
+    objectives: list[str] | None,
+    *,
+    concept_id: str = "",
+    concept_title: str = "",
+) -> bool:
+    blob = " ".join([concept_id, concept_title, *(objectives or [])]).lower()
+    return any(
+        token in blob
+        for token in ("callback", "closure", "later", "programming.functions", "first-class")
+    )
+
+
+def missing_required_evidence(
+    control: dict[str, Any],
+    objectives: list[str] | None,
+    *,
+    concept_id: str = "",
+    concept_title: str = "",
+) -> list[dict[str, str]]:
+    """Return only the evidence this concept still needs. Empty → advance."""
+    control = normalize_control(control)
+    objectives = list(objectives or [])
+    concept_id = concept_id or str(control.get("concept_id") or "")
+    missing: list[dict[str, str]] = []
+    if _concept_cares_about_functions(
+        objectives, concept_id=concept_id, concept_title=concept_title
+    ) and not callback_distinction_proved(control):
+        missing.append(
+            {
+                "skill": "pass_vs_invoke",
+                "why": (
+                    "Need evidence you can separate passing a function from invoking it."
+                ),
+            }
+        )
+    if any("closure" in item.lower() for item in objectives) and not closure_proved(control):
+        missing.append(
+            {
+                "skill": "closures",
+                "why": (
+                    "This concept still lists closures as a required learning objective. "
+                    "The knowledge graph has not moved on yet."
+                ),
+            }
+        )
+    return missing
+
+
+def required_conversational_evidence_satisfied(
+    control: dict[str, Any],
+    objectives: list[str] | None,
+    *,
+    concept_id: str = "",
+    concept_title: str = "",
+) -> bool:
+    if not _concept_cares_about_functions(
+        objectives, concept_id=concept_id, concept_title=concept_title
+    ):
+        return False
+    return not missing_required_evidence(
+        control,
+        objectives,
+        concept_id=concept_id,
+        concept_title=concept_title,
+    )
+
+
 def apply_learner_turn(
     control: dict[str, Any],
     *,
@@ -327,6 +404,31 @@ def apply_learner_turn(
                 control["remaining_uncertainties"],
                 "learner may confuse caller with invoker",
             )
+
+    types = dict(control.get("evidence_types") or empty_control()["evidence_types"])
+    if names_passing(message) or names_invoking(message) or answer_shows_live_closure(message):
+        types["answer"] = True
+    if names_passing(message) and names_invoking(message):
+        types["conceptual_model"] = True
+        types["reasoning"] = True
+    if "transfer_pass_invoke" in (control.get("purposes_demonstrated") or []):
+        types["transfer"] = True
+    if "trace_execution" in (control.get("purposes_demonstrated") or []):
+        types["application"] = True
+    if closure_proved(control) or callback_distinction_proved(control):
+        types["explanation"] = True
+    control["evidence_types"] = types
+
+    if callback_distinction_proved(control):
+        _append_unique(control["subskills_verified"], "pass_vs_invoke")
+    if closure_proved(control):
+        _append_unique(control["subskills_verified"], "closures")
+
+    if branch == "remediate" and misc_id:
+        control["active_misconception_status"] = "suspected"
+    elif branch in {"cleared", "proved_this", "closure_pass"}:
+        if misc_id:
+            control["active_misconception_status"] = "remediated"
     return control
 
 
@@ -452,10 +554,38 @@ def teaching_branch(
     *,
     message: str,
     last_tutor: str,
+    objectives: list[str] | None = None,
+    concept_title: str = "",
 ) -> str | None:
     """Override graph routing from learning-control memory. None = keep classified branch."""
     control = normalize_control(control)
+    for item in understandings_from_answer(message, last_tutor):
+        _append_unique(control["confirmed_understandings"], item)
+    for item in purposes_from_answer(message, last_tutor):
+        _append_unique(control["purposes_demonstrated"], item)
     branch = classified.get("branch")
+    missing = missing_required_evidence(
+        control,
+        objectives,
+        concept_id=str(control.get("concept_id") or ""),
+        concept_title=concept_title,
+    )
+    frustrated = control["learner_frustration_signal"] or learner_frustrated(message)
+
+    if not missing and (
+        callback_distinction_proved(control) or closure_proved(control)
+    ) and branch in {
+        "retest",
+        "remediate",
+        "await_invoke",
+        "await_pass",
+        "cleared",
+        "change_representation",
+        "application_check",
+        None,
+        "",
+    }:
+        return "proved_this"
 
     if callback_distinction_proved(control) and branch in {
         "retest",
@@ -464,10 +594,19 @@ def teaching_branch(
         "await_pass",
         "cleared",
     }:
-        return "proved_this"
+        return "proved_this" if not missing else "missing_evidence"
 
     if branch == "cleared" and callback_distinction_proved(control):
-        return "proved_this"
+        return "proved_this" if not missing else "missing_evidence"
+
+    if frustrated:
+        if not missing and (
+            callback_distinction_proved(control) or closure_proved(control)
+        ):
+            return "proved_this"
+        if missing:
+            return "missing_evidence"
+        return None
 
     if control["strategy"] == "new_example" and branch not in {
         "cleared",
@@ -476,14 +615,9 @@ def teaching_branch(
         "await_invoke",
         "await_pass",
         "closure_pass",
+        "missing_evidence",
     }:
         if not (names_passing(message) and names_invoking(message)):
-            return "change_representation"
-
-    if (
-        control["learner_frustration_signal"] or learner_frustrated(message)
-    ) and int(control.get("remediation_attempt_count") or 0) >= 1:
-        if branch not in {"proved_this", "closure_pass", "cleared"}:
             return "change_representation"
 
     if int(control.get("repeated_question_count") or 0) >= 2 and branch in {
@@ -539,6 +673,11 @@ def apply_tutor_move(control: dict[str, Any], branch: str) -> dict[str, Any]:
         "misconception_cleared": "explained",
         "teach": "micro_explanation",
         "closure_pass": "explained",
+        "missing_evidence": "verify",
+        "next_step": str(control.get("strategy") or "diagnostic"),
+        "remediate": "guided_example",
+        "retest": "new_example",
+        "cleared": "explained",
     }
     if branch in mapping:
         control["strategy"] = mapping[branch]

@@ -108,6 +108,13 @@ def asks_what_next(message: str) -> bool:
             "next step",
             "what do i do now",
             "what should i do next",
+            "can we move on",
+            "i already answered",
+            "we keep going over",
+            "keep going over the same",
+            "you're repeating",
+            "you are repeating",
+            "repeating yourself",
         )
     )
 

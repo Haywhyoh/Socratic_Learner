@@ -224,22 +224,26 @@ CONCEPTS: list[ConceptSpec] = [
         "category": "foundation",
         "description": (
             "Object literals, dot/bracket property access, methods as functions "
-            "attached to objects, and objects being passed/mutated by reference."
+            "attached to objects, and argument passing: JavaScript passes arguments "
+            "by value. When the value is an object reference, the parameter receives "
+            "a copy of that reference, so mutating the object through one variable is "
+            "visible through the other."
         ),
         "learning_objectives": [
             "Explain the difference between an object's property and its method",
-            "Explain why mutating an object passed into a function affects the caller's copy",
+            "Explain why mutating an object through a function parameter is visible to the caller: the parameter holds a copy of the object reference, not a copy of the object",
         ],
         "misconceptions": [
-            "Thinking objects are copied (by value) when passed into functions",
+            "Thinking objects are copied (the object itself) when passed into functions",
+            "Treating 'objects are passed by reference' as the complete model — JavaScript copies the reference value",
             "Confusing `this` inside a method with the function's own scope variables",
         ],
         "diagnostic_questions": [
             "What's the difference between a property and a method on an object?",
-            "If you pass an object into a function and the function changes a property, does the caller see that change?",
+            "If you pass an object into a function and the function changes a property, does the caller see that change? Why, without saying 'passed by reference' as the whole story?",
         ],
         "research_questions": [
-            "What does 'objects are passed by reference' mean in JavaScript?",
+            "JavaScript passes arguments by value. When that value is an object reference, what does the parameter receive?",
             "What is object destructuring and why might you use it?",
         ],
         "resources": [
