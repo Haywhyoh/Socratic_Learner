@@ -144,7 +144,7 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
             expected_outcome="A from-scratch Node.js framework.",
             prerequisites=["JavaScript"],
             skills=["routing"],
-            concepts=[],
+            concepts=[], # no graph nodes — fixture enrollments complete via reflection/defense
             constraints=["No Express"],
             tests=["GET route works"],
             evaluation_criteria=["Milestones complete"],
@@ -181,7 +181,7 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
                     instructions=instructions,
                     order_index=index,
                     success_criteria=f"{title} done",
-                    concepts=[title.lower()],
+                    concepts=[],
                     questions=[
                         f"What is the goal of {title}?",
                         f"How will you verify {title} works?",

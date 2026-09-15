@@ -48,6 +48,8 @@ class RetrievalAnswerRequest(BaseModel):
 
 
 class ResourceRead(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     title: str
     url: str = ""
 

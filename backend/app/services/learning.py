@@ -271,6 +271,16 @@ def complete_user_milestone(
             .joinedload(UserMilestone.milestone),
             joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment),
             joinedload(UserMilestone.user_project).joinedload(UserProject.project),
+        )
+        .filter(UserMilestone.id == user_milestone_id)
+        .first()
+    )
+    if (
+        user_milestone is None
+        or user_milestone.user_project.enrollment.user_id != user.id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+    if user_milestone.status == UserMilestoneStatus.completed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Milestone already completed"
         )

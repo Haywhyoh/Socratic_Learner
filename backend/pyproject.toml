@@ -47,7 +47,7 @@ include = ["app*", "cli*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "docker: requires Docker daemon and the socratic-sandbox-python image",
+    "docker: requires Docker daemon and the socratic-sandbox-node image",
 ]
 
 [tool.ruff]

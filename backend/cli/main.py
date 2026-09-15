@@ -638,11 +638,7 @@ def coach_cmd(
             raise typer.Exit(code=1)
         body = response.json()
         _print_coach_reply(body)
-        state = body.get("learner_state") or {}
-        if not (
-            body.get("answer_status") == "complete" or state.get("questions_complete")
-        ):
-            _coach_answer_loop(client, user_project_id)
+        _coach_answer_loop(client, user_project_id)
 
 
 @app.command("state")
