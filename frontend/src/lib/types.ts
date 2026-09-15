@@ -115,6 +115,8 @@ export interface SandboxRunResult {
   stderr: string;
   timed_out: boolean;
   argv: string[];
+  cwd: string | null;
+  mutates_fs: boolean;
 }
 
 export interface SandboxTestResult {

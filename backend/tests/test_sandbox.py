@@ -56,10 +56,32 @@ def _enroll_project(client: TestClient, auth_headers: dict[str, str], db: Sessio
 def test_validate_argv_allowlist() -> None:
     assert validate_argv(["python", "main.py"]) == ["python", "main.py"]
     assert validate_argv(["/usr/bin/pytest", "-q"]) == ["pytest", "-q"]
+    assert validate_argv(["mkdir", "-p", "app"]) == ["mkdir", "-p", "app"]
+    assert validate_argv(["uvicorn", "app.main:app"]) == ["uvicorn", "app.main:app"]
     with pytest.raises(ValueError, match="not allowed"):
         validate_argv(["bash", "-c", "ls"])
+    with pytest.raises(ValueError, match="not allowed"):
+        validate_argv(["curl", "https://example.com"])
     with pytest.raises(ValueError, match="empty"):
         validate_argv([])
+
+
+def test_parse_command_line() -> None:
+    from app.services.sandbox_runner import parse_command_line, validate_cwd
+
+    assert parse_command_line("ls -la") == ["ls", "-la"]
+    assert parse_command_line("python -m uvicorn app.main:app") == [
+        "python",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+    ]
+    with pytest.raises(ValueError, match="shell operators"):
+        parse_command_line("ls | cat")
+    assert validate_cwd(None) is None
+    assert validate_cwd("app/api") == "app/api"
+    with pytest.raises(ValueError, match="traversal"):
+        validate_cwd("../etc")
 
 
 def test_sandbox_init_and_files(
@@ -167,6 +189,26 @@ def test_sandbox_run_rejects_disallowed(
     )
     assert response.status_code == 400
     assert fake_runner.calls == []
+
+
+def test_sandbox_run_accepts_command_string(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+    workspace_tmp: Path,
+    fake_runner: FakeSandboxRunner,
+) -> None:
+    user_project_id = _enroll_project(client, auth_headers, db)
+    response = client.post(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/run",
+        headers=auth_headers,
+        json={"command": "mkdir -p app"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["argv"] == ["mkdir", "-p", "app"]
+    assert body["mutates_fs"] is True
+    assert fake_runner.calls[-1][1] == ["mkdir", "-p", "app"]
 
 
 def test_sandbox_run_and_test_wire_coach_attempts(
