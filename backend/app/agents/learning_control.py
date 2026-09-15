@@ -57,6 +57,13 @@ _FRUSTRATION = (
     "stop asking",
     "i already said",
     "i already told",
+    "we keep going over",
+    "keep going over the same",
+    "can we move on",
+    "i already answered",
+    "you're repeating",
+    "you are repeating",
+    "repeating yourself",
 )
 
 _CONTROL_KEYS = {
@@ -76,6 +83,9 @@ _CONTROL_KEYS = {
     "questions_already_asked",
     "purposes_demonstrated",
     "purposes_asked",
+    "subskills_verified",
+    "evidence_types",
+    "active_misconception_status",
 }
 
 
@@ -97,6 +107,17 @@ def empty_control(concept_id: str = "") -> dict[str, Any]:
         "questions_already_asked": [],
         "purposes_demonstrated": [],
         "purposes_asked": [],
+        "subskills_verified": [],
+        "evidence_types": {
+            "answer": False,
+            "reasoning": False,
+            "conceptual_model": False,
+            "application": False,
+            "transfer": False,
+            "explanation": False,
+            "retrieval": False,
+        },
+        "active_misconception_status": None,
     }
 
 
