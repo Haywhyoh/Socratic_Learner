@@ -5,17 +5,26 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.coach import (
-    CheckpointRead,
-    CheckpointRequest,
     CoachMessageRequest,
     CoachMessageResponse,
     CoachStartRequest,
     CoachStartResponse,
-    ConceptCardRead,
+    DefenseAnswerRequest,
+    ExplainRequest,
+    ExplanationResultRead,
+    GraphRead,
     LearnerStateRead,
     MilestoneReviewRead,
+    ProjectDefenseRead,
+    ReflectionRead,
+    ReflectionRequest,
+    ResearchRecordRead,
+    ResearchRequest,
+    RetrievalAnswerRequest,
+    RetrievalCheckRead,
     ReviewAnswerRequest,
-    RoadmapMilestoneRead,
+    SkipDiagnosticRequest,
+    SkipResultRead,
 )
 from app.services import coach as coach_service
 
@@ -32,10 +41,8 @@ def start_coach(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CoachStartResponse:
-    body = payload or CoachStartRequest()
-    result = coach_service.start_coach(
-        db, current_user, user_project_id, answers=body.answers
-    )
+    _ = payload or CoachStartRequest()
+    result = coach_service.start_coach(db, current_user, user_project_id)
     return CoachStartResponse.model_validate(result)
 
 
@@ -56,15 +63,17 @@ def coach_message(
 
 
 @router.get(
-    "/me/projects/{user_project_id}/roadmap",
-    response_model=list[RoadmapMilestoneRead],
+    "/me/projects/{user_project_id}/graph",
+    response_model=GraphRead,
 )
-def get_roadmap(
+def get_graph(
     user_project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[RoadmapMilestoneRead]:
-    return coach_service.get_roadmap(db, current_user, user_project_id)
+) -> GraphRead:
+    return GraphRead.model_validate(
+        coach_service.get_graph(db, current_user, user_project_id)
+    )
 
 
 @router.get(
@@ -81,18 +90,6 @@ def get_learner_state(
     )
 
 
-@router.get(
-    "/me/milestones/{user_milestone_id}/cards",
-    response_model=list[ConceptCardRead],
-)
-def list_cards(
-    user_milestone_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> list[ConceptCardRead]:
-    return coach_service.list_cards(db, current_user, user_milestone_id)
-
-
 @router.post(
     "/me/milestones/{user_milestone_id}/hints",
     response_model=CoachMessageResponse,
@@ -107,17 +104,137 @@ def request_hint(
 
 
 @router.post(
-    "/me/cards/{card_id}/checkpoint",
-    response_model=CheckpointRead,
+    "/me/projects/{user_project_id}/concepts/{concept_id}/research",
+    response_model=ResearchRecordRead,
 )
-def submit_checkpoint(
-    card_id: int,
-    payload: CheckpointRequest,
+def submit_research(
+    user_project_id: int,
+    concept_id: str,
+    payload: ResearchRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> CheckpointRead:
-    return coach_service.submit_checkpoint(
-        db, current_user, card_id, payload.answer
+) -> ResearchRecordRead:
+    return ResearchRecordRead.model_validate(
+        coach_service.submit_research(
+            db, current_user, user_project_id, concept_id, payload.model_dump()
+        )
+    )
+
+
+@router.post(
+    "/me/projects/{user_project_id}/concepts/{concept_id}/explain",
+    response_model=ExplanationResultRead,
+)
+def submit_explanation(
+    user_project_id: int,
+    concept_id: str,
+    payload: ExplainRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ExplanationResultRead:
+    return ExplanationResultRead.model_validate(
+        coach_service.submit_explanation(
+            db, current_user, user_project_id, concept_id, payload.answer
+        )
+    )
+
+
+@router.post(
+    "/me/projects/{user_project_id}/concepts/{concept_id}/skip-diagnostic",
+    response_model=SkipResultRead,
+)
+def skip_diagnostic(
+    user_project_id: int,
+    concept_id: str,
+    payload: SkipDiagnosticRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SkipResultRead:
+    return SkipResultRead.model_validate(
+        coach_service.skip_diagnostic(
+            db, current_user, user_project_id, concept_id, payload.answers
+        )
+    )
+
+
+@router.post(
+    "/me/milestones/{user_milestone_id}/reflection",
+    response_model=ReflectionRead,
+)
+def submit_reflection(
+    user_milestone_id: int,
+    payload: ReflectionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ReflectionRead:
+    return ReflectionRead.model_validate(
+        coach_service.submit_reflection(
+            db, current_user, user_milestone_id, payload.answers
+        )
+    )
+
+
+@router.post(
+    "/me/projects/{user_project_id}/defense/start",
+    response_model=ProjectDefenseRead,
+)
+def start_defense(
+    user_project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ProjectDefenseRead:
+    return ProjectDefenseRead.model_validate(
+        coach_service.start_defense(db, current_user, user_project_id)
+    )
+
+
+@router.post(
+    "/me/projects/{user_project_id}/defense/answer",
+    response_model=ProjectDefenseRead,
+)
+def answer_defense(
+    user_project_id: int,
+    payload: DefenseAnswerRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ProjectDefenseRead:
+    return ProjectDefenseRead.model_validate(
+        coach_service.answer_defense(
+            db, current_user, user_project_id, payload.answers
+        )
+    )
+
+
+@router.get(
+    "/me/projects/{user_project_id}/retrieval-checks",
+    response_model=list[RetrievalCheckRead],
+)
+def list_retrieval_checks(
+    user_project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[RetrievalCheckRead]:
+    return [
+        RetrievalCheckRead.model_validate(row)
+        for row in coach_service.list_retrieval_checks(db, current_user, user_project_id)
+    ]
+
+
+@router.post(
+    "/me/projects/{user_project_id}/retrieval-checks/{check_id}/answer",
+    response_model=RetrievalCheckRead,
+)
+def answer_retrieval(
+    user_project_id: int,
+    check_id: int,
+    payload: RetrievalAnswerRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> RetrievalCheckRead:
+    return RetrievalCheckRead.model_validate(
+        coach_service.answer_retrieval(
+            db, current_user, user_project_id, check_id, payload.answer
+        )
     )
 
 

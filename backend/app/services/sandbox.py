@@ -27,6 +27,10 @@ _PYTEST_COUNTS_RE = re.compile(
     r"|(?P<passed>\d+)\s+passed"
     r"|(?P<errors>\d+)\s+error"
 )
+_NODE_TEST_RE = re.compile(
+    r"^#\s+(?P<kind>tests|pass|fail|cancelled|skipped|todo)\s+(?P<count>\d+)\s*$",
+    re.MULTILINE,
+)
 
 
 def _require_enabled() -> None:
@@ -76,17 +80,14 @@ def _scaffold(workspace: Path, project_title: str) -> None:
     if not readme.exists():
         readme.write_text(
             f"# {project_title}\n\n"
-            "Learner workspace. Write your code here, then run:\n\n"
+            "Learner workspace. Write your code here — no starter files.\n"
+            "When you have tests, run:\n\n"
             "```bash\n"
-            "socratic sandbox test\n"
-            "```\n",
+            "node --test\n"
+            "```\n"
+            "or: `socratic sandbox test`\n",
             encoding="utf-8",
         )
-    tests_dir = workspace / "tests"
-    tests_dir.mkdir(exist_ok=True)
-    init_py = tests_dir / "__init__.py"
-    if not init_py.exists():
-        init_py.write_text("", encoding="utf-8")
 
 
 def ensure_workspace(db: Session, user: User, user_project_id: int) -> SandboxWorkspace:
@@ -231,6 +232,34 @@ def _parse_pytest_counts(output: str) -> tuple[int, int, int]:
     return passed, failed, errors
 
 
+def _parse_node_test_counts(output: str) -> tuple[int, int, int]:
+    passed = failed = errors = 0
+    for match in _NODE_TEST_RE.finditer(output):
+        kind = match.group("kind")
+        count = int(match.group("count"))
+        if kind == "pass":
+            passed = count
+        elif kind == "fail":
+            failed = count
+        elif kind == "tests" and passed == 0 and failed == 0:
+            # tests total only used as fallback
+            pass
+    if "ERR_TEST_FAILURE" in output or "uncaughtException" in output:
+        errors = max(errors, 1 if failed == 0 and passed == 0 else 0)
+    return passed, failed, errors
+
+
+def _uses_node_tests(workspace: Path) -> bool:
+    if (workspace / "package.json").exists():
+        return True
+    for path in workspace.rglob("*"):
+        if path.is_file() and path.suffix in {".js", ".mjs", ".cjs"}:
+            name = path.name.lower()
+            if ".test." in name or ".spec." in name or path.parent.name == "test":
+                return True
+    return True  # this project is JavaScript-first; default to node --test
+
+
 def _failure_summary(output: str, *, max_lines: int = 12) -> str:
     """Short failure signal for coach — what failed, not how to fix."""
     lines = [line for line in output.splitlines() if line.strip()]
@@ -250,7 +279,7 @@ def _failure_summary(output: str, *, max_lines: int = 12) -> str:
 def run_tests(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
     _require_enabled()
     row = ensure_workspace(db, user, user_project_id)
-    argv = ["pytest", "-q", "--tb=line"]
+    argv = ["node", "--test"]
     workspace = workspace_path_for(user_project_id)
 
     try:
@@ -262,11 +291,9 @@ def run_tests(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
         ) from exc
 
     combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-    passed, failed, errors = _parse_pytest_counts(combined)
-    if result.exit_code == 0 and passed == 0 and failed == 0 and errors == 0:
-        # No tests collected still exits 5 in pytest; treat quiet empty as unknown counts
-        if "no tests ran" in combined.lower() or result.exit_code == 5:
-            passed, failed, errors = 0, 0, 0
+    passed, failed, errors = _parse_node_test_counts(combined)
+    if passed == 0 and failed == 0 and errors == 0:
+        passed, failed, errors = _parse_pytest_counts(combined)
 
     outcome = "passed" if result.exit_code == 0 and not result.timed_out else "failed"
     if result.timed_out:

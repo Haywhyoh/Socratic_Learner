@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import difflib
 import re
+from typing import Any
 
 from app.agents.build_coach import replacement_for_stripped_dump
-from app.agents.state import (
-    CardDraft,
-    CatalogMilestone,
-    EffortSignals,
-    RoadmapMilestone,
-)
-from app.models.coach import ConceptMastery, TeachingFlag
+from app.agents.state import EffortSignals
 
 HINT_LEVELS = {
     0: "question",
@@ -44,138 +38,33 @@ _ATTEMPT_MARKERS = (
 )
 
 
-def catalog_concepts(milestones: list[CatalogMilestone]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for milestone in milestones:
-        for concept in milestone.get("concepts") or []:
-            if concept not in seen:
-                seen.add(concept)
-                names.append(concept)
-    return names
-
-
-def assessment_questions(milestones: list[CatalogMilestone]) -> list[dict[str, str]]:
-    return [
-        {
-            "concept": name,
-            "prompt": (
-                f"How well do you already understand '{name}'? "
-                "Answer unknown, familiar, or can_explain."
-            ),
-        }
-        for name in catalog_concepts(milestones)
-    ]
-
-
-def normalize_mastery(value: str | None) -> str:
-    raw = (value or ConceptMastery.unknown.value).strip().lower().replace(" ", "_")
-    aliases = {
-        "know": ConceptMastery.can_explain.value,
-        "yes": ConceptMastery.can_explain.value,
-        "expert": ConceptMastery.can_explain.value,
-        "explain": ConceptMastery.can_explain.value,
-        "can": ConceptMastery.can_explain.value,
-        "some": ConceptMastery.familiar.value,
-        "kinda": ConceptMastery.familiar.value,
-        "mid": ConceptMastery.familiar.value,
-        "no": ConceptMastery.unknown.value,
-        "none": ConceptMastery.unknown.value,
-        "idk": ConceptMastery.unknown.value,
-    }
-    mapped = aliases.get(raw, raw)
-    try:
-        return ConceptMastery(mapped).value
-    except ValueError:
-        # Tolerate typos like "can_explaun"
-        matches = difflib.get_close_matches(
-            mapped,
-            [m.value for m in ConceptMastery],
-            n=1,
-            cutoff=0.7,
+def explain_gap_reason(reason: str, *, concept_id: str, requires_id: str) -> str:
+    """Render why the learner is being sent backward (spec §26 / §28)."""
+    if reason:
+        return (
+            f"Before we move forward, '{requires_id}' is still unclear — {reason} "
+            f"We'll stay with that instead of jumping to '{concept_id}'."
         )
-        if matches:
-            return matches[0]
-        return ConceptMastery.unknown.value
+    return (
+        f"Before we move forward, your work on '{concept_id}' suggests "
+        f"'{requires_id}' is still shaky. Let's investigate that."
+    )
 
 
-def apply_assessment_answers(
-    milestones: list[CatalogMilestone],
-    answers: dict[str, str] | None,
-) -> dict[str, str]:
-    profile = {name: ConceptMastery.unknown.value for name in catalog_concepts(milestones)}
-    for name, value in (answers or {}).items():
-        if name in profile:
-            profile[name] = normalize_mastery(value)
-    return profile
-
-
-def build_roadmap(
-    milestones: list[CatalogMilestone],
-    knowledge_profile: dict[str, str],
-) -> list[RoadmapMilestone]:
-    """Map catalog concepts onto existing milestones. Never invent milestones."""
-    ordered = sorted(milestones, key=lambda m: m["order_index"])
-    roadmap: list[RoadmapMilestone] = []
-    for milestone in ordered:
-        items = []
-        for name in milestone.get("concepts") or []:
-            mastery = knowledge_profile.get(name, ConceptMastery.unknown.value)
-            teaching = (
-                TeachingFlag.skip.value
-                if mastery == ConceptMastery.can_explain.value
-                else TeachingFlag.teach.value
-            )
-            items.append({"name": name, "teaching": teaching, "mastery": mastery})
-        roadmap.append(
-            {
-                "milestone_id": milestone["id"],
-                "title": milestone["title"],
-                "order_index": milestone["order_index"],
-                "concepts": items,
-            }
+def asks_for_implementation(message: str) -> bool:
+    lower = message.lower()
+    return any(
+        phrase in lower
+        for phrase in (
+            "give me the code",
+            "write the code",
+            "paste the code",
+            "give me the implementation",
+            "just give me the",
+            "generate the code",
+            "write it for me",
         )
-    return roadmap
-
-
-def current_teach_concepts(
-    roadmap: list[RoadmapMilestone],
-    milestone_id: int,
-    knowledge_profile: dict[str, str],
-) -> list[str]:
-    for item in roadmap:
-        if item["milestone_id"] != milestone_id:
-            continue
-        names = []
-        for concept in item["concepts"]:
-            mastery = knowledge_profile.get(
-                concept["name"], concept.get("mastery", ConceptMastery.unknown.value)
-            )
-            if (
-                concept["teaching"] == TeachingFlag.teach.value
-                and mastery != ConceptMastery.can_explain.value
-            ):
-                names.append(concept["name"])
-        return names
-    return []
-
-
-def later_milestone_concepts(
-    catalog: list[CatalogMilestone],
-    current_milestone_id: int,
-) -> list[str]:
-    current = next((m for m in catalog if m["id"] == current_milestone_id), None)
-    if current is None:
-        return []
-    names: list[str] = []
-    current_set = set(current.get("concepts") or [])
-    for milestone in catalog:
-        if milestone["order_index"] <= current["order_index"]:
-            continue
-        for concept in milestone.get("concepts") or []:
-            if concept not in current_set:
-                names.append(concept)
-    return names
+    )
 
 
 def has_genuine_effort(effort: EffortSignals) -> bool:
@@ -208,12 +97,14 @@ def next_hint_level(current_level: int, effort: EffortSignals) -> tuple[int, str
 
 def classify_intent(message: str) -> str:
     lower = message.lower().strip()
+    if asks_for_implementation(message):
+        return "code_ask"
     if any(word in lower for word in ("hint", "stuck", "clue", "give me a hint")):
         return "hint"
-    if any(word in lower for word in ("concept card", "research question", "show card")):
-        return "card"
-    if "checkpoint" in lower or "i researched" in lower:
-        return "checkpoint"
+    if any(word in lower for word in ("i researched", "my notes", "i looked up", "research")):
+        return "research"
+    if "skip" in lower and any(w in lower for w in ("this", "tcp", "concept", "can i")):
+        return "skip"
     guidance_markers = (
         "how do i",
         "how do you",
@@ -261,7 +152,7 @@ def fallback_card(
     concept: str,
     milestone_title: str,
     resources: list[dict[str, str]],
-) -> CardDraft:
+) -> dict[str, object]:
     return {
         "name": concept,
         "why_it_matters": (
@@ -437,7 +328,7 @@ def fallback_hint(level: int, milestone_title: str, concepts: list[str], instruc
     return templates.get(level, templates[0])
 
 
-def fallback_card_reply(cards: list[CardDraft]) -> str:
+def fallback_card_reply(cards: list[dict]) -> str:
     if not cards:
         return "No cards yet. Ask about the command or file you're stuck on."
     card = cards[0]
@@ -495,7 +386,8 @@ def _strip_solution_fences(
             and all(
                 (not ln.strip())
                 or ln.strip().startswith(
-                    ("mkdir", "touch", "python", "uvicorn", "pytest", "pip", "ls", "cd ", "#")
+                    ("mkdir", "touch", "python", "uvicorn", "pytest", "pip", "ls", "cd ",
+                     "node", "npm", "npx", "#")
                 )
                 for ln in body.splitlines()
             )
@@ -677,3 +569,86 @@ def fallback_understanding(question: str, answer: str) -> dict[str, object]:
             "feedback": "Too short — explain your actual implementation choice, not just the outcome.",
         }
     return {"passed": True, "feedback": None}
+
+
+def fallback_explanation(answer: str) -> dict[str, Any]:
+    cleaned = answer.strip()
+    weak = len(cleaned) < 40 or cleaned.lower() in {"idk", "dunno", "pass", "yes", "no"}
+    return {
+        "passed": not weak,
+        "accuracy": 0.0 if weak else 0.7,
+        "completeness": 0.0 if weak else 0.7,
+        "clarity": 0.0 if weak else 0.7,
+        "causal": 0.0 if weak else 0.6,
+        "feedback": (
+            "Too thin — explain the cause, not just the name of the concept."
+            if weak
+            else "That's enough to work with."
+        ),
+    }
+
+
+def fallback_mentor_contract(
+    context: dict[str, Any], message: str, action_hint: str
+) -> dict[str, Any]:
+    title = context.get("concept_title") or context.get("current_concept") or "this"
+    questions = list(context.get("diagnostic_questions") or [])
+    research = list(context.get("research_questions") or [])
+    status = context.get("concept_state") or "available"
+    if action_hint == "RESEARCH" or status == "researching":
+        listed = "\n".join(f"{i}. {q}" for i, q in enumerate(research[:3], start=1))
+        return {
+            "intent": "MENTOR",
+            "action": "ASK_RESEARCH",
+            "message": (
+                f"Research '{title}' before I explain it. Write your own understanding.\n"
+                + (listed or f"What is {title}?")
+            ),
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "researching",
+        }
+    if action_hint == "IMPLEMENTATION":
+        return {
+            "intent": "MENTOR",
+            "action": "ASK_IMPLEMENTATION",
+            "message": (
+                f"Build the smallest version of '{title}' you can. I will not edit your files. "
+                "When something runs, tell me what you tried."
+            ),
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "attempted",
+        }
+    if action_hint == "DIAGNOSE":
+        q = questions[0] if questions else f"What does '{title}' represent to you?"
+        return {
+            "intent": "DIAGNOSE",
+            "action": "ASK_DIAGNOSTIC_QUESTION",
+            "message": q,
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "diagnosis",
+        }
+    opener = questions[0] if questions else f"What do you already understand about {title}?"
+    if (context.get("concept_state") or "") == "available":
+        opener = (
+            f"Before writing code: what is '{title}' for, in your own words? "
+            "Do not search yet."
+        )
+    return {
+        "intent": "MENTOR",
+        "action": "ASK_QUESTION",
+        "message": opener,
+        "diagnostic_concept": None,
+        "identified_gap": None,
+        "hint_level": 0,
+        "should_unlock": False,
+        "next_state": "introduced",
+    }

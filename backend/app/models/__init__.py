@@ -7,6 +7,7 @@ from app.models.coach import (
     MentorTurn,
     MilestoneReview,
 )
+from app.models.concept import ConceptQuestion, ConceptSession, ConceptTurn
 from app.models.course import Course, CourseOption
 from app.models.curriculum import Concept, ConceptDependency, MilestoneConcept
 from app.models.enrollment import Enrollment
@@ -27,6 +28,9 @@ __all__ = [
     "User",
     "Course",
     "CourseOption",
+    "ConceptQuestion",
+    "ConceptSession",
+    "ConceptTurn",
     "Enrollment",
     "Project",
     "Milestone",

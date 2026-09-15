@@ -1,27 +1,24 @@
-"""Seed catalog courses, options, projects, milestones, and concept questions."""
+"""Seed the catalog: one course/path, one deterministic project — the
+
+JavaScript Backend Framework curriculum graph. All prior stub projects
+(Task Tracker, Notes API, Library Catalog, Learning Dashboard, Content
+Calendar) and the Business course have been removed: this is the first real
+structured learning experience for the platform.
+"""
 
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.models.concept import ConceptQuestion
 from app.models.course import Course, CourseOption
-from app.models.project import Milestone, Project, ProjectDifficulty
-from app.seed_content import (
-    CONTENT_CALENDAR,
-    LEARNING_DASHBOARD,
-    LIBRARY_CATALOG,
-    NOTES_API,
-    TASK_TRACKER,
-    MilestoneSpec,
-    ProjectSpec,
-)
+from app.models.curriculum import Concept, ConceptDependency, MilestoneConcept
+from app.models.project import Milestone, Project, ProjectCurriculumMode, ProjectDifficulty
+from app.seed_js_backend_framework import CONCEPTS, DEPENDENCIES, MILESTONES, PROJECT_SPEC
 
 _DEFINITION_LIST_KEYS = (
     "prerequisites",
     "skills",
-    "concepts",
     "constraints",
     "tests",
     "evaluation_criteria",
@@ -30,324 +27,203 @@ _DEFINITION_LIST_KEYS = (
 )
 
 
-def _definition_fields(spec: ProjectSpec) -> dict[str, object]:
-    difficulty = ProjectDifficulty(str(spec["difficulty"]))
-    fields: dict[str, object] = {
-        "objective": str(spec["objective"]),
-        "difficulty": difficulty,
-        "expected_outcome": str(spec["expected_outcome"]),
-    }
-    for key in _DEFINITION_LIST_KEYS:
-        fields[key] = list(spec[key])  # type: ignore[arg-type]
-    return fields
+def _seed_course(db: Session) -> tuple[Course, CourseOption, CourseOption]:
+    course = db.query(Course).filter(Course.slug == "javascript").first()
+    if course is None:
+        course = Course(
+            slug="javascript",
+            name="JavaScript",
+            description="Build real systems in JavaScript through deliberate, mentored practice.",
+            primary_label="Language",
+            secondary_label="Track",
+        )
+        db.add(course)
+        db.flush()
+        print("Seeded course: JavaScript")
 
-
-def _option(
-    course_id: int,
-    name: str,
-    slug: str,
-    parent_id: int | None = None,
-) -> CourseOption:
-    return CourseOption(course_id=course_id, name=name, slug=slug, parent_id=parent_id)
-
-
-def _get_option(db: Session, course_id: int, slug: str, parent_id: int | None = None) -> CourseOption:
-    query = db.query(CourseOption).filter(
-        CourseOption.course_id == course_id,
-        CourseOption.slug == slug,
+    primary = (
+        db.query(CourseOption)
+        .filter(
+            CourseOption.course_id == course.id,
+            CourseOption.slug == "javascript",
+            CourseOption.parent_id.is_(None),
+        )
+        .first()
     )
-    if parent_id is None:
-        query = query.filter(CourseOption.parent_id.is_(None))
-    else:
-        query = query.filter(CourseOption.parent_id == parent_id)
-    option = query.first()
-    if option is None:
-        raise RuntimeError(f"Missing course option slug={slug!r} parent_id={parent_id}")
-    return option
+    if primary is None:
+        primary = CourseOption(course_id=course.id, name="JavaScript", slug="javascript")
+        db.add(primary)
+        db.flush()
+
+    secondary = (
+        db.query(CourseOption)
+        .filter(
+            CourseOption.course_id == course.id,
+            CourseOption.slug == "node-core",
+            CourseOption.parent_id == primary.id,
+        )
+        .first()
+    )
+    if secondary is None:
+        secondary = CourseOption(
+            course_id=course.id,
+            name="Node.js core (no framework)",
+            slug="node-core",
+            parent_id=primary.id,
+        )
+        db.add(secondary)
+        db.flush()
+
+    return course, primary, secondary
 
 
-def _sync_milestones(db: Session, project: Project, milestones: list[MilestoneSpec]) -> None:
+def _sync_concepts(db: Session) -> None:
+    existing = {c.id: c for c in db.query(Concept).all()}
+    for spec in CONCEPTS:
+        concept = existing.get(spec["id"])
+        fields = {
+            "title": spec["title"],
+            "category": spec["category"],
+            "description": spec["description"],
+            "learning_objectives": list(spec.get("learning_objectives") or []),
+            "misconceptions": list(spec.get("misconceptions") or []),
+            "diagnostic_questions": list(spec.get("diagnostic_questions") or []),
+            "research_questions": list(spec.get("research_questions") or []),
+            "resources": list(spec.get("resources") or []),
+            "hints": list(spec.get("hints") or []),
+            "mastery_requirements": dict(spec.get("mastery_requirements") or {}),
+        }
+        if concept is None:
+            db.add(Concept(id=spec["id"], **fields))
+        else:
+            for key, value in fields.items():
+                setattr(concept, key, value)
+    db.flush()
+
+
+def _sync_dependencies(db: Session) -> None:
     existing = {
-        m.order_index: m
-        for m in db.query(Milestone).filter(Milestone.project_id == project.id).all()
+        (d.concept_id, d.requires_concept_id): d for d in db.query(ConceptDependency).all()
     }
-    for index, (title, description, instructions, criteria, concepts, questions) in enumerate(
-        milestones, start=1
-    ):
-        current = existing.get(index)
-        if current is None:
+    for concept_id, requires_concept_id, reason in DEPENDENCIES:
+        key = (concept_id, requires_concept_id)
+        dep = existing.get(key)
+        if dep is None:
             db.add(
-                Milestone(
-                    project_id=project.id,
-                    order_index=index,
-                    title=title,
-                    description=description,
-                    instructions=instructions,
-                    success_criteria=criteria,
-                    concepts=list(concepts),
-                    questions=list(questions),
+                ConceptDependency(
+                    concept_id=concept_id,
+                    requires_concept_id=requires_concept_id,
+                    reason=reason,
                 )
             )
         else:
-            current.title = title
-            current.description = description
-            current.instructions = instructions
-            current.success_criteria = criteria
-            current.concepts = list(concepts)
-            current.questions = list(questions)
+            dep.reason = reason
+    db.flush()
+
+
+def _sync_milestones(db: Session, project: Project) -> None:
+    existing = {
+        m.order_index: m
+        for m in db.query(Milestone).filter(
+            Milestone.project_id == project.id, Milestone.user_project_id.is_(None)
+        )
+    }
+    for index, spec in enumerate(MILESTONES, start=1):
+        concept_ids = list(spec.get("concepts") or [])
+        current = existing.get(index)
+        if current is None:
+            current = Milestone(
+                project_id=project.id,
+                order_index=index,
+                title=spec["title"],
+                description=spec["description"],
+                instructions=spec["instructions"],
+                success_criteria=spec["success_criteria"],
+                concepts=concept_ids,
+                questions=[],
+            )
+            db.add(current)
+            db.flush()
+        else:
+            current.title = spec["title"]
+            current.description = spec["description"]
+            current.instructions = spec["instructions"]
+            current.success_criteria = spec["success_criteria"]
+            current.concepts = concept_ids
+            db.flush()
+
+        existing_links = {
+            mc.concept_id: mc
+            for mc in db.query(MilestoneConcept).filter(MilestoneConcept.milestone_id == current.id)
+        }
+        for order, concept_id in enumerate(concept_ids):
+            if concept_id in existing_links:
+                existing_links[concept_id].order_index = order
+            else:
+                db.add(
+                    MilestoneConcept(
+                        milestone_id=current.id, concept_id=concept_id, order_index=order
+                    )
+                )
+        for concept_id, link in existing_links.items():
+            if concept_id not in concept_ids:
+                db.delete(link)
+    db.flush()
 
 
 def _ensure_project(
-    db: Session,
-    *,
-    spec: ProjectSpec,
-    course_id: int,
-    primary_option_id: int,
-    secondary_option_id: int,
+    db: Session, *, course_id: int, primary_option_id: int, secondary_option_id: int
 ) -> Project:
-    title = str(spec["title"])
-    description = str(spec["description"])
-    definition = _definition_fields(spec)
-    milestones = list(spec["milestones"])  # type: ignore[arg-type]
+    title = str(PROJECT_SPEC["title"])
+    fields: dict[str, object] = {
+        "description": str(PROJECT_SPEC["description"]),
+        "objective": str(PROJECT_SPEC["objective"]),
+        "difficulty": ProjectDifficulty(str(PROJECT_SPEC["difficulty"])),
+        "expected_outcome": str(PROJECT_SPEC["expected_outcome"]),
+        "curriculum_mode": ProjectCurriculumMode.deterministic,
+    }
+    for key in _DEFINITION_LIST_KEYS:
+        fields[key] = list(PROJECT_SPEC[key])  # type: ignore[arg-type]
+    fields["concepts"] = [spec["id"] for spec in CONCEPTS]
 
     project = db.query(Project).filter(Project.title == title).first()
     if project is None:
         project = Project(
             title=title,
-            description=description,
             course_id=course_id,
             primary_option_id=primary_option_id,
             secondary_option_id=secondary_option_id,
             is_active=True,
-            **definition,
+            **fields,
         )
         db.add(project)
         db.flush()
         print(f"Seeded project: {title}")
     else:
-        project.description = description
         project.course_id = course_id
         project.primary_option_id = primary_option_id
         project.secondary_option_id = secondary_option_id
         project.is_active = True
-        for key, value in definition.items():
+        for key, value in fields.items():
             setattr(project, key, value)
         print(f"Updated project definition: {title}")
 
-    _sync_milestones(db, project, milestones)
+    _sync_milestones(db, project)
     return project
 
 
-def _ensure_question(
-    db: Session,
-    *,
-    course_id: int,
-    primary_option_id: int,
-    secondary_option_id: int,
-    question_text: str,
-) -> None:
-    exists = (
-        db.query(ConceptQuestion)
-        .filter(
-            ConceptQuestion.course_id == course_id,
-            ConceptQuestion.primary_option_id == primary_option_id,
-            ConceptQuestion.secondary_option_id == secondary_option_id,
-            ConceptQuestion.question_text == question_text,
-        )
-        .first()
-    )
-    if exists is None:
-        db.add(
-            ConceptQuestion(
-                course_id=course_id,
-                primary_option_id=primary_option_id,
-                secondary_option_id=secondary_option_id,
-                question_text=question_text,
-                is_active=True,
-            )
-        )
-
-
-def _seed_base_catalog(db: Session) -> tuple[Course, Course]:
-    se = db.query(Course).filter(Course.slug == "software-engineering").first()
-    business = db.query(Course).filter(Course.slug == "business").first()
-    if se is not None and business is not None:
-        return se, business
-
-    se = Course(
-        slug="software-engineering",
-        name="Software Engineering",
-        description="Build software through languages, frameworks, and deliberate practice.",
-        primary_label="Language",
-        secondary_label="Framework",
-    )
-    business = Course(
-        slug="business",
-        name="Business",
-        description="Learn business domains through applied projects and hard questions.",
-        primary_label="Domain",
-        secondary_label="Focus",
-    )
-    db.add_all([se, business])
-    db.flush()
-
-    python = _option(se.id, "Python", "python")
-    javascript = _option(se.id, "JavaScript", "javascript")
-    marketing = _option(business.id, "Marketing", "marketing")
-    finance = _option(business.id, "Finance", "finance")
-    db.add_all([python, javascript, marketing, finance])
-    db.flush()
-
-    db.add_all(
-        [
-            _option(se.id, "FastAPI", "fastapi", parent_id=python.id),
-            _option(se.id, "Django", "django", parent_id=python.id),
-            _option(se.id, "React", "react", parent_id=javascript.id),
-            _option(business.id, "Content Strategy", "content-strategy", parent_id=marketing.id),
-            _option(business.id, "Accounting", "accounting", parent_id=finance.id),
-        ]
-    )
-    db.flush()
-    print("Seeded base courses and options.")
-    return se, business
-
-
 def seed(db: Session) -> None:
-    se, business = _seed_base_catalog(db)
-
-    python = _get_option(db, se.id, "python")
-    javascript = _get_option(db, se.id, "javascript")
-    marketing = _get_option(db, business.id, "marketing")
-    fastapi_opt = _get_option(db, se.id, "fastapi", parent_id=python.id)
-    django_opt = _get_option(db, se.id, "django", parent_id=python.id)
-    react_opt = _get_option(db, se.id, "react", parent_id=javascript.id)
-    content_opt = _get_option(db, business.id, "content-strategy", parent_id=marketing.id)
-
+    course, primary, secondary = _seed_course(db)
+    _sync_concepts(db)
+    _sync_dependencies(db)
     _ensure_project(
         db,
-        spec=TASK_TRACKER,
-        course_id=se.id,
-        primary_option_id=python.id,
-        secondary_option_id=fastapi_opt.id,
+        course_id=course.id,
+        primary_option_id=primary.id,
+        secondary_option_id=secondary.id,
     )
-    _ensure_project(
-        db,
-        spec=NOTES_API,
-        course_id=se.id,
-        primary_option_id=python.id,
-        secondary_option_id=fastapi_opt.id,
-    )
-    _ensure_project(
-        db,
-        spec=LIBRARY_CATALOG,
-        course_id=se.id,
-        primary_option_id=python.id,
-        secondary_option_id=django_opt.id,
-    )
-    _ensure_project(
-        db,
-        spec=LEARNING_DASHBOARD,
-        course_id=se.id,
-        primary_option_id=javascript.id,
-        secondary_option_id=react_opt.id,
-    )
-    _ensure_project(
-        db,
-        spec=CONTENT_CALENDAR,
-        course_id=business.id,
-        primary_option_id=marketing.id,
-        secondary_option_id=content_opt.id,
-    )
-
-    python_fastapi_questions = [
-        (
-            "Why might you prefer dependency injection over importing a database session "
-            "directly inside a FastAPI route, and what breaks if you don't?"
-        ),
-        (
-            "Explain the difference between validating request bodies with Pydantic models "
-            "versus validating query parameters. When would each approach hide bugs?"
-        ),
-        (
-            "A FastAPI endpoint returns a list of ORM objects. What serialization pitfalls "
-            "appear with relationships and lazy loading, and how would you design around them?"
-        ),
-    ]
-    python_django_questions = [
-        (
-            "When would you choose a Django class-based view over a function-based view "
-            "for a catalog page, and what complexity does that choice push onto beginners?"
-        ),
-        (
-            "Explain why Django's ORM `select_related` vs `prefetch_related` matters for a "
-            "book list that also shows authors. What N+1 failure looks like in practice?"
-        ),
-        (
-            "A model field uses blank=True but not null=True. What does that mean for forms, "
-            "the database, and API clients that send missing values?"
-        ),
-    ]
-
-    for text in python_fastapi_questions:
-        _ensure_question(
-            db,
-            course_id=se.id,
-            primary_option_id=python.id,
-            secondary_option_id=fastapi_opt.id,
-            question_text=text,
-        )
-    for text in python_django_questions:
-        _ensure_question(
-            db,
-            course_id=se.id,
-            primary_option_id=python.id,
-            secondary_option_id=django_opt.id,
-            question_text=text,
-        )
-
-    _backfill_empty_concept_sessions(db)
-
     db.commit()
-    print("Seed complete (projects + concept questions ensured).")
-
-
-def _backfill_empty_concept_sessions(db: Session) -> None:
-    """Fill concept sessions created before the question catalog existed."""
-    from app.models.concept import ConceptSession, ConceptSessionStatus
-    from app.models.enrollment import Enrollment, LearningMode
-
-    empty_sessions = (
-        db.query(ConceptSession)
-        .join(Enrollment, ConceptSession.enrollment_id == Enrollment.id)
-        .filter(
-            ConceptSession.question_text.is_(None),
-            Enrollment.learning_mode == LearningMode.concept,
-        )
-        .all()
-    )
-    filled = 0
-    for session in empty_sessions:
-        enrollment = db.get(Enrollment, session.enrollment_id)
-        if enrollment is None:
-            continue
-        question = (
-            db.query(ConceptQuestion)
-            .filter(
-                ConceptQuestion.course_id == enrollment.course_id,
-                ConceptQuestion.primary_option_id == enrollment.primary_option_id,
-                ConceptQuestion.secondary_option_id == enrollment.secondary_option_id,
-                ConceptQuestion.is_active.is_(True),
-            )
-            .order_by(ConceptQuestion.id)
-            .first()
-        )
-        if question is None:
-            continue
-        session.question_text = question.question_text
-        session.status = ConceptSessionStatus.active
-        filled += 1
-    if filled:
-        print(f"Backfilled {filled} empty concept session(s) with seeded questions.")
+    print("Seed complete (JavaScript Backend Framework curriculum graph).")
 
 
 def main() -> None:

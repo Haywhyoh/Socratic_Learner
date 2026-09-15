@@ -2,12 +2,13 @@ import { clearToken, getToken } from "./auth-token";
 import type {
   CoachMessageResponse,
   CoachStartResponse,
-  ConceptCardRead,
+  ConceptRead,
   CourseOptionRead,
   CourseRead,
   EnrollmentCreate,
   EnrollmentDetail,
   EnrollmentRead,
+  GraphRead,
   MilestoneReviewRead,
   SandboxFileEntry,
   SandboxRunResult,
@@ -189,10 +190,10 @@ export const api = {
     );
   },
 
-  coachStart(userProjectId: number, answers?: { concept: string; mastery: string }[]) {
+  coachStart(userProjectId: number) {
     return request<CoachStartResponse>(
       `/api/v1/me/projects/${userProjectId}/coach/start`,
-      { method: "POST", body: { answers: answers ?? [] } },
+      { method: "POST", body: { answers: [] } },
     );
   },
 
@@ -211,7 +212,7 @@ export const api = {
   },
 
   listCards(userMilestoneId: number) {
-    return request<ConceptCardRead[]>(
+    return request<ConceptRead[]>(
       `/api/v1/me/milestones/${userMilestoneId}/cards`,
     );
   },
@@ -239,6 +240,72 @@ export const api = {
     return request<MilestoneReviewRead>(
       `/api/v1/me/milestones/${userMilestoneId}/review/answer`,
       { method: "POST", body: { answers } },
+    );
+  },
+
+  getGraph(userProjectId: number) {
+    return request<GraphRead>(`/api/v1/me/projects/${userProjectId}/graph`);
+  },
+
+  submitResearch(
+    userProjectId: number,
+    conceptId: string,
+    payload: {
+      question?: string;
+      sources?: { title?: string; url?: string }[];
+      learner_notes?: string;
+      learner_summary?: string;
+      remaining_questions?: string;
+    },
+  ) {
+    return request(
+      `/api/v1/me/projects/${userProjectId}/concepts/${conceptId}/research`,
+      { method: "POST", body: payload },
+    );
+  },
+
+  submitExplanation(userProjectId: number, conceptId: string, answer: string) {
+    return request(
+      `/api/v1/me/projects/${userProjectId}/concepts/${conceptId}/explain`,
+      { method: "POST", body: { answer } },
+    );
+  },
+
+  skipDiagnostic(userProjectId: number, conceptId: string, answers: string[]) {
+    return request(
+      `/api/v1/me/projects/${userProjectId}/concepts/${conceptId}/skip-diagnostic`,
+      { method: "POST", body: { answers } },
+    );
+  },
+
+  submitReflection(userMilestoneId: number, answers: Record<string, string>) {
+    return request(`/api/v1/me/milestones/${userMilestoneId}/reflection`, {
+      method: "POST",
+      body: { answers },
+    });
+  },
+
+  startDefense(userProjectId: number) {
+    return request(`/api/v1/me/projects/${userProjectId}/defense/start`, {
+      method: "POST",
+    });
+  },
+
+  answerDefense(userProjectId: number, answers: string[]) {
+    return request(`/api/v1/me/projects/${userProjectId}/defense/answer`, {
+      method: "POST",
+      body: { answers },
+    });
+  },
+
+  listRetrievalChecks(userProjectId: number) {
+    return request(`/api/v1/me/projects/${userProjectId}/retrieval-checks`);
+  },
+
+  answerRetrieval(userProjectId: number, checkId: number, answer: string) {
+    return request(
+      `/api/v1/me/projects/${userProjectId}/retrieval-checks/${checkId}/answer`,
+      { method: "POST", body: { answer } },
     );
   },
 

@@ -21,11 +21,10 @@ import { ProjectBriefModal } from "@/components/workspace/project-brief-modal";
 import { api } from "@/lib/api";
 import {
   getActiveUserMilestone,
-  parseMilestoneTasks,
-  type MilestoneTask,
 } from "@/lib/milestones";
 import type {
   EnrollmentDetail,
+  GraphRead,
   ProjectDetail,
   SandboxFileEntry,
   UserMilestoneRead,
@@ -49,10 +48,7 @@ export function WorkspaceShell({
   const [selectedUm, setSelectedUm] = useState<UserMilestoneRead | null>(
     activeUm,
   );
-  const [activeTask, setActiveTask] = useState<MilestoneTask | null>(() => {
-    const tasks = parseMilestoneTasks(activeUm?.milestone?.instructions);
-    return tasks[0] ?? null;
-  });
+  const [graph, setGraph] = useState<GraphRead | null>(null);
   const [files, setFiles] = useState<SandboxFileEntry[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState("");
@@ -63,8 +59,9 @@ export function WorkspaceShell({
   const [coachBoot, setCoachBoot] = useState<{
     reply: string | null;
     question: string | null;
-    cards: import("@/lib/types").ConceptCardRead[];
-  }>({ reply: null, question: null, cards: [] });
+    contract: import("@/lib/types").MentorContractRead | null;
+    concept: import("@/lib/types").ConceptRead | null;
+  }>({ reply: null, question: null, contract: null, concept: null });
   const [briefOpen, setBriefOpen] = useState(false);
   const [brief, setBrief] = useState<ProjectDetail | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
@@ -119,16 +116,22 @@ export function WorkspaceShell({
         setCoachBoot({
           reply: coach.reply,
           question: coach.current_question,
-          cards: coach.cards,
+          contract: coach.contract,
+          concept: coach.concept,
         });
-        setQuestionsComplete(
-          Boolean(coach.learner_state?.questions_complete) ||
-            !coach.current_question,
-        );
+        if (coach.graph) setGraph(coach.graph);
+        else {
+          try {
+            setGraph(await api.getGraph(userProjectId!));
+          } catch {
+            /* graph is optional on first boot */
+          }
+        }
         setCoachReady(true);
-        const py = listed?.find((f) => f.path === "main.py" && !f.is_dir);
-        const first =
-          py?.path ?? listed?.find((f) => !f.is_dir)?.path ?? null;
+        const js =
+          listed?.find((f) => f.path.endsWith(".js") && !f.is_dir) ??
+          listed?.find((f) => f.path === "README.md" && !f.is_dir);
+        const first = js?.path ?? listed?.find((f) => !f.is_dir)?.path ?? null;
         if (first) await loadFile(first);
       } catch (e) {
         terminalRef.current?.echo(

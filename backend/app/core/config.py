@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     sandbox_enabled: bool = True
     sandbox_workspaces_root: str = str(_BACKEND_ROOT / "data" / "workspaces")
-    sandbox_image: str = "socratic-sandbox-python:latest"
+    sandbox_image: str = "socratic-sandbox-node:latest"
     sandbox_memory_mb: int = 512
     sandbox_cpus: float = 1.0
     sandbox_timeout_sec: int = 30

@@ -1,42 +1,43 @@
+"""Mentor service: learning-state context in, structured contract out."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.agents.build_coach import build_steps_for_milestone
-from app.agents.graph import build_chat_graph, build_start_graph
 from app.agents.llm import get_coach_llm
+from app.agents.mentor_graph import _behaviors_for, build_mentor_graph
 from app.agents.policies import (
     MAX_REVIEW_ATTEMPTS,
-    current_teach_concepts,
     message_looks_like_attempt,
 )
-from app.agents.state import CatalogMilestone, CoachState
 from app.models.coach import (
-    CardCheckpoint,
-    ConceptCard,
-    ConceptMastery,
     HintReveal,
-    LearnerKnowledge,
-    LearnerState,
     MentorSession,
     MentorSessionStatus,
     MentorTurn,
     MentorTurnRole,
     MilestoneReview,
     MilestoneReviewVerdict,
-    RoadmapItem,
-    TeachingFlag,
 )
-from app.models.project import (
-    UserMilestone,
-    UserMilestoneStatus,
-    UserProject,
+from app.models.curriculum import Concept, ConceptDependency
+from app.models.learning_state import (
+    ConceptState,
+    ConceptStatus,
+    DefenseVerdict,
+    ProjectDefense,
+    Reflection,
+    ResearchRecord,
+    RetrievalCheck,
+    RetrievalCheckStatus,
 )
+from app.models.project import UserMilestone, UserProject
+from app.models.sandbox import SandboxWorkspace
 from app.models.user import User
-from app.schemas.coach import AssessmentAnswer, RoadmapConceptRead, RoadmapMilestoneRead
+from app.services import curriculum_graph
 from app.services import learning as learning_service
 
 
@@ -44,35 +45,8 @@ def _user_project(db: Session, user: User, user_project_id: int) -> UserProject:
     return learning_service.get_user_project(db, user, user_project_id)
 
 
-def _catalog(user_project: UserProject) -> list[CatalogMilestone]:
-    # This learner's own generated curriculum (each learner gets their own
-    # milestone set), not the shared catalog template on Project.milestones.
-    milestones = sorted(
-        (um.milestone for um in user_project.user_milestones if um.milestone is not None),
-        key=lambda m: m.order_index,
-    )
-    return [
-        {
-            "id": milestone.id,
-            "title": milestone.title,
-            "order_index": milestone.order_index,
-            "concepts": list(milestone.concepts or []),
-            "questions": list(milestone.questions or []),
-            "success_criteria": milestone.success_criteria,
-            "description": milestone.description,
-        }
-        for milestone in milestones
-    ]
-
-
 def current_user_milestone(user_project: UserProject) -> UserMilestone | None:
-    pending = [
-        um
-        for um in user_project.user_milestones
-        if um.status == UserMilestoneStatus.pending and um.milestone is not None
-    ]
-    pending.sort(key=lambda um: um.milestone.order_index)
-    return pending[0] if pending else None
+    return curriculum_graph.current_user_milestone(user_project)
 
 
 def _session(db: Session, user_project: UserProject) -> MentorSession:
@@ -85,287 +59,241 @@ def _session(db: Session, user_project: UserProject) -> MentorSession:
     if session is None:
         session = MentorSession(
             user_project_id=user_project.id,
-            status=MentorSessionStatus.needs_assessment,
+            status=MentorSessionStatus.active,
         )
         db.add(session)
         db.flush()
+    elif session.status == MentorSessionStatus.needs_assessment:
+        session.status = MentorSessionStatus.active
     return session
 
 
-def _knowledge_profile(db: Session, user_project_id: int) -> dict[str, str]:
-    rows = (
-        db.query(LearnerKnowledge)
-        .filter(LearnerKnowledge.user_project_id == user_project_id)
+def _append_turn(db: Session, session: MentorSession, role: MentorTurnRole, content: str) -> None:
+    db.add(MentorTurn(session_id=session.id, role=role, content=content))
+
+
+def _concept_payload(concept: Concept | None) -> dict[str, Any]:
+    if concept is None:
+        return {}
+    return {
+        "id": concept.id,
+        "title": concept.title,
+        "category": concept.category,
+        "description": concept.description,
+        "learning_objectives": list(concept.learning_objectives or []),
+        "misconceptions": list(concept.misconceptions or []),
+        "diagnostic_questions": list(concept.diagnostic_questions or []),
+        "research_questions": list(concept.research_questions or []),
+        "resources": list(concept.resources or []),
+        "hints": list(concept.hints or []),
+        "mastery_requirements": dict(concept.mastery_requirements or {}),
+    }
+
+
+def _state_payload(row: ConceptState | None, position: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict((row.evidence if row else None) or curriculum_graph.empty_evidence())
+    return {
+        "user_project_id": row.user_project_id if row else position.get("user_milestone_id"),
+        "concept_id": row.concept_id if row else position.get("current_concept_id"),
+        "status": row.status.value if row else position.get("concept_state"),
+        "evidence": evidence,
+        "attempt_count": row.attempt_count if row else 0,
+        "hints_used": row.hints_used if row else 0,
+        "hint_level": row.hint_level if row else -1,
+        "last_explanation": row.last_explanation if row else "",
+        "milestone_id": position.get("milestone_id"),
+        "user_milestone_id": position.get("user_milestone_id"),
+    }
+
+
+def _prereq_states(db: Session, user_project: UserProject, concept_id: str | None) -> dict[str, str]:
+    if not concept_id:
+        return {}
+    deps = (
+        db.query(ConceptDependency)
+        .filter(ConceptDependency.concept_id == concept_id)
         .all()
     )
-    return {row.concept_name: row.mastery.value for row in rows}
-
-
-def _persist_knowledge(db: Session, user_project_id: int, profile: dict[str, str]) -> None:
-    existing = {
-        row.concept_name: row
-        for row in db.query(LearnerKnowledge)
-        .filter(LearnerKnowledge.user_project_id == user_project_id)
-        .all()
-    }
-    for name, mastery in profile.items():
-        row = existing.get(name)
-        value = ConceptMastery(mastery)
-        if row is None:
-            db.add(
-                LearnerKnowledge(
-                    user_project_id=user_project_id,
-                    concept_name=name,
-                    mastery=value,
-                )
-            )
-        else:
-            row.mastery = value
-
-
-def _persist_roadmap(
-    db: Session,
-    user_project_id: int,
-    roadmap: list[dict],
-) -> None:
-    db.query(RoadmapItem).filter(RoadmapItem.user_project_id == user_project_id).delete()
-    for item in roadmap:
-        for concept in item.get("concepts") or []:
-            db.add(
-                RoadmapItem(
-                    user_project_id=user_project_id,
-                    milestone_id=item["milestone_id"],
-                    concept_name=concept["name"],
-                    teaching=TeachingFlag(concept["teaching"]),
-                )
-            )
-
-
-def _persist_cards(
-    db: Session,
-    user_project_id: int,
-    milestone_id: int,
-    cards: list[dict],
-) -> list[ConceptCard]:
-    stored: list[ConceptCard] = []
-    existing = {
-        card.name: card
-        for card in db.query(ConceptCard)
-        .filter(
-            ConceptCard.user_project_id == user_project_id,
-            ConceptCard.milestone_id == milestone_id,
+    states = curriculum_graph.states_by_concept(db, user_project.id)
+    return {
+        dep.requires_concept_id: (
+            states[dep.requires_concept_id].status.value
+            if dep.requires_concept_id in states
+            else ConceptStatus.locked.value
         )
-        .all()
+        for dep in deps
     }
-    for draft in cards:
-        current = existing.get(draft["name"])
-        payload = {
-            "why_it_matters": draft["why_it_matters"],
-            "research_questions": list(draft.get("research_questions") or []),
-            "resources": list(draft.get("resources") or []),
-            "checkpoint": draft["checkpoint"],
-            "explanation": draft.get("explanation") or "",
-        }
-        if current is None:
-            current = ConceptCard(
-                user_project_id=user_project_id,
-                milestone_id=milestone_id,
-                name=draft["name"],
-                **payload,
-            )
-            db.add(current)
-            db.flush()
-        else:
-            for key, value in payload.items():
-                setattr(current, key, value)
-        stored.append(current)
-    return stored
 
 
-def _get_or_create_learner_state(
-    db: Session, user_project_id: int, milestone_id: int
-) -> LearnerState:
+def _test_counts(db: Session, user_project_id: int) -> tuple[dict[str, int], str]:
     row = (
-        db.query(LearnerState)
-        .filter(
-            LearnerState.user_project_id == user_project_id,
-            LearnerState.milestone_id == milestone_id,
-        )
+        db.query(SandboxWorkspace)
+        .filter(SandboxWorkspace.user_project_id == user_project_id)
         .first()
     )
-    if row is None:
-        row = LearnerState(
-            user_project_id=user_project_id,
-            milestone_id=milestone_id,
-            question_index=0,
-            questions_passed=0,
-            attempts=[],
-            researched_concepts=[],
-            failed_at=[],
-            can_explain=[],
-            can_reproduce=False,
-            help_received=0,
-            build_step_index=0,
-        )
-        db.add(row)
-        db.flush()
-    return row
+    summary = (row.last_test_summary if row else None) or {}
+    counts = {
+        "passed": int(summary.get("passed") or 0),
+        "failed": int(summary.get("failed") or 0),
+        "errors": int(summary.get("errors") or 0),
+    }
+    return counts, str(summary.get("summary") or "")
 
 
-def _roadmap_read(db: Session, user_project: UserProject) -> list[RoadmapMilestoneRead]:
-    items = (
-        db.query(RoadmapItem)
-        .options(joinedload(RoadmapItem.milestone))
-        .filter(RoadmapItem.user_project_id == user_project.id)
-        .all()
+def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
+    position = curriculum_graph.resolve_current_position(db, user_project)
+    concept_id = position.get("current_concept_id")
+    concept = db.get(Concept, concept_id) if concept_id else None
+    state_row = (
+        curriculum_graph.get_or_create_state(db, user_project, str(concept_id))
+        if concept_id
+        else None
     )
-    profile = _knowledge_profile(db, user_project.id)
-    grouped: dict[int, RoadmapMilestoneRead] = {}
-    for item in items:
-        milestone = item.milestone
-        bucket = grouped.get(item.milestone_id)
-        if bucket is None:
-            bucket = RoadmapMilestoneRead(
-                milestone_id=item.milestone_id,
-                title=milestone.title if milestone else "",
-                order_index=milestone.order_index if milestone else 0,
-                concepts=[],
-            )
-            grouped[item.milestone_id] = bucket
-        bucket.concepts.append(
-            RoadmapConceptRead(
-                name=item.concept_name,
-                teaching=item.teaching,
-                mastery=ConceptMastery(
-                    profile.get(item.concept_name, ConceptMastery.unknown.value)
-                ),
-            )
-        )
-    return sorted(grouped.values(), key=lambda row: row.order_index)
-
-
-def _cards_for_milestone(
-    db: Session, user_project_id: int, milestone_id: int
-) -> list[ConceptCard]:
-    return (
-        db.query(ConceptCard)
-        .filter(
-            ConceptCard.user_project_id == user_project_id,
-            ConceptCard.milestone_id == milestone_id,
-        )
-        .order_by(ConceptCard.id)
-        .all()
-    )
-
-
-def _max_hint_level(db: Session, user_milestone_id: int) -> int:
-    levels = [
-        row.level
-        for row in db.query(HintReveal)
-        .filter(HintReveal.user_milestone_id == user_milestone_id)
-        .all()
+    tests, tests_summary = _test_counts(db, user_project.id)
+    gaps = [
+        {"concept": g.suspected_concept_id, "confidence": g.confidence}
+        for g in curriculum_graph.open_gaps(db, user_project.id)
+        if not concept_id or g.blocked_concept_id == concept_id
     ]
-    return max(levels) if levels else -1
+    status = (state_row.status.value if state_row else None) or ConceptStatus.available.value
+    um = current_user_milestone(user_project)
+    awaiting_reflection = False
+    if um and um.milestone and curriculum_graph.milestone_concepts_complete(
+        db, user_project, um.milestone
+    ):
+        awaiting_reflection = not curriculum_graph.reflection_complete(db, um.id)
+    gap_reason = ""
+    if gaps:
+        gap_reason = curriculum_graph.explain_gap_reason(
+            db, str(concept_id or ""), str(gaps[0]["concept"])
+        )
+    later_titles = curriculum_graph.later_concept_titles(
+        db, list(position.get("later_concepts") or [])
+    )
+    return {
+        "position": position,
+        "concept": concept,
+        "state_row": state_row,
+        "graph_state": {
+            "project": "javascript-backend-framework",
+            "project_title": user_project.project.title if user_project.project else "",
+            "current_milestone": f"M{position.get('milestone_order') or 0:02d}",
+            "current_milestone_title": position.get("milestone_title") or "",
+            "current_concept": concept_id or "",
+            "concept_title": concept.title if concept else "",
+            "concept_description": concept.description if concept else "",
+            "concept_state": status,
+            "prerequisites": _prereq_states(db, user_project, str(concept_id) if concept_id else None),
+            "known_gaps": gaps,
+            "attempt_count": state_row.attempt_count if state_row else 0,
+            "hints_used": state_row.hints_used if state_row else 0,
+            "hint_level": state_row.hint_level if state_row else -1,
+            "tests": tests,
+            "tests_summary": tests_summary,
+            "learner_last_explanation": state_row.last_explanation if state_row else "",
+            "allowed_ai_behavior": _behaviors_for(
+                status, needs_build=curriculum_graph.needs_build(concept) if concept else False
+            ),
+            "later_concepts": later_titles,
+            "resources": list((concept.resources if concept else None) or []),
+            "diagnostic_questions": list((concept.diagnostic_questions if concept else None) or []),
+            "research_questions": list((concept.research_questions if concept else None) or []),
+            "misconceptions": list((concept.misconceptions if concept else None) or []),
+            "hints": list((concept.hints if concept else None) or []),
+            "learning_objectives": list((concept.learning_objectives if concept else None) or []),
+            "needs_build": curriculum_graph.needs_build(concept) if concept else False,
+            "gap_reason": gap_reason,
+            "awaiting_reflection": awaiting_reflection,
+            "project_complete": bool(position.get("project_complete")),
+        },
+    }
 
 
-def _has_recent_tested_attempt(learner_state: LearnerState | None) -> bool:
-    if learner_state is None:
-        return False
-    for attempt in reversed(list(learner_state.attempts or [])):
-        if isinstance(attempt, dict) and attempt.get("tested") is True:
-            return True
-    return False
-
-
-def _effort(
+def _apply_next_state(
     db: Session,
-    session: MentorSession,
-    user_milestone: UserMilestone | None,
+    user_project: UserProject,
+    concept_id: str | None,
+    next_state: str | None,
+) -> None:
+    if not concept_id or not next_state:
+        return
+    try:
+        status = ConceptStatus(next_state)
+    except ValueError:
+        return
+    row = curriculum_graph.get_or_create_state(db, user_project, concept_id)
+    if row.status in {ConceptStatus.mastered, ConceptStatus.verified}:
+        return
+    if status == ConceptStatus.mastered:
+        curriculum_graph.try_master(db, user_project, concept_id)
+        return
+    curriculum_graph.set_status(db, user_project, concept_id, status)
+
+
+def _run_mentor(
+    db: Session,
+    user_project: UserProject,
     message: str,
-) -> dict[str, object]:
-    last_hint_at = None
-    if user_milestone is not None:
-        last = (
-            db.query(HintReveal)
-            .filter(HintReveal.user_milestone_id == user_milestone.id)
-            .order_by(HintReveal.created_at.desc(), HintReveal.id.desc())
-            .first()
-        )
-        if last is not None:
-            last_hint_at = last.created_at
-    turns_since = 0
-    for turn in session.turns:
-        if last_hint_at is not None and turn.created_at <= last_hint_at:
-            continue
-        if turn.role == MentorTurnRole.learner:
-            turns_since += 1
-    checkpoint_since = False
-    learner_state = None
-    if user_milestone is not None:
-        cards = _cards_for_milestone(db, session.user_project_id, user_milestone.milestone_id)
-        card_ids = [card.id for card in cards]
-        if card_ids:
-            query = db.query(CardCheckpoint).filter(CardCheckpoint.card_id.in_(card_ids))
-            if last_hint_at is not None:
-                query = query.filter(CardCheckpoint.created_at > last_hint_at)
-            checkpoint_since = query.first() is not None
-        learner_state = (
-            db.query(LearnerState)
-            .filter(
-                LearnerState.user_project_id == session.user_project_id,
-                LearnerState.milestone_id == user_milestone.milestone_id,
-            )
-            .first()
-        )
-    return {
-        "learner_turns_since_hint": turns_since,
-        "checkpoint_since_hint": checkpoint_since,
+    *,
+    effort: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session = _session(db, user_project)
+    ctx = _mentor_context(db, user_project)
+    graph_state = dict(ctx["graph_state"])
+    graph_state["learner_message"] = message
+    graph_state["effort"] = effort or {
+        "learner_turns_since_hint": 1,
+        "checkpoint_since_hint": False,
         "attempt_message": message_looks_like_attempt(message),
-        "tested_attempt": _has_recent_tested_attempt(learner_state),
+        "tested_attempt": False,
     }
-
-
-def _base_state(user_project: UserProject, user_milestone: UserMilestone | None) -> CoachState:
-    catalog = _catalog(user_project)
-    milestone = user_milestone.milestone if user_milestone else None
-    resources = [
-        {"title": str(item.get("title", "")), "url": str(item.get("url", ""))}
-        for item in (user_project.project.recommended_resources or [])
-        if isinstance(item, dict)
-    ]
+    compiled = build_mentor_graph(get_coach_llm())
+    result = compiled.invoke(graph_state)
+    contract = dict(result.get("contract") or {})
+    reply = str(result.get("reply") or contract.get("message") or "")
+    next_state = str(result.get("next_state") or contract.get("next_state") or "")
+    concept_id = ctx["graph_state"].get("current_concept") or None
+    if next_state:
+        _apply_next_state(db, user_project, str(concept_id) if concept_id else None, next_state)
+    if result.get("identified_gap") and concept_id:
+        suspects = curriculum_graph.suspect_gaps(db, user_project, str(concept_id))
+        curriculum_graph.persist_suspected_gaps(db, user_project, str(concept_id), suspects)
+    _append_turn(db, session, MentorTurnRole.tutor, reply)
+    db.commit()
+    db.refresh(session)
+    position = curriculum_graph.resolve_current_position(db, user_project)
+    state_row = (
+        curriculum_graph.get_or_create_state(db, user_project, str(position["current_concept_id"]))
+        if position.get("current_concept_id")
+        else None
+    )
     return {
-        "user_project_id": user_project.id,
-        "milestone_id": milestone.id if milestone else None,
-        "project_title": user_project.project.title,
-        "milestone_title": milestone.title if milestone else "",
-        "constraints": list(user_project.project.constraints or []),
-        "success_criteria": milestone.success_criteria if milestone else "",
-        "milestone_instructions": milestone.instructions if milestone else "",
-        "milestone_questions": list(milestone.questions or []) if milestone else [],
-        "catalog_milestones": catalog,
-        "resources": resources,
-    }
-
-
-def _learner_state_payload(row: LearnerState, questions: list[str]) -> dict:
-    index = row.question_index
-    current = questions[index] if 0 <= index < len(questions) else None
-    return {
-        "user_project_id": row.user_project_id,
-        "milestone_id": row.milestone_id,
-        "question_index": row.question_index,
-        "questions_passed": row.questions_passed,
-        "question_attempts": row.question_attempts,
-        "questions_total": len(questions),
-        "current_question": current,
-        "attempts": list(row.attempts or []),
-        "researched_concepts": list(row.researched_concepts or []),
-        "failed_at": list(row.failed_at or []),
-        "can_explain": list(row.can_explain or []),
-        "can_reproduce": row.can_reproduce,
-        "help_received": row.help_received,
-        "questions_complete": index >= len(questions),
-        "build_step_index": int(getattr(row, "build_step_index", 0) or 0),
+        "intent": contract.get("intent") or result.get("intent") or "MENTOR",
+        "action": contract.get("action") or "ASK_QUESTION",
+        "reply": reply,
+        "hint_level": result.get("hint_level", contract.get("hint_level")),
+        "hint_blocked_reason": result.get("hint_blocked_reason"),
+        "policy_flags": list(result.get("policy_flags") or []),
+        "turns": session.turns,
+        "current_question": reply if contract.get("action") in {
+            "ASK_QUESTION", "ASK_RESEARCH", "ASK_DIAGNOSTIC_QUESTION",
+            "ASK_REFLECTION", "ASK_DEFENSE",
+        } else None,
+        "answer_status": contract.get("action"),
+        "push_back": None,
+        "learner_state": _state_payload(state_row, position),
+        "contract": {
+            "intent": contract.get("intent") or "MENTOR",
+            "action": contract.get("action") or "ASK_QUESTION",
+            "message": reply,
+            "diagnostic_concept": contract.get("diagnostic_concept"),
+            "identified_gap": contract.get("identified_gap") or result.get("identified_gap"),
+            "hint_level": contract.get("hint_level") or 0,
+            "should_unlock": bool(contract.get("should_unlock") or result.get("should_unlock")),
+            "next_state": next_state,
+        },
+        "concept": _concept_payload(ctx["concept"]),
+        "position": position,
     }
 
 
@@ -373,141 +301,349 @@ def start_coach(
     db: Session,
     user: User,
     user_project_id: int,
-    answers: list[AssessmentAnswer] | None = None,
-) -> dict:
+    answers: list | None = None,
+) -> dict[str, Any]:
     user_project = _user_project(db, user, user_project_id)
     session = _session(db, user_project)
-    current = current_user_milestone(user_project)
-    profile = _knowledge_profile(db, user_project.id)
-    if session.status == MentorSessionStatus.active and not answers:
-        learner_state = None
-        questions: list[str] = []
-        reply = None
-        if current is not None:
-            questions = list(current.milestone.questions or [])
-            learner_state = _get_or_create_learner_state(
-                db, user_project.id, current.milestone_id
-            )
-            if learner_state.question_index < len(questions):
-                reply = questions[learner_state.question_index]
-            else:
-                steps = build_steps_for_milestone(
-                    current.milestone.instructions or ""
-                )
-                step_idx = int(getattr(learner_state, "build_step_index", 0) or 0)
-                step_idx = max(0, min(step_idx, max(len(steps) - 1, 0)))
-                task = steps[step_idx] if steps else "Create the smallest runnable scaffold"
-                reply = (
-                    f"Step {step_idx + 1} of {max(len(steps), 1)}: {task}\n"
-                    "Ask how to do this step for commands. "
-                    "Reply **done** when finished and I'll unlock the next step only."
-                )
-        db.commit()
-        return {
-            "status": session.status,
-            "user_project_id": user_project.id,
-            "session_id": session.id,
-            "milestone_id": current.milestone_id if current else None,
-            "assessment_questions": [],
-            "roadmap": _roadmap_read(db, user_project),
-            "cards": [],
-            "reply": reply,
-            "current_question": reply if current and learner_state and learner_state.question_index < len(questions) else None,
-            "answer_status": None,
-            "resumed": True,
-            "learner_state": (
-                _learner_state_payload(learner_state, questions) if learner_state else None
-            ),
-        }
-    answer_map = {item.concept: item.mastery.value for item in answers or []}
-    state: CoachState = _base_state(user_project, current)
-    state["mode"] = "start"
-    state["knowledge_profile"] = profile
-    state["assessment_answers"] = answer_map
-    if current is not None:
-        learner_state = _get_or_create_learner_state(
-            db, user_project.id, current.milestone_id
-        )
-        state["question_index"] = learner_state.question_index
-        state["questions_passed"] = learner_state.questions_passed
-    graph = build_start_graph(get_coach_llm())
-    result = graph.invoke(state)
-    status_value = result.get("status") or MentorSessionStatus.needs_assessment.value
-    if status_value == MentorSessionStatus.needs_assessment.value:
-        session.status = MentorSessionStatus.needs_assessment
-        db.commit()
-        db.refresh(session)
-        return {
-            "status": session.status,
-            "user_project_id": user_project.id,
-            "session_id": session.id,
-            "milestone_id": current.milestone_id if current else None,
-            "assessment_questions": result.get("assessment_questions") or [],
-            "roadmap": [],
-            "cards": [],
-            "reply": None,
-            "current_question": None,
-            "answer_status": None,
-            "learner_state": None,
-        }
-
-    profile = result.get("knowledge_profile") or profile
-    _persist_knowledge(db, user_project.id, profile)
-    _persist_roadmap(db, user_project.id, result.get("roadmap") or [])
-    if current is not None:
-        _persist_cards(
-            db, user_project.id, current.milestone_id, result.get("cards") or []
-        )
-        learner_state = _get_or_create_learner_state(
-            db, user_project.id, current.milestone_id
-        )
-    else:
-        learner_state = None
-    session.status = MentorSessionStatus.active
-    reply = result.get("reply") or ""
-    db.add(
-        MentorTurn(
-            session_id=session.id,
-            role=MentorTurnRole.system,
-            content=reply,
-        )
-    )
-    db.commit()
-    db.refresh(session)
-    questions = list(current.milestone.questions or []) if current else []
+    curriculum_graph.initialize_learning_state(db, user_project)
+    ctx = _mentor_context(db, user_project)
+    state_row = ctx["state_row"]
+    if state_row and state_row.status == ConceptStatus.available:
+        curriculum_graph.introduce_concept(db, user_project, state_row.concept_id)
+    result = _run_mentor(db, user_project, "What should I think about first?")
+    position = result["position"]
     return {
-        "status": session.status,
+        "status": MentorSessionStatus.active,
         "user_project_id": user_project.id,
         "session_id": session.id,
-        "milestone_id": current.milestone_id if current else None,
+        "milestone_id": position.get("milestone_id"),
         "assessment_questions": [],
-        "roadmap": _roadmap_read(db, user_project),
+        "roadmap": [],
         "cards": [],
-        "reply": reply,
-        "current_question": result.get("current_question"),
-        "answer_status": result.get("answer_status"),
-        "learner_state": (
-            _learner_state_payload(learner_state, questions) if learner_state else None
-        ),
+        "reply": result["reply"],
+        "current_question": result["current_question"],
+        "answer_status": result["answer_status"],
+        "resumed": len(session.turns) > 2,
+        "learner_state": result["learner_state"],
+        "contract": result["contract"],
+        "concept": result["concept"],
+        "position": position,
+        "graph": curriculum_graph.graph_payload(db, user_project),
     }
 
 
-def get_roadmap(db: Session, user: User, user_project_id: int) -> list[RoadmapMilestoneRead]:
+def post_message(
+    db: Session, user: User, user_project_id: int, message: str
+) -> dict[str, Any]:
     user_project = _user_project(db, user, user_project_id)
-    return _roadmap_read(db, user_project)
+    session = _session(db, user_project)
+    _append_turn(db, session, MentorTurnRole.learner, message)
+    ctx = _mentor_context(db, user_project)
+    state_row = ctx["state_row"]
+    if state_row and state_row.status == ConceptStatus.researching:
+        # A substantial message during research is treated as notes + discussion.
+        if len(message.strip()) >= 40:
+            curriculum_graph.mark_discussing(db, user_project, state_row.concept_id)
+    result = _run_mentor(db, user_project, message)
+    return result
 
 
-def get_learner_state(db: Session, user: User, user_project_id: int) -> dict:
+def get_graph(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
     user_project = _user_project(db, user, user_project_id)
-    current = current_user_milestone(user_project)
-    if current is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No pending milestone",
+    return curriculum_graph.graph_payload(db, user_project)
+
+
+def get_learner_state(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    position = curriculum_graph.resolve_current_position(db, user_project)
+    concept_id = position.get("current_concept_id")
+    row = (
+        curriculum_graph.get_or_create_state(db, user_project, str(concept_id))
+        if concept_id
+        else None
+    )
+    return _state_payload(row, position)
+
+
+def request_hint(db: Session, user: User, user_milestone_id: int) -> dict[str, Any]:
+    um = (
+        db.query(UserMilestone)
+        .options(joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment))
+        .filter(UserMilestone.id == user_milestone_id)
+        .first()
+    )
+    if um is None or um.user_project.enrollment.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+    user_project = um.user_project
+    position = curriculum_graph.resolve_current_position(db, user_project)
+    concept_id = position.get("current_concept_id")
+    result = _run_mentor(
+        db,
+        user_project,
+        "hint",
+        effort={
+            "learner_turns_since_hint": 1,
+            "checkpoint_since_hint": False,
+            "attempt_message": True,
+            "tested_attempt": False,
+        },
+    )
+    if concept_id and not result.get("hint_blocked_reason"):
+        row = curriculum_graph.get_or_create_state(db, user_project, str(concept_id))
+        row.hints_used = int(row.hints_used or 0) + 1
+        row.hint_level = int(result.get("hint_level") or row.hint_level)
+        db.add(
+            HintReveal(
+                user_milestone_id=um.id,
+                level=int(result.get("hint_level") or 0),
+                content=result.get("reply") or "",
+            )
         )
-    row = _get_or_create_learner_state(db, user_project.id, current.milestone_id)
+        db.commit()
+    return result
+
+
+def submit_research(
+    db: Session,
+    user: User,
+    user_project_id: int,
+    concept_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    record = ResearchRecord(
+        user_project_id=user_project.id,
+        concept_id=concept_id,
+        question=str(payload.get("question") or ""),
+        sources=list(payload.get("sources") or []),
+        learner_notes=str(payload.get("learner_notes") or ""),
+        learner_summary=str(payload.get("learner_summary") or ""),
+        remaining_questions=str(payload.get("remaining_questions") or ""),
+    )
+    db.add(record)
+    curriculum_graph.mark_discussing(db, user_project, concept_id)
     db.commit()
-    return _learner_state_payload(row, list(current.milestone.questions or []))
+    db.refresh(record)
+    return {
+        "id": record.id,
+        "concept_id": record.concept_id,
+        "question": record.question,
+        "sources": record.sources,
+        "learner_notes": record.learner_notes,
+        "learner_summary": record.learner_summary,
+        "remaining_questions": record.remaining_questions,
+    }
+
+
+def submit_explanation(
+    db: Session, user: User, user_project_id: int, concept_id: str, answer: str
+) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    concept = db.get(Concept, concept_id)
+    if concept is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found")
+    llm = get_coach_llm()
+    result = llm.evaluate_explanation(
+        concept_title=concept.title,
+        concept_description=concept.description,
+        objectives=list(concept.learning_objectives or []),
+        answer=answer,
+    )
+    if result.get("passed"):
+        curriculum_graph.explanation_passed(db, user_project, concept_id, answer)
+    else:
+        curriculum_graph.explanation_failed(db, user_project, concept_id, answer)
+        suspects = curriculum_graph.suspect_gaps(db, user_project, concept_id)
+        curriculum_graph.persist_suspected_gaps(db, user_project, concept_id, suspects)
+    db.commit()
+    row = curriculum_graph.get_or_create_state(db, user_project, concept_id)
+    return {
+        "passed": bool(result.get("passed")),
+        "feedback": result.get("feedback"),
+        "status": row.status.value,
+        "evidence": dict(row.evidence or {}),
+    }
+
+
+def skip_diagnostic(
+    db: Session, user: User, user_project_id: int, concept_id: str, answers: list[str]
+) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    result = curriculum_graph.evaluate_skip_diagnostic(db, user_project, concept_id, answers)
+    db.commit()
+    return result
+
+
+def submit_reflection(
+    db: Session, user: User, user_milestone_id: int, answers: dict[str, Any]
+) -> dict[str, Any]:
+    um = (
+        db.query(UserMilestone)
+        .options(joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment))
+        .filter(UserMilestone.id == user_milestone_id)
+        .first()
+    )
+    if um is None or um.user_project.enrollment.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+    row = (
+        db.query(Reflection).filter(Reflection.user_milestone_id == um.id).first()
+    )
+    if row is None:
+        row = Reflection(user_milestone_id=um.id, answers=answers)
+        db.add(row)
+    else:
+        row.answers = answers
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "user_milestone_id": um.id, "answers": row.answers}
+
+
+DEFENSE_QUESTIONS = [
+    "Why did you structure your router this way?",
+    "What is the complexity of route lookup?",
+    "How does middleware execution work?",
+    "What happens when middleware doesn't call next()?",
+    "How would you support async middleware?",
+    "How would you handle concurrent requests?",
+    "How would you add authentication?",
+    "How would you prevent malformed HTTP requests?",
+    "How would you scale this framework?",
+    "What parts would you rewrite?",
+]
+
+
+def start_defense(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    position = curriculum_graph.resolve_current_position(db, user_project)
+    if not position.get("project_complete"):
+        last = sorted(
+            user_project.user_milestones,
+            key=lambda um: um.milestone.order_index if um.milestone else 0,
+        )
+        if not last or (last[-1].milestone and last[-1].milestone.order_index < 12):
+            # Allow starting defense on M12 even if not yet marked complete.
+            current = current_user_milestone(user_project)
+            if current is None or not current.milestone or current.milestone.order_index < 12:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Finish earlier milestones before the final defense",
+                )
+    row = (
+        db.query(ProjectDefense)
+        .filter(ProjectDefense.user_project_id == user_project.id)
+        .first()
+    )
+    if row is None:
+        row = ProjectDefense(
+            user_project_id=user_project.id,
+            questions=list(DEFENSE_QUESTIONS),
+            verdict=DefenseVerdict.pending,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return {
+        "id": row.id,
+        "user_project_id": user_project.id,
+        "questions": row.questions,
+        "answers": row.answers,
+        "verdict": row.verdict.value,
+        "summary": row.summary,
+        "attempts": row.attempts,
+    }
+
+
+def answer_defense(
+    db: Session, user: User, user_project_id: int, answers: list[str]
+) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    row = (
+        db.query(ProjectDefense)
+        .filter(ProjectDefense.user_project_id == user_project.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Start the defense first")
+    llm = get_coach_llm()
+    graded = []
+    all_passed = True
+    for question, answer in zip(row.questions or DEFENSE_QUESTIONS, answers):
+        result = llm.evaluate_understanding(
+            question=str(question),
+            answer=answer,
+            milestone_title="Final engineering review",
+        )
+        passed = bool(result.get("passed"))
+        all_passed = all_passed and passed
+        graded.append(
+            {
+                "question": question,
+                "answer": answer,
+                "passed": passed,
+                "feedback": result.get("feedback"),
+            }
+        )
+    row.answers = graded
+    row.attempts = int(row.attempts or 0) + 1
+    if all_passed:
+        row.verdict = DefenseVerdict.passed
+        row.summary = "Defense passed — you can explain what you built."
+    else:
+        row.verdict = DefenseVerdict.needs_work
+        row.summary = "Some answers were too thin. Revisit those design questions."
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id,
+        "user_project_id": user_project.id,
+        "questions": row.questions,
+        "answers": row.answers,
+        "verdict": row.verdict.value,
+        "summary": row.summary,
+        "attempts": row.attempts,
+    }
+
+
+def list_retrieval_checks(db: Session, user: User, user_project_id: int) -> list[dict[str, Any]]:
+    user_project = _user_project(db, user, user_project_id)
+    rows = (
+        db.query(RetrievalCheck)
+        .filter(RetrievalCheck.user_project_id == user_project.id)
+        .order_by(RetrievalCheck.scheduled_for)
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "concept_id": row.concept_id,
+            "scheduled_for": row.scheduled_for.isoformat(),
+            "prompt": row.prompt,
+            "status": row.status.value,
+            "learner_response": row.learner_response,
+        }
+        for row in rows
+    ]
+
+
+def answer_retrieval(
+    db: Session, user: User, user_project_id: int, check_id: int, answer: str
+) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    row = db.get(RetrievalCheck, check_id)
+    if row is None or row.user_project_id != user_project.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Check not found")
+    row.learner_response = answer
+    row.status = RetrievalCheckStatus.completed
+    row.completed_at = datetime.now(UTC)
+    if len(answer.strip()) >= 40:
+        curriculum_graph.record_evidence(db, user_project, row.concept_id, retrieval=True)
+    db.commit()
+    return {
+        "id": row.id,
+        "concept_id": row.concept_id,
+        "status": row.status.value,
+        "learner_response": row.learner_response,
+    }
 
 
 def record_sandbox_test_attempt(
@@ -519,45 +655,38 @@ def record_sandbox_test_attempt(
     summary: str,
     passed: bool,
 ) -> None:
-    """Persist a real sandbox test run onto the current milestone learner state."""
     user_project = _user_project(db, user, user_project_id)
-    current = current_user_milestone(user_project)
-    if current is None:
-        return
-    row = _get_or_create_learner_state(db, user_project.id, current.milestone_id)
-    now = datetime.now(UTC).isoformat()
-    attempts = list(row.attempts or [])
-    attempts.append(
-        {
-            "summary": summary[:200],
-            "tested": True,
-            "outcome": outcome,
-            "at": now,
-            "source": "sandbox_test",
-        }
+    curriculum_graph.record_test_result(
+        db, user_project, passed=passed, summary=summary
     )
-    row.attempts = attempts[-20:]
-    if passed:
-        row.can_reproduce = True
-    else:
-        failed = list(row.failed_at or [])
-        failed.append({"description": summary[:200], "at": now, "source": "sandbox_test"})
-        row.failed_at = failed[-20:]
-    db.add(row)
     db.commit()
 
 
-def list_cards(
+def get_milestone_review(
     db: Session, user: User, user_milestone_id: int
-) -> list[ConceptCard]:
-    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
-    return _cards_for_milestone(
-        db, user_milestone.user_project_id, user_milestone.milestone_id
+) -> MilestoneReview:
+    um = (
+        db.query(UserMilestone)
+        .options(joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment))
+        .filter(UserMilestone.id == user_milestone_id)
+        .first()
     )
+    if um is None or um.user_project.enrollment.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+    review = (
+        db.query(MilestoneReview)
+        .filter(MilestoneReview.user_milestone_id == um.id)
+        .first()
+    )
+    if review is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No review yet")
+    return review
 
 
-def _owned_user_milestone(db: Session, user: User, user_milestone_id: int) -> UserMilestone:
-    user_milestone = (
+def request_milestone_review(
+    db: Session, user: User, user_milestone_id: int
+) -> MilestoneReview:
+    um = (
         db.query(UserMilestone)
         .options(
             joinedload(UserMilestone.milestone),
@@ -567,426 +696,83 @@ def _owned_user_milestone(db: Session, user: User, user_milestone_id: int) -> Us
         .filter(UserMilestone.id == user_milestone_id)
         .first()
     )
-    if (
-        user_milestone is None
-        or user_milestone.user_project.enrollment.user_id != user.id
-    ):
+    if um is None or um.user_project.enrollment.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
-    return user_milestone
-
-
-def post_message(
-    db: Session,
-    user: User,
-    user_project_id: int,
-    message: str,
-) -> dict:
-    user_project = _user_project(db, user, user_project_id)
-    session = _session(db, user_project)
-    if session.status != MentorSessionStatus.active:
+    workspace = (
+        db.query(SandboxWorkspace)
+        .filter(SandboxWorkspace.user_project_id == um.user_project_id)
+        .first()
+    )
+    summary = (workspace.last_test_summary if workspace else None) or {}
+    tests_passed = summary.get("outcome") == "passed"
+    if not tests_passed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Complete the knowledge assessment first (POST .../coach/start with answers)",
+            detail="Get your tests green before requesting a review",
         )
-    current = current_user_milestone(user_project)
-    if current is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No pending milestone to coach against",
-        )
-    learner_state = _get_or_create_learner_state(
-        db, user_project.id, current.milestone_id
+    llm = get_coach_llm()
+    from app.services.sandbox import collect_source_bundle
+
+    bundle = collect_source_bundle(um.user_project_id)
+    payload = llm.review_milestone(
+        milestone_title=um.milestone.title if um.milestone else "",
+        milestone_description=um.milestone.description if um.milestone else "",
+        success_criteria=um.milestone.success_criteria if um.milestone else "",
+        constraints=list((um.user_project.project.constraints if um.user_project.project else None) or []),
+        code_bundle=bundle,
+        tests_passed=tests_passed,
+        test_summary=str(summary.get("summary") or ""),
     )
-    profile = _knowledge_profile(db, user_project.id)
-    roadmap_state = [
-        {
-            "milestone_id": item.milestone_id,
-            "title": item.title,
-            "order_index": item.order_index,
-            "concepts": [concept.model_dump() for concept in item.concepts],
-        }
-        for item in _roadmap_read(db, user_project)
-    ]
-    cards = _cards_for_milestone(db, user_project.id, current.milestone_id)
-    card_drafts = [
-        {
-            "name": card.name,
-            "why_it_matters": card.why_it_matters,
-            "research_questions": list(card.research_questions or []),
-            "resources": list(card.resources or []),
-            "checkpoint": card.checkpoint,
-            "explanation": card.explanation,
-        }
-        for card in cards
-    ]
-    questions = list(current.milestone.questions or [])
-    state: CoachState = _base_state(user_project, current)
-    state.update(
-        {
-            "mode": "chat",
-            "knowledge_profile": profile,
-            "roadmap": roadmap_state,
-            "cards": card_drafts,
-            "current_concepts": current_teach_concepts(
-                roadmap_state, current.milestone_id, profile
-            ),
-            "hint_level": _max_hint_level(db, current.id),
-            "effort": _effort(db, session, current, message),
-            "learner_message": message,
-            "question_index": learner_state.question_index,
-            "questions_passed": learner_state.questions_passed,
-            "question_attempts": learner_state.question_attempts,
-            "current_question": (
-                questions[learner_state.question_index]
-                if 0 <= learner_state.question_index < len(questions)
-                else None
-            ),
-            "build_step_index": int(getattr(learner_state, "build_step_index", 0) or 0),
-            "build_steps": build_steps_for_milestone(
-                current.milestone.instructions or ""
-            ),
-        }
-    )
-    result = build_chat_graph(get_coach_llm()).invoke(state)
-    db.add(
-        MentorTurn(session_id=session.id, role=MentorTurnRole.learner, content=message)
-    )
-    reply = result.get("reply") or ""
-    db.add(MentorTurn(session_id=session.id, role=MentorTurnRole.tutor, content=reply))
-
-    # Persist learner state updates
-    now = datetime.now(UTC).isoformat()
-    attempts = list(learner_state.attempts or [])
-    attempts.append(
-        {
-            "summary": message[:200],
-            "tested": False,
-            "outcome": result.get("answer_status"),
-            "at": now,
-        }
-    )
-    learner_state.attempts = attempts[-20:]
-    if result.get("answer_status") == "passed":
-        learner_state.question_index = int(result.get("question_index", learner_state.question_index))
-        learner_state.questions_passed = int(
-            result.get("questions_passed", learner_state.questions_passed)
-        )
-        learner_state.question_attempts = 0
-    elif result.get("answer_status") == "advanced_with_gap":
-        learner_state.question_index = int(result.get("question_index", learner_state.question_index))
-        learner_state.question_attempts = 0
-        failed = list(learner_state.failed_at or [])
-        failed.append(
-            {
-                "description": f"Advanced without a confirmed answer: {result.get('gap_question', '')}"[:200],
-                "at": now,
-                "capped": True,
-            }
-        )
-        learner_state.failed_at = failed[-20:]
-    elif result.get("answer_status") == "push_back":
-        learner_state.question_attempts = int(
-            result.get("question_attempts", learner_state.question_attempts + 1)
-        )
-        failed = list(learner_state.failed_at or [])
-        failed.append({"description": message[:200], "at": now})
-        learner_state.failed_at = failed[-20:]
-
-    if result.get("build_step_index") is not None:
-        learner_state.build_step_index = int(result["build_step_index"])
-
-    hint_level = None
-    blocked = result.get("hint_blocked_reason")
-    if result.get("intent") == "hint":
-        learner_state.help_received = int(learner_state.help_received or 0) + 1
-        if not blocked:
-            hint_level = int(result.get("hint_level", 0))
-            db.add(
-                HintReveal(
-                    user_milestone_id=current.id,
-                    level=hint_level,
-                    content=reply,
-                )
-            )
-
-    db.commit()
-    db.refresh(learner_state)
-    session = (
-        db.query(MentorSession)
-        .options(joinedload(MentorSession.turns))
-        .filter(MentorSession.id == session.id)
-        .one()
-    )
-    return {
-        "intent": result.get("intent") or "answer",
-        "reply": reply,
-        "hint_level": hint_level if result.get("intent") == "hint" else None,
-        "hint_blocked_reason": blocked,
-        "policy_flags": result.get("policy_flags") or [],
-        "cards": [],
-        "turns": session.turns[-4:],
-        "current_question": result.get("current_question"),
-        "answer_status": result.get("answer_status"),
-        "push_back": result.get("push_back"),
-        "learner_state": _learner_state_payload(learner_state, questions),
-    }
-
-
-def request_hint(db: Session, user: User, user_milestone_id: int) -> dict:
-    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
-    return post_message(
-        db,
-        user,
-        user_milestone.user_project_id,
-        "I am stuck — please give me a hint.",
-    )
-
-
-def _get_or_create_review(db: Session, user_milestone_id: int) -> MilestoneReview:
     review = (
         db.query(MilestoneReview)
-        .filter(MilestoneReview.user_milestone_id == user_milestone_id)
+        .filter(MilestoneReview.user_milestone_id == um.id)
         .first()
     )
     if review is None:
-        review = MilestoneReview(user_milestone_id=user_milestone_id)
+        review = MilestoneReview(user_milestone_id=um.id)
         db.add(review)
-        db.flush()
-    return review
-
-
-def _review_payload(review: MilestoneReview) -> dict:
-    return {
-        "id": review.id,
-        "user_milestone_id": review.user_milestone_id,
-        "verdict": review.verdict,
-        "dimensions": review.dimensions or {},
-        "summary": review.summary,
-        "understanding_questions": list(review.understanding_questions or []),
-        "understanding_answers": list(review.understanding_answers or []),
-        "attempts": review.attempts,
-        "created_at": review.created_at,
-        "updated_at": review.updated_at,
-    }
-
-
-def get_milestone_review(db: Session, user: User, user_milestone_id: int) -> dict:
-    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
-    review = (
-        db.query(MilestoneReview)
-        .filter(MilestoneReview.user_milestone_id == user_milestone.id)
-        .first()
-    )
-    if review is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No review yet")
-    return _review_payload(review)
-
-
-def request_milestone_review(db: Session, user: User, user_milestone_id: int) -> dict:
-    """Trigger (or fetch the in-flight) AI review of the learner's actual code
-
-    for this milestone: correctness, architecture, readability, complexity,
-    reliability, testing — plus questions probing their understanding of what
-    they built. Requires the sandbox tests to already be passing.
-    """
-    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
-    if user_milestone.status == UserMilestoneStatus.completed:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Milestone already completed"
-        )
-    milestone = user_milestone.milestone
-    learner_state = _get_or_create_learner_state(
-        db, user_milestone.user_project_id, user_milestone.milestone_id
-    )
-    if not learner_state.can_reproduce:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Get your tests passing first (socratic sandbox test), then request a review.",
-        )
-
-    review = _get_or_create_review(db, user_milestone.id)
-    if review.verdict == MilestoneReviewVerdict.passed:
-        return _review_payload(review)
-    if review.verdict == MilestoneReviewVerdict.awaiting_understanding and review.understanding_questions:
-        # Don't regenerate a fresh review while questions are still pending —
-        # answer those first via submit_milestone_review_answers.
-        return _review_payload(review)
-
-    if review.attempts >= MAX_REVIEW_ATTEMPTS:
+    review.attempts = int(review.attempts or 0) + 1
+    review.dimensions = payload.get("dimensions") or {}
+    review.summary = str(payload.get("summary") or "")
+    review.understanding_questions = list(payload.get("understanding_questions") or [])
+    review.understanding_answers = []
+    if review.attempts > MAX_REVIEW_ATTEMPTS:
         review.verdict = MilestoneReviewVerdict.passed
-        review.understanding_questions = []
-        review.summary = (
-            f"{review.summary} [Advanced after {review.attempts} review rounds — "
-            "remaining gaps noted for follow-up.]"
-        ).strip()
-        db.commit()
-        return _review_payload(review)
-
-    from app.services import sandbox as sandbox_service  # local import: avoid circular import
-
-    code_bundle = sandbox_service.collect_source_bundle(user_milestone.user_project_id)
-    last_tested = next(
-        (
-            attempt
-            for attempt in reversed(list(learner_state.attempts or []))
-            if isinstance(attempt, dict) and attempt.get("tested") is True
-        ),
-        None,
-    )
-    test_summary = (last_tested or {}).get("summary", "")
-
-    result = get_coach_llm().review_milestone(
-        milestone_title=milestone.title,
-        milestone_description=milestone.description,
-        success_criteria=milestone.success_criteria,
-        constraints=list(user_milestone.user_project.project.constraints or []),
-        code_bundle=code_bundle,
-        tests_passed=learner_state.can_reproduce,
-        test_summary=test_summary,
-    )
-    dimensions = result.get("dimensions") or {}
-    review.attempts += 1
-    review.dimensions = dimensions
-    review.summary = str(result.get("summary") or "")
-    has_fail = any(
-        isinstance(info, dict) and info.get("rating") == "fail" for info in dimensions.values()
-    )
-    questions = [str(q) for q in (result.get("understanding_questions") or [])]
-    if has_fail:
-        review.verdict = MilestoneReviewVerdict.needs_work
-        review.understanding_questions = []
-    elif questions:
+        review.summary = (review.summary + " Remaining gaps noted — proceeding.").strip()
+    elif review.understanding_questions:
         review.verdict = MilestoneReviewVerdict.awaiting_understanding
-        review.understanding_questions = questions
     else:
-        review.verdict = MilestoneReviewVerdict.passed
+        review.verdict = MilestoneReviewVerdict.needs_work
     db.commit()
-    return _review_payload(review)
+    db.refresh(review)
+    return review
 
 
 def submit_milestone_review_answers(
     db: Session, user: User, user_milestone_id: int, answers: list[str]
-) -> dict:
-    """Grade the learner's answers to the review's understanding questions."""
-    user_milestone = _owned_user_milestone(db, user, user_milestone_id)
-    review = (
-        db.query(MilestoneReview)
-        .filter(MilestoneReview.user_milestone_id == user_milestone.id)
-        .first()
-    )
-    if review is None or review.verdict != MilestoneReviewVerdict.awaiting_understanding:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No pending review questions — run a review first (socratic review).",
-        )
-    milestone = user_milestone.milestone
-    questions = list(review.understanding_questions or [])
+) -> MilestoneReview:
+    review = get_milestone_review(db, user, user_milestone_id)
+    llm = get_coach_llm()
+    um = db.get(UserMilestone, user_milestone_id)
+    title = um.milestone.title if um and um.milestone else ""
     graded = []
     all_passed = True
-    for question, answer in zip(questions, answers):
-        verdict = get_coach_llm().evaluate_understanding(
-            question=question, answer=answer, milestone_title=milestone.title
-        )
-        passed = bool(verdict.get("passed"))
+    for question, answer in zip(review.understanding_questions or [], answers):
+        result = llm.evaluate_understanding(question=str(question), answer=answer, milestone_title=title)
+        passed = bool(result.get("passed"))
+        all_passed = all_passed and passed
         graded.append(
             {
                 "question": question,
-                "answer": answer[:500],
+                "answer": answer,
                 "passed": passed,
-                "feedback": verdict.get("feedback"),
+                "feedback": result.get("feedback"),
             }
         )
-        if not passed:
-            all_passed = False
-
-    review.understanding_answers = list(review.understanding_answers or []) + graded
-    if all_passed:
-        review.verdict = MilestoneReviewVerdict.passed
-        review.understanding_questions = []
-    else:
-        review.attempts += 1
-        if review.attempts >= MAX_REVIEW_ATTEMPTS:
-            review.verdict = MilestoneReviewVerdict.passed
-            review.understanding_questions = []
-            review.summary = (
-                f"{review.summary} [Advanced after {review.attempts} review rounds — "
-                "understanding gaps noted for follow-up.]"
-            ).strip()
-        # else: stays awaiting_understanding with the same questions — the
-        # learner can retry via another submit_milestone_review_answers call.
-    db.commit()
-    return _review_payload(review)
-
-
-def submit_checkpoint(
-    db: Session, user: User, card_id: int, answer: str
-) -> CardCheckpoint:
-    card = db.get(ConceptCard, card_id)
-    if card is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
-    user_project = learning_service.get_user_project(db, user, card.user_project_id)
-    passed = len(answer.strip()) >= 40 and "idk" not in answer.lower()
-    row = CardCheckpoint(card_id=card.id, answer=answer, passed=passed)
-    db.add(row)
-    knowledge = (
-        db.query(LearnerKnowledge)
-        .filter(
-            LearnerKnowledge.user_project_id == user_project.id,
-            LearnerKnowledge.concept_name == card.name,
-        )
-        .first()
+    review.understanding_answers = graded
+    review.verdict = (
+        MilestoneReviewVerdict.passed if all_passed else MilestoneReviewVerdict.needs_work
     )
-    if knowledge is None:
-        knowledge = LearnerKnowledge(
-            user_project_id=user_project.id,
-            concept_name=card.name,
-            mastery=ConceptMastery.familiar if passed else ConceptMastery.unknown,
-            researched=True,
-        )
-        db.add(knowledge)
-    else:
-        knowledge.researched = True
-        if passed and knowledge.mastery == ConceptMastery.unknown:
-            knowledge.mastery = ConceptMastery.familiar
-    learner_state = _get_or_create_learner_state(
-        db, user_project.id, card.milestone_id
-    )
-    researched = list(learner_state.researched_concepts or [])
-    if card.name not in researched:
-        researched.append(card.name)
-        learner_state.researched_concepts = researched
-    if passed:
-        explained = list(learner_state.can_explain or [])
-        if card.name not in explained:
-            explained.append(card.name)
-            learner_state.can_explain = explained
     db.commit()
-    db.refresh(row)
-    return row
-
-
-def ensure_cards_for_current_milestone(db: Session, user: User, user_project_id: int) -> None:
-    user_project = _user_project(db, user, user_project_id)
-    session = (
-        db.query(MentorSession)
-        .filter(MentorSession.user_project_id == user_project.id)
-        .first()
-    )
-    if session is None or session.status != MentorSessionStatus.active:
-        return
-    current = current_user_milestone(user_project)
-    if current is None:
-        return
-    _get_or_create_learner_state(db, user_project.id, current.milestone_id)
-    existing = _cards_for_milestone(db, user_project.id, current.milestone_id)
-    if existing:
-        db.commit()
-        return
-    profile = _knowledge_profile(db, user_project.id)
-    state: CoachState = _base_state(user_project, current)
-    state["knowledge_profile"] = profile
-    state["assessment_answers"] = profile
-    result = build_start_graph(get_coach_llm()).invoke(state)
-    _persist_roadmap(db, user_project.id, result.get("roadmap") or [])
-    _persist_cards(db, user_project.id, current.milestone_id, result.get("cards") or [])
-    db.commit()
+    db.refresh(review)
+    return review

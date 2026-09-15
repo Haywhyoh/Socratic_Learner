@@ -144,55 +144,126 @@ export interface SandboxTestResult {
   outcome: string;
 }
 
-export interface ConceptCardRead {
-  id: number;
-  user_project_id: number;
-  milestone_id: number;
-  name: string;
-  why_it_matters: string;
-  research_questions: string[];
-  resources: { title: string; url: string }[];
-  checkpoint: string;
-  explanation: string;
-}
-
 export interface MentorTurnRead {
   id: number;
-  role: "user" | "assistant" | "system" | "tutor";
+  role: "user" | "assistant" | "system" | "tutor" | "learner";
   content: string;
   created_at: string;
 }
 
+export type ConceptStatus =
+  | "locked"
+  | "available"
+  | "introduced"
+  | "researching"
+  | "discussing"
+  | "attempted"
+  | "testing"
+  | "blocked"
+  | "diagnosis"
+  | "knowledge_gap"
+  | "explained"
+  | "needs_review"
+  | "verification"
+  | "verified"
+  | "mastered";
+
 export interface LearnerStateRead {
-  user_project_id: number;
+  user_project_id: number | null;
+  concept_id: string | null;
+  status: ConceptStatus | string | null;
+  evidence: Record<string, boolean>;
+  attempt_count: number;
+  hints_used: number;
+  hint_level: number;
+  last_explanation: string;
+  milestone_id: number | null;
+  user_milestone_id: number | null;
+}
+
+export interface MentorContractRead {
+  intent: string;
+  action: string;
+  message: string;
+  diagnostic_concept: string | null;
+  identified_gap: { concept: string; confidence: number } | null;
+  hint_level: number;
+  should_unlock: boolean;
+  next_state: string;
+}
+
+export interface GraphConceptRead {
+  id: string;
+  title: string;
+  category: string;
+  status: string;
+  evidence: Record<string, boolean>;
+}
+
+export interface GraphMilestoneRead {
+  user_milestone_id: number;
   milestone_id: number;
-  question_index: number;
-  questions_passed: number;
-  question_attempts: number;
-  questions_total: number;
-  current_question: string | null;
-  attempts: Record<string, unknown>[];
-  researched_concepts: string[];
-  failed_at: Record<string, unknown>[];
-  can_explain: string[];
-  can_reproduce: boolean;
-    help_received: number;
-  questions_complete: boolean;
-  build_step_index: number;
+  title: string;
+  order_index: number;
+  status: string;
+  description: string;
+  success_criteria: string;
+  concepts: GraphConceptRead[];
+}
+
+export interface GraphRead {
+  user_project_id: number;
+  project_id: number;
+  current_milestone_id: number | null;
+  current_user_milestone_id: number | null;
+  current_concept_id: string | null;
+  concept_state: string | null;
+  project_complete: boolean;
+  milestones: GraphMilestoneRead[];
+  known_gaps: {
+    id?: number;
+    concept: string;
+    status: string;
+    suspected_gaps: { concept: string; confidence: number }[];
+  }[];
+  due_retrieval_checks: {
+    id: number;
+    concept_id: string;
+    scheduled_for: string;
+    prompt: string;
+    status: string;
+  }[];
+}
+
+export interface ConceptRead {
+  id: string;
+  title: string;
+  category: string;
+  description: string;
+  learning_objectives: string[];
+  misconceptions: string[];
+  diagnostic_questions: string[];
+  research_questions: string[];
+  resources: { title: string; url: string }[];
+  hints: string[];
+  mastery_requirements: Record<string, boolean>;
 }
 
 export interface CoachMessageResponse {
   intent: string;
+  action?: string;
   reply: string;
   hint_level: number | null;
   hint_blocked_reason: string | null;
   policy_flags: string[];
-  cards: ConceptCardRead[];
+  cards: unknown[];
   turns: MentorTurnRead[];
   current_question: string | null;
   answer_status: string | null;
   push_back: string | null;
   learner_state: LearnerStateRead | null;
+  contract: MentorContractRead | null;
+  concept: ConceptRead | null;
 }
 
 export interface CoachStartResponse {
@@ -201,18 +272,16 @@ export interface CoachStartResponse {
   session_id: number;
   milestone_id: number | null;
   assessment_questions: { concept: string; prompt: string }[];
-  roadmap: {
-    milestone_id: number;
-    title: string;
-    order_index: number;
-    concepts: { name: string; teaching: string; mastery: string }[];
-  }[];
-  cards: ConceptCardRead[];
+  roadmap: unknown[];
+  cards: unknown[];
   reply: string | null;
   current_question: string | null;
   answer_status: string | null;
   resumed: boolean;
   learner_state: LearnerStateRead | null;
+  contract: MentorContractRead | null;
+  concept: ConceptRead | null;
+  graph: GraphRead | null;
 }
 
 export interface MilestoneReviewRead {

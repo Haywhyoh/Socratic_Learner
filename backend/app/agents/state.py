@@ -45,6 +45,63 @@ class EvalResult(TypedDict):
     push_back: str | None
 
 
+class IdentifiedGap(TypedDict):
+    concept: str
+    confidence: float
+
+
+class MentorContract(TypedDict, total=False):
+    intent: str
+    action: str
+    message: str
+    diagnostic_concept: str | None
+    identified_gap: IdentifiedGap | None
+    hint_level: int
+    should_unlock: bool
+    next_state: str
+
+
+class MentorState(TypedDict, total=False):
+    project: str
+    project_title: str
+    current_milestone: str
+    current_milestone_title: str
+    current_concept: str
+    concept_title: str
+    concept_description: str
+    concept_state: str
+    prerequisites: dict[str, str]
+    known_gaps: list[dict]
+    attempt_count: int
+    hints_used: int
+    tests: dict[str, int]
+    learner_last_explanation: str
+    allowed_ai_behavior: list[str]
+    later_concepts: list[str]
+    resources: list[dict[str, str]]
+    diagnostic_questions: list[str]
+    research_questions: list[str]
+    misconceptions: list[str]
+    hints: list[str]
+    learning_objectives: list[str]
+    needs_build: bool
+    gap_reason: str
+    learner_message: str
+    intent: str
+    effort: EffortSignals
+    hint_level: int
+    hint_blocked_reason: NotRequired[str | None]
+    reply: str
+    contract: MentorContract
+    policy_flags: list[str]
+    next_state: str
+    should_unlock: bool
+    identified_gap: IdentifiedGap | None
+    tests_summary: str
+    awaiting_reflection: bool
+    project_complete: bool
+
+
 class CoachState(TypedDict, total=False):
     mode: str
     user_project_id: int

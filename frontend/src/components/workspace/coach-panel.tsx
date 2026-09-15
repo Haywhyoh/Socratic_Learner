@@ -4,50 +4,78 @@ import { Lightbulb, Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import type { ConceptCardRead, MentorTurnRead } from "@/lib/types";
-import type { MilestoneTask } from "@/lib/milestones";
+import type {
+  ConceptRead,
+  GraphRead,
+  MentorContractRead,
+  MentorTurnRead,
+} from "@/lib/types";
 import { CoachMessageContent } from "@/components/workspace/coach-message";
 
 interface CoachPanelProps {
   userProjectId: number;
   userMilestoneId: number | null;
   milestoneTitle?: string | null;
-  activeTask?: MilestoneTask | null;
-  questionsComplete?: boolean;
+  graph: GraphRead | null;
   initialReply?: string | null;
   initialQuestion?: string | null;
   initialTurns?: MentorTurnRead[];
-  initialCards?: ConceptCardRead[];
+  initialContract?: MentorContractRead | null;
+  initialConcept?: ConceptRead | null;
 }
 
 function isCoachTurn(role: string): boolean {
   return role === "assistant" || role === "tutor" || role === "system";
 }
 
+function actionLabel(action: string | undefined): string {
+  switch (action) {
+    case "ASK_RESEARCH":
+      return "Research";
+    case "HINT":
+      return "Hint";
+    case "ASK_DIAGNOSTIC_QUESTION":
+      return "Diagnosis";
+    case "ASK_IMPLEMENTATION":
+      return "Build";
+    case "ASK_REFLECTION":
+      return "Reflection";
+    case "ASK_DEFENSE":
+      return "Defense";
+    case "HOLD":
+      return "Hold";
+    case "REVIEW":
+      return "Review";
+    default:
+      return "Question";
+  }
+}
+
 export function CoachPanel({
   userProjectId,
   userMilestoneId,
   milestoneTitle,
-  activeTask,
-  questionsComplete = false,
+  graph,
   initialReply,
   initialQuestion,
   initialTurns = [],
-  initialCards = [],
+  initialContract = null,
+  initialConcept = null,
 }: CoachPanelProps) {
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [hintLoading, setHintLoading] = useState(false);
   const [turns, setTurns] = useState<MentorTurnRead[]>(initialTurns);
-  const [cards, setCards] = useState<ConceptCardRead[]>(initialCards);
   const [currentQuestion, setCurrentQuestion] = useState(initialQuestion);
-  const [questionsDone, setQuestionsDone] = useState(questionsComplete);
+  const [contract, setContract] = useState<MentorContractRead | null>(initialContract);
+  const [concept, setConcept] = useState<ConceptRead | null>(initialConcept);
   const [hintMeta, setHintMeta] = useState<string | null>(null);
+  const [notes, setNotes] = useState("");
+  const [summary, setSummary] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setQuestionsDone(questionsComplete);
-  }, [questionsComplete]);
+  const conceptId = graph?.current_concept_id ?? concept?.id ?? null;
+  const conceptState = graph?.concept_state ?? null;
 
   useEffect(() => {
     if (initialReply) {
@@ -105,12 +133,8 @@ export function CoachPanel({
           ]);
         }
         setCurrentQuestion(res.current_question);
-        if (res.learner_state) {
-          setQuestionsDone(res.learner_state.questions_complete);
-        } else if (res.answer_status === "passed" && !res.current_question) {
-          setQuestionsDone(true);
-        }
-        if (res.cards.length) setCards(res.cards);
+        if (res.contract) setContract(res.contract);
+        if (res.concept?.id) setConcept(res.concept);
       } finally {
         setSending(false);
       }
@@ -148,67 +172,78 @@ export function CoachPanel({
     }
   }, [userMilestoneId, hintLoading]);
 
-  const suggestions = activeTask
-    ? [
-        `How do I do step/task ${activeTask.index}?`,
-        "I finished this step — done",
-        "I hit an error on this step",
-      ]
-    : [
-        "How do I get started on the first step?",
-        "done",
-        "I hit an error — what should I check?",
-      ];
+  const submitResearch = useCallback(async () => {
+    if (!conceptId || (!notes.trim() && !summary.trim())) return;
+    setSending(true);
+    try {
+      await api.submitResearch(userProjectId, conceptId, {
+        question: concept?.research_questions?.[0] ?? "",
+        learner_notes: notes,
+        learner_summary: summary,
+      });
+      await sendMessage(
+        `I researched this. Notes: ${notes || summary}. ${summary}`.slice(0, 2000),
+      );
+      setNotes("");
+      setSummary("");
+    } finally {
+      setSending(false);
+    }
+  }, [conceptId, notes, summary, userProjectId, concept, sendMessage]);
+
+  const action = contract?.action;
+  const showResearch =
+    action === "ASK_RESEARCH" ||
+    conceptState === "researching" ||
+    conceptState === "introduced";
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden border-l border-stone-800 bg-stone-900/50">
       <div className="shrink-0 border-b border-stone-800 px-4 py-3">
         <h2 className="font-serif text-lg text-stone-100">Senior Engineer</h2>
         <p className="text-xs text-stone-500">
-          Ask specific questions — commands, errors, design. I won&apos;t paste the full app.
+          You do the thinking. I question, hint, and review — I will not write the framework for you.
         </p>
         {milestoneTitle && (
           <p className="mt-2 text-xs text-stone-400">
             Milestone: <span className="text-stone-200">{milestoneTitle}</span>
           </p>
         )}
-        {activeTask && (
+        {concept?.title && (
           <p className="mt-1 text-xs text-amber-500/90">
-            Focus task {activeTask.index}: {activeTask.text}
+            {concept.title}
+            {conceptState ? ` · ${conceptState}` : ""}
           </p>
         )}
       </div>
 
-      {currentQuestion && !questionsDone && (
+      {currentQuestion && (
         <div className="shrink-0 border-b border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-100/90">
           <span className="text-xs font-medium uppercase tracking-wide text-amber-500">
-            Think first — checkpoint
+            {actionLabel(action)}
           </span>
           <p className="mt-1">{currentQuestion}</p>
-          <p className="mt-2 text-xs text-amber-200/60">
-            Answer this in your own words before asking for build help.
-          </p>
+        </div>
+      )}
+
+      {contract?.identified_gap && (
+        <div className="shrink-0 border-b border-red-900/40 bg-red-950/20 px-4 py-2 text-xs text-red-200/90">
+          Investigating a possible gap in{" "}
+          <span className="font-medium">{contract.identified_gap.concept}</span>
         </div>
       )}
 
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {turns.length === 0 && (
           <div className="space-y-2 text-sm text-stone-500">
-            <p>
-              Flow: answer the checkpoint → pick a task on the left → ask how to
-              approach it → implement in the editor/terminal.
-            </p>
-            <p className="text-xs text-stone-600">
-              I won&apos;t paste a full solution. I will challenge your plan and
-              point you at the next decision.
-            </p>
+            <p>Flow: problem → question → research → discuss → build → test → explain → reflect.</p>
           </div>
         )}
         {turns.map((turn) => (
           <div
             key={turn.id}
             className={
-              turn.role === "user"
+              turn.role === "user" || turn.role === "learner"
                 ? "ml-6 rounded-lg bg-stone-800 px-3 py-2 text-sm text-stone-200"
                 : "mr-4 rounded-lg border border-stone-700/80 bg-stone-950/60 px-3 py-2 text-sm text-stone-300"
             }
@@ -226,20 +261,38 @@ export function CoachPanel({
         <p className="shrink-0 px-4 pb-2 text-xs text-amber-600/90">{hintMeta}</p>
       )}
 
-      <div className="shrink-0 space-y-2 border-t border-stone-800 p-3">
-        <div className="flex flex-wrap gap-1.5">
-          {suggestions.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              disabled={sending}
-              onClick={() => void sendMessage(prompt)}
-              className="rounded-md border border-stone-700 bg-stone-950 px-2 py-1 text-left text-[11px] text-stone-400 hover:border-amber-800/50 hover:text-stone-200 disabled:opacity-50"
-            >
-              {prompt}
-            </button>
-          ))}
+      {showResearch && (
+        <div className="shrink-0 space-y-2 border-t border-stone-800 p-3">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-stone-500">
+            Your research notes
+          </p>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            placeholder="What did you find? Don't paste a definition — write what you understand."
+            className="w-full resize-none rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-xs text-stone-100 placeholder:text-stone-600"
+          />
+          <textarea
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+            rows={2}
+            placeholder="Summarize in your own words."
+            className="w-full resize-none rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-xs text-stone-100 placeholder:text-stone-600"
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            className="text-xs"
+            disabled={sending || (!notes.trim() && !summary.trim())}
+            onClick={() => void submitResearch()}
+          >
+            Submit research
+          </Button>
         </div>
+      )}
+
+      <div className="shrink-0 space-y-2 border-t border-stone-800 p-3">
         <div className="flex gap-2">
           <Button
             type="button"
@@ -263,7 +316,7 @@ export function CoachPanel({
               }
             }}
             rows={2}
-            placeholder="Ask how to approach a task — not “write the code for me”…"
+            placeholder="Answer, explain, or describe what you tried…"
             className="flex-1 resize-none rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:border-amber-700 focus:outline-none"
           />
           <Button
@@ -276,25 +329,6 @@ export function CoachPanel({
           </Button>
         </div>
       </div>
-
-      {cards.length > 0 && (
-        <div className="max-h-40 shrink-0 overflow-y-auto border-t border-stone-800 p-3">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-stone-500">
-            Concept cards
-          </p>
-          <ul className="space-y-2">
-            {cards.map((card) => (
-              <li
-                key={card.id}
-                className="rounded-lg border border-stone-800 bg-stone-950/80 p-2 text-xs"
-              >
-                <p className="font-medium text-stone-200">{card.name}</p>
-                <p className="mt-1 text-stone-500">{card.why_it_matters}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }

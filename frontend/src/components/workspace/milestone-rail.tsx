@@ -2,39 +2,50 @@
 
 import { Check, Lock } from "lucide-react";
 import clsx from "clsx";
-import type { UserMilestoneRead } from "@/lib/types";
+import type { GraphMilestoneRead, GraphRead, UserMilestoneRead } from "@/lib/types";
 import {
   getActiveUserMilestone,
   milestonePhase,
-  parseMilestoneTasks,
   sortUserMilestones,
-  type MilestoneTask,
 } from "@/lib/milestones";
 
 interface MilestoneRailProps {
   userMilestones: UserMilestoneRead[];
+  graph: GraphRead | null;
   selectedId: number | null;
-  activeTaskId: string | null;
+  activeConceptId: string | null;
   onSelect: (um: UserMilestoneRead) => void;
-  onSelectTask: (task: MilestoneTask) => void;
+  onSelectConcept: (conceptId: string) => void;
+}
+
+function statusDot(status: string): string {
+  if (status === "mastered" || status === "verified") return "bg-emerald-400";
+  if (status === "locked") return "bg-stone-600";
+  if (status === "blocked" || status === "knowledge_gap" || status === "needs_review")
+    return "bg-red-400";
+  return "bg-amber-400";
 }
 
 export function MilestoneRail({
   userMilestones,
+  graph,
   selectedId,
-  activeTaskId,
+  activeConceptId,
   onSelect,
-  onSelectTask,
+  onSelectConcept,
 }: MilestoneRailProps) {
   const sorted = sortUserMilestones(userMilestones);
   const active = getActiveUserMilestone(userMilestones);
+  const graphByUm = new Map(
+    (graph?.milestones ?? []).map((m) => [m.user_milestone_id, m]),
+  );
 
   return (
     <nav className="flex h-full min-h-0 flex-col overflow-hidden border-r border-stone-800 bg-stone-950">
       <div className="shrink-0 border-b border-stone-800 px-4 py-4">
-        <h2 className="font-serif text-lg text-stone-100">Milestones</h2>
+        <h2 className="font-serif text-lg text-stone-100">Progress</h2>
         <p className="text-xs text-stone-500">
-          Tasks unlock with the milestone — work them in order.
+          Concepts unlock in order. Mastery needs evidence, not a click.
         </p>
       </div>
       <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -43,7 +54,7 @@ export function MilestoneRail({
           const title = um.milestone?.title ?? `Milestone ${index + 1}`;
           const selectable = phase !== "locked";
           const expanded = selectedId === um.id && selectable;
-          const tasks = parseMilestoneTasks(um.milestone?.instructions);
+          const gm: GraphMilestoneRead | undefined = graphByUm.get(um.id);
           return (
             <li key={um.id}>
               <button
@@ -75,40 +86,39 @@ export function MilestoneRail({
                 </span>
                 <span>
                   <span className="block text-sm font-medium text-stone-200">
+                    M{String(um.milestone?.order_index ?? index + 1).padStart(2, "0")}{" "}
                     {title}
                   </span>
                   {phase === "active" && (
                     <span className="text-xs text-amber-500/90">In progress</span>
                   )}
-                  {um.milestone?.description && (
-                    <span className="mt-1 block text-xs text-stone-500 line-clamp-2">
-                      {um.milestone.description}
-                    </span>
-                  )}
                 </span>
               </button>
 
-              {expanded && tasks.length > 0 && (
+              {expanded && gm && gm.concepts.length > 0 && (
                 <ol className="ml-5 mt-1 space-y-1 border-l border-stone-800 pl-3">
-                  <li className="px-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-stone-600">
-                    Tasks
-                  </li>
-                  {tasks.map((task) => (
-                    <li key={task.id}>
+                  {gm.concepts.map((concept) => (
+                    <li key={concept.id}>
                       <button
                         type="button"
-                        onClick={() => onSelectTask(task)}
+                        onClick={() => onSelectConcept(concept.id)}
                         className={clsx(
-                          "w-full rounded-md px-2 py-2 text-left text-xs transition-colors",
-                          activeTaskId === task.id
+                          "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors",
+                          activeConceptId === concept.id
                             ? "bg-amber-950/50 text-amber-100 ring-1 ring-amber-800/60"
                             : "text-stone-400 hover:bg-stone-900 hover:text-stone-200",
                         )}
                       >
-                        <span className="font-medium text-stone-500">
-                          {task.index}.
-                        </span>{" "}
-                        {task.text}
+                        <span
+                          className={clsx(
+                            "h-1.5 w-1.5 shrink-0 rounded-full",
+                            statusDot(concept.status),
+                          )}
+                        />
+                        <span className="min-w-0 flex-1 truncate">{concept.title}</span>
+                        <span className="shrink-0 text-[10px] uppercase text-stone-600">
+                          {concept.status}
+                        </span>
                       </button>
                     </li>
                   ))}

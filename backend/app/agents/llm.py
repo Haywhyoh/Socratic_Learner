@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.agents.build_coach import (
     build_steps_for_milestone,
@@ -17,7 +17,9 @@ from app.agents.policies import (
     fallback_card,
     fallback_curriculum,
     fallback_evaluate,
+    fallback_explanation,
     fallback_hint,
+    fallback_mentor_contract,
     fallback_review,
     fallback_understanding,
     guidance_reply,
@@ -98,6 +100,23 @@ class CoachLLM(Protocol):
         answer: str,
         milestone_title: str,
     ) -> dict[str, object]: ...
+
+    def mentor_contract(
+        self,
+        *,
+        context: dict[str, Any],
+        message: str,
+        action_hint: str,
+    ) -> dict[str, Any]: ...
+
+    def evaluate_explanation(
+        self,
+        *,
+        concept_title: str,
+        concept_description: str,
+        objectives: list[str],
+        answer: str,
+    ) -> dict[str, Any]: ...
 
 
 class StubCoachLLM:
@@ -206,6 +225,25 @@ class StubCoachLLM:
         milestone_title: str,
     ) -> dict[str, object]:
         return fallback_understanding(question, answer)
+
+    def mentor_contract(
+        self,
+        *,
+        context: dict[str, Any],
+        message: str,
+        action_hint: str,
+    ) -> dict[str, Any]:
+        return fallback_mentor_contract(context, message, action_hint)
+
+    def evaluate_explanation(
+        self,
+        *,
+        concept_title: str,
+        concept_description: str,
+        objectives: list[str],
+        answer: str,
+    ) -> dict[str, Any]:
+        return fallback_explanation(answer)
 
 
 def get_coach_llm() -> CoachLLM:
@@ -507,3 +545,73 @@ class LangChainCoachLLM:
             }
         except Exception:
             return fallback_understanding(question, answer)
+
+    def mentor_contract(
+        self,
+        *,
+        context: dict[str, Any],
+        message: str,
+        action_hint: str,
+    ) -> dict[str, Any]:
+        prompt = (
+            "You are a senior engineer mentoring a learner who is building a backend "
+            "framework from scratch. Never generate implementation. Never skip ahead "
+            "to later concepts. Return ONLY JSON with keys: intent, action, message, "
+            "diagnostic_concept, identified_gap, hint_level, should_unlock, next_state.\n"
+            "intent is MENTOR or DIAGNOSE. action is ASK_QUESTION, ASK_RESEARCH, HINT, "
+            "REVIEW, ASK_DIAGNOSTIC_QUESTION, ASK_IMPLEMENTATION, ASK_REFLECTION, "
+            "ASK_DEFENSE, or HOLD.\n"
+            "message is what the learner sees. Do not paste code.\n"
+            f"Forced action family: {action_hint}\n"
+            f"Context JSON: {json.dumps(context, default=str)}\n"
+            f"Learner message: {message}\n"
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            return {
+                "intent": str(payload.get("intent") or "MENTOR"),
+                "action": str(payload.get("action") or action_hint),
+                "message": str(payload.get("message") or ""),
+                "diagnostic_concept": payload.get("diagnostic_concept"),
+                "identified_gap": payload.get("identified_gap"),
+                "hint_level": int(payload.get("hint_level") or 0),
+                "should_unlock": bool(payload.get("should_unlock")),
+                "next_state": str(payload.get("next_state") or ""),
+            }
+        except Exception:
+            return fallback_mentor_contract(context, message, action_hint)
+
+    def evaluate_explanation(
+        self,
+        *,
+        concept_title: str,
+        concept_description: str,
+        objectives: list[str],
+        answer: str,
+    ) -> dict[str, Any]:
+        prompt = (
+            "Evaluate a learner's explanation. Grade accuracy, completeness, clarity, "
+            "and causal understanding — not keyword matching. Return ONLY JSON: "
+            '{"passed": true|false, "accuracy": 0-1, "completeness": 0-1, '
+            '"clarity": 0-1, "causal": 0-1, "feedback": "one short sentence"}. '
+            "Never give the answer, never give code.\n"
+            f"Concept: {concept_title}\n{concept_description}\n"
+            f"Objectives: {'; '.join(objectives)}\n"
+            f"Answer: {answer}\n"
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            return {
+                "passed": bool(payload.get("passed")),
+                "accuracy": payload.get("accuracy"),
+                "completeness": payload.get("completeness"),
+                "clarity": payload.get("clarity"),
+                "causal": payload.get("causal"),
+                "feedback": payload.get("feedback"),
+            }
+        except Exception:
+            return fallback_explanation(answer)

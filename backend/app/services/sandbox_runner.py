@@ -10,16 +10,13 @@ from typing import Protocol
 
 from app.core.config import settings
 
-# Learner-facing tools available in the sandbox image (python:3.12-slim + requirements).
+# Learner-facing tools available in the sandbox image (node:20-slim).
 # Keep this tight — no bash/sh/curl/wget/sudo.
 ALLOWED_BINARIES = frozenset(
     {
-        "python",
-        "python3",
-        "pytest",
-        "uvicorn",
-        "pip",
-        "pip3",
+        "node",
+        "npm",
+        "npx",
         "ls",
         "mkdir",
         "touch",
@@ -163,7 +160,7 @@ class DockerSandboxRunner:
             raise RuntimeError(
                 "Cannot connect to Docker. Install/start Docker Desktop (or a Docker "
                 "daemon), then build the sandbox image:\n"
-                "  docker build -t socratic-sandbox-python:latest sandbox"
+                "  docker build -t socratic-sandbox-node:latest sandbox"
             ) from exc
 
     def run(
@@ -185,7 +182,7 @@ class DockerSandboxRunner:
         except ImageNotFound as exc:
             raise RuntimeError(
                 f"Sandbox image '{self.image}' not found. "
-                "Build it with: docker build -t socratic-sandbox-python:latest sandbox"
+                "Build it with: docker build -t socratic-sandbox-node:latest sandbox"
             ) from exc
         except DockerException as exc:
             raise RuntimeError(

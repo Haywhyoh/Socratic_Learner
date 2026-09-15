@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.coach import MilestoneReview, MilestoneReviewVerdict
+from app.models.coach import MilestoneReview
 from app.models.concept import ConceptQuestion, ConceptSession, ConceptSessionStatus
 from app.models.course import Course, CourseOption
 from app.models.enrollment import Enrollment, LearningMode
@@ -16,7 +16,9 @@ from app.models.project import (
 )
 from app.models.user import User
 from app.schemas.enrollment import EnrollmentCreate
+from app.models.project import ProjectCurriculumMode
 from app.services import curriculum as curriculum_service
+from app.services import curriculum_graph
 
 
 def list_courses(db: Session) -> list[Course]:
@@ -268,17 +270,7 @@ def complete_user_milestone(
             .joinedload(UserProject.user_milestones)
             .joinedload(UserMilestone.milestone),
             joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment),
-        )
-        .filter(UserMilestone.id == user_milestone_id)
-        .first()
-    )
-    if (
-        user_milestone is None
-        or user_milestone.user_project.enrollment.user_id != user.id
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
-
-    if user_milestone.status == UserMilestoneStatus.completed:
+            joinedload(UserMilestone.user_project).joinedload(UserProject.project),
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Milestone already completed"
         )
@@ -297,19 +289,32 @@ def complete_user_milestone(
             detail="Milestones must be completed in order",
         )
 
-    review = (
-        db.query(MilestoneReview)
-        .filter(MilestoneReview.user_milestone_id == user_milestone.id)
-        .first()
-    )
-    if review is None or review.verdict != MilestoneReviewVerdict.passed:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "The AI milestone review must pass before you can complete this "
-                "milestone — get your tests green, then run: socratic review"
-            ),
+    project = user_milestone.user_project.project
+    mode = project.curriculum_mode if project is not None else None
+    if mode == ProjectCurriculumMode.deterministic or (
+        isinstance(mode, str) and mode == ProjectCurriculumMode.deterministic.value
+    ):
+        allowed, reason = curriculum_graph.can_complete_milestone(
+            db, user_milestone.user_project, user_milestone
         )
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
+    else:
+        from app.models.coach import MilestoneReviewVerdict
+
+        review = (
+            db.query(MilestoneReview)
+            .filter(MilestoneReview.user_milestone_id == user_milestone.id)
+            .first()
+        )
+        if review is None or review.verdict != MilestoneReviewVerdict.passed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "The AI milestone review must pass before you can complete this "
+                    "milestone — get your tests green, then run: socratic review"
+                ),
+            )
 
     user_milestone.status = UserMilestoneStatus.completed
     user_milestone.completed_at = datetime.now(UTC)
@@ -362,11 +367,10 @@ def restart_user_milestone(db: Session, user: User, user_milestone_id: int) -> U
             um.status = UserMilestoneStatus.pending
             um.completed_at = None
     if reset_ids:
-        # The code is about to change again — any prior review verdict for
-        # these milestones no longer applies.
         db.query(MilestoneReview).filter(
             MilestoneReview.user_milestone_id.in_(reset_ids)
         ).delete(synchronize_session=False)
+        curriculum_graph.reset_from_milestone(db, user_project, restart_from)
 
     completed_count = sum(
         1 for um in user_project.user_milestones if um.status == UserMilestoneStatus.completed
