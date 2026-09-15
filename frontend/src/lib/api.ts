@@ -165,10 +165,13 @@ export const api = {
     );
   },
 
-  runSandbox(userProjectId: number, argv: string[]) {
+  runSandbox(
+    userProjectId: number,
+    payload: { argv?: string[]; command?: string; cwd?: string | null },
+  ) {
     return request<SandboxRunResult>(
       `/api/v1/me/projects/${userProjectId}/sandbox/run`,
-      { method: "POST", body: { argv } },
+      { method: "POST", body: payload },
     );
   },
 
