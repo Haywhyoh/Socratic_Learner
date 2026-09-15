@@ -139,6 +139,13 @@ export const api = {
     return request<EnrollmentDetail>(`/api/v1/enrollments/${id}`);
   },
 
+  getProject(projectId: number) {
+    return request<import("./types").ProjectDetail>(
+      `/api/v1/projects/${projectId}`,
+      { auth: false },
+    );
+  },
+
   initSandbox(userProjectId: number) {
     return request<{ id: number; user_project_id: number; status: string }>(
       `/api/v1/me/projects/${userProjectId}/sandbox`,

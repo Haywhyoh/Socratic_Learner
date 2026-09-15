@@ -149,14 +149,14 @@ export function CoachPanel({
 
   const suggestions = activeTask
     ? [
-        `How should I approach task ${activeTask.index}: ${activeTask.text}?`,
-        "What does a clean project layout look like here?",
-        "Where should the health endpoint live?",
+        `What terminal commands should I run for task ${activeTask.index}?`,
+        "I hit an import error — what should I check?",
+        "How do I smoke-test /health with uvicorn here?",
       ]
     : [
-        "How should I get started on this milestone?",
-        "What does a clean project layout look like here?",
-        "How do I confirm uvicorn starts without import errors?",
+        "What commands create the FastAPI package scaffold?",
+        "I hit an import error — what should I check?",
+        "How do I smoke-test uvicorn in this sandbox?",
       ];
 
   return (
@@ -164,7 +164,7 @@ export function CoachPanel({
       <div className="border-b border-stone-800 px-4 py-3">
         <h2 className="font-serif text-lg text-stone-100">Senior Engineer</h2>
         <p className="text-xs text-stone-500">
-          Ask design questions — I guide, you write the code.
+          Ask specific questions — commands, errors, design. I won&apos;t paste the full app.
         </p>
         {milestoneTitle && (
           <p className="mt-2 text-xs text-stone-400">

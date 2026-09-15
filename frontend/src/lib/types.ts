@@ -55,6 +55,20 @@ export interface ProjectRead {
   is_active: boolean;
 }
 
+export interface ProjectDetail extends ProjectRead {
+  objective: string;
+  expected_outcome: string;
+  prerequisites: string[];
+  skills: string[];
+  concepts: string[];
+  constraints: string[];
+  tests: string[];
+  evaluation_criteria: string[];
+  extension_challenges: string[];
+  recommended_resources: { title: string; url: string }[];
+  milestones: MilestoneRead[];
+}
+
 export interface UserMilestoneRead {
   id: number;
   user_project_id: number;

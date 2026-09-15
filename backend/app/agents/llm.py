@@ -13,6 +13,7 @@ from app.agents.policies import (
     fallback_hint,
     fallback_review,
     fallback_understanding,
+    guidance_reply,
 )
 from app.agents.state import CardDraft, EvalResult
 from app.core.config import settings
@@ -41,6 +42,17 @@ class CoachLLM(Protocol):
         concepts: list[str],
         *,
         instructions: str = "",
+    ) -> str: ...
+
+    def mentor_reply(
+        self,
+        *,
+        message: str,
+        project_title: str,
+        milestone_title: str,
+        instructions: str,
+        constraints: list[str],
+        success_criteria: str,
     ) -> str: ...
 
     def generate_curriculum(
@@ -108,6 +120,25 @@ class StubCoachLLM:
         instructions: str = "",
     ) -> str:
         return fallback_hint(level, milestone_title, concepts, instructions=instructions)
+
+    def mentor_reply(
+        self,
+        *,
+        message: str,
+        project_title: str,
+        milestone_title: str,
+        instructions: str,
+        constraints: list[str],
+        success_criteria: str,
+    ) -> str:
+        return guidance_reply(
+            message=message,
+            milestone_title=milestone_title,
+            instructions=instructions,
+            constraints=constraints,
+            success_criteria=success_criteria,
+            project_title=project_title,
+        )
 
     def generate_curriculum(
         self,
@@ -244,6 +275,47 @@ class LangChainCoachLLM:
         instructions: str = "",
     ) -> str:
         return fallback_hint(level, milestone_title, concepts, instructions=instructions)
+
+    def mentor_reply(
+        self,
+        *,
+        message: str,
+        project_title: str,
+        milestone_title: str,
+        instructions: str,
+        constraints: list[str],
+        success_criteria: str,
+    ) -> str:
+        prompt = (
+            "You are a senior engineer mentoring a junior on a learning platform. "
+            "Answer THEIR specific question helpfully and concretely. "
+            "You MAY give short terminal commands (mkdir, touch, uvicorn import path). "
+            "You must NOT paste a full FastAPI application, multi-file solution, or long Python source. "
+            "If they already chose a package/project name, use that name — do not re-ask them to pick names. "
+            "Do not repeat a canned lecture about 'clean layout'. "
+            "Keep the reply under ~8 short sentences or a small command block + 2 sentences. "
+            "End with at most one follow-up question if useful.\n\n"
+            f"Project: {project_title or 'learner project'}\n"
+            f"Milestone: {milestone_title or 'current'}\n"
+            f"Milestone tasks / instructions:\n{instructions or '(none)'}\n"
+            f"Constraints: {', '.join(constraints) or 'n/a'}\n"
+            f"Success criteria: {success_criteria or 'n/a'}\n"
+            f"Learner message: {message}\n"
+        )
+        try:
+            raw = self._invoke(prompt).strip()
+            if raw:
+                return raw
+        except Exception:
+            pass
+        return guidance_reply(
+            message=message,
+            milestone_title=milestone_title,
+            instructions=instructions,
+            constraints=constraints,
+            success_criteria=success_criteria,
+            project_title=project_title,
+        )
 
     def generate_curriculum(
         self,

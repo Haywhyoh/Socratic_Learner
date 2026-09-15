@@ -302,17 +302,15 @@ def go_build_reply(
     title = milestone_title or "this milestone"
     if tasks:
         first = tasks[0]
-        more = f" Then continue with: {tasks[1]}" if len(tasks) > 1 else ""
         return (
-            f"Go build. Start with task 1 — {first}{more} "
-            "Decide names for a code package, settings/config, and an ASGI entrypoint; "
-            "create those paths in the terminal before writing logic. "
+            f"Go build. First task: {first} "
             f"Constraint: {constraint}. Success: {success}. "
-            "Ask me one design question at a time — I will not paste the full project."
+            "Ask a specific question about the next command or file you need — "
+            "I will not paste the full app."
         )
     return (
         f"Go build on '{title}'. Constraint: {constraint}; success: {success}. "
-        "Create the smallest layout you can import, then ask a design question if stuck."
+        "Ask what to run or create next if you are unsure."
     )
 
 
@@ -323,64 +321,55 @@ def guidance_reply(
     instructions: str = "",
     constraints: list[str] | None = None,
     success_criteria: str = "",
+    project_title: str = "",
 ) -> str:
-    """Socratic starter help for how-to questions — direction only, never full solutions."""
+    """Stub mentor help when no LLM is configured. Prefer commands over slogans."""
     lower = message.lower()
     tasks = parse_instruction_tasks(instructions)
     title = milestone_title or "this milestone"
-    constraint = (constraints or ["follow the project constraints"])[0]
     success = success_criteria or "meet the milestone success criteria"
+    # Prefer an explicit package name the learner mentioned (quoted or after "named"/"called").
+    pkg = "app"
+    named = re.search(
+        r"(?:named|called|package|project)\s+[\"']?([a-zA-Z_][\w]*)[\"']?",
+        message,
+        re.IGNORECASE,
+    )
+    if named:
+        pkg = named.group(1).lower()
+    elif re.search(r"\bscaffold\b", lower) and "fastapi" not in lower:
+        # Learner said they named something scaffold — use it as the package.
+        pkg = "scaffold"
 
     if any(
         word in lower
-        for word in ("layout", "structure", "folder", "package", "scaffold", "clean")
+        for word in (
+            "command",
+            "mkdir",
+            "touch",
+            "terminal",
+            "scaffold",
+            "create",
+            "how do i",
+            "how to",
+        )
     ):
         return (
-            "A clean layout usually means one importable package for app code, "
-            "a settings/config module, and one ASGI entrypoint the server can import. "
-            "Pick those names, create empty modules with `mkdir`/`touch` in the terminal, "
-            "then wire FastAPI. What names are you choosing for the package and entrypoint?"
-        )
-    if any(word in lower for word in ("health", "endpoint", "route", "/health")):
-        return (
-            "Health is a tiny GET route that returns JSON like {\"status\": \"ok\"} "
-            "and proves the process boots. Decide which module owns the route and how "
-            "the entrypoint includes it — then implement only that. "
-            "Where will `/health` live relative to your entrypoint?"
-        )
-    if any(word in lower for word in ("uvicorn", "start", "run server", "import error")):
-        return (
-            "Uvicorn needs an import path like `package.module:app` with an `app` object. "
-            "Confirm imports work with a short `python -c` check before uvicorn; "
-            "a long-running server will time out here (smoke-test only). "
-            "What import path are you planning?"
-        )
-    if any(
-        word in lower
-        for word in ("requirement", "dependenc", "pyproject", "readme", "pip")
-    ):
-        return (
-            "Declare what a real clone needs to install and document the exact run command. "
-            "In this sandbox FastAPI/uvicorn/pytest are already installed — still list them "
-            "for the project README. What run steps will you write down?"
-        )
-    if any(word in lower for word in ("first", "start", "begin", "next", "stuck")):
-        focus = tasks[0] if tasks else f"the first verifiable step of '{title}'"
-        return (
-            f"Begin with: {focus} "
-            f"Constraint reminder: {constraint}. Success looks like: {success}. "
-            "Tell me which task you're on and what you already tried — "
-            "I'll challenge the design, not write the files for you."
+            f"In the sandbox terminal, start with:\n"
+            f"mkdir -p {pkg}\n"
+            f"touch {pkg}/__init__.py {pkg}/main.py {pkg}/config.py\n"
+            f"Then open {pkg}/main.py and create a FastAPI `app` with GET /health. "
+            f"Success for '{title}': {success}."
         )
     if tasks:
         return (
-            f"For '{title}', work these in order: "
-            + "; ".join(f"{i}. {t}" for i, t in enumerate(tasks[:4], start=1))
-            + ". Which task are you on, and what's the next decision you need to make?"
+            f"You're on '{title}'. Next concrete step: {tasks[0]} "
+            "Tell me the exact blocker (command failed, import error, unsure which file) "
+            "and I'll answer that — not a generic lecture."
         )
     return (
-        f"Break '{title}' into the smallest next step you can verify in the terminal. "
-        f"Success: {success}. What have you created so far?"
+        f"What exact step is blocked on '{title}'? "
+        "Name the command or file you're stuck on."
     )
 
 
@@ -417,8 +406,8 @@ def fallback_hint(level: int, milestone_title: str, concepts: list[str], instruc
         ),
         2: f"Concept: this milestone hinges on {concept}. Research that, then return with your plan.",
         3: (
-            "Structure (no full code): package for app code → settings → entrypoint → "
-            "one health route → prove import/uvicorn."
+            "Structure (no full app dump): package folder → config module → main entrypoint "
+            "with FastAPI app → GET /health → prove with uvicorn."
         ),
         4: (
             f"Targeted: implement only the missing piece for {concept} / "
@@ -430,31 +419,49 @@ def fallback_hint(level: int, milestone_title: str, concepts: list[str], instruc
 
 def fallback_card_reply(cards: list[CardDraft]) -> str:
     if not cards:
-        return "No cards yet. Ask how to approach the current task, or keep building."
+        return "No cards yet. Ask about the command or file you're stuck on."
     card = cards[0]
     return f"{card['name']}: {card['why_it_matters']} Checkpoint: {card['checkpoint']}"
 
 
 def enforce_brevity(text: str, *, max_sentences: int = 2) -> str:
-    """Keep coach replies abrupt: at most max_sentences."""
-    cleaned = " ".join(text.split())
+    """Keep coach replies abrupt: at most max_sentences.
+
+    Lines that look like shell commands are preserved even when sentence
+    splitting would otherwise truncate mid-block.
+    """
+    cleaned = text.strip()
     if not cleaned:
         return cleaned
-    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    # Preserve multi-line command blocks (mkdir/touch/uvicorn examples).
+    if "\n" in cleaned and any(
+        line.strip().startswith(("mkdir", "touch", "python", "uvicorn", "pytest", "pip", "ls", "cd "))
+        or line.strip().startswith("```")
+        for line in cleaned.splitlines()
+    ):
+        return cleaned
+    collapsed = " ".join(cleaned.split())
+    parts = re.split(r"(?<=[.!?])\s+", collapsed)
     return " ".join(parts[:max_sentences]).strip()
 
 
-def _strip_solution_fences(text: str) -> tuple[str, bool]:
+def _strip_solution_fences(text: str, *, allow_commands: bool = False) -> tuple[str, bool]:
     stripped = False
 
     def replacer(match: re.Match[str]) -> str:
         nonlocal stripped
         body = match.group(1)
-        if body.count("\n") + 1 >= SOLUTION_FENCE_LINES:
+        line_count = body.count("\n") + 1
+        looks_like_app = bool(
+            re.search(r"\b(def |class |FastAPI\(|APIRouter\(|@app\.|import fastapi)", body)
+        )
+        if allow_commands and line_count <= 8 and not looks_like_app:
+            return match.group(0)
+        if line_count >= SOLUTION_FENCE_LINES or looks_like_app:
             stripped = True
             return (
-                "[full solution removed — implement the approach yourself; "
-                "ask a design question if you are stuck]"
+                "[full solution removed — implement it yourself; "
+                "ask about the next command or design choice]"
             )
         return match.group(0)
 
@@ -466,16 +473,19 @@ def filter_specialist_reply(
     *,
     later_concepts: list[str],
     allow_code: bool = False,
+    allow_commands: bool = False,
     max_sentences: int = 2,
 ) -> tuple[str, list[str]]:
     flags: list[str] = []
     text = enforce_brevity(reply, max_sentences=max_sentences)
     if not allow_code:
-        text, stripped = _strip_solution_fences(text)
+        text, stripped = _strip_solution_fences(text, allow_commands=allow_commands)
         if stripped:
             flags.append("stripped_solution")
-            text = "No full solutions. Ask a design question about the current task instead."
-        if "```" in text:
+            text = (
+                "No full app dumps. Ask about the next command or file decision instead."
+            )
+        elif "```" in text and not allow_commands:
             flags.append("stripped_solution")
             text = "No code dumps. Describe the approach; you write the files."
     for concept in later_concepts:

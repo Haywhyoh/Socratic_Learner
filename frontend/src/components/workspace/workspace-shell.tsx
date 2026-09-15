@@ -17,6 +17,7 @@ import {
   SandboxTerminal,
   type SandboxTerminalHandle,
 } from "@/components/workspace/sandbox-terminal";
+import { ProjectBriefModal } from "@/components/workspace/project-brief-modal";
 import { api } from "@/lib/api";
 import {
   getActiveUserMilestone,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/milestones";
 import type {
   EnrollmentDetail,
+  ProjectDetail,
   SandboxFileEntry,
   UserMilestoneRead,
 } from "@/lib/types";
@@ -63,6 +65,9 @@ export function WorkspaceShell({
     question: string | null;
     cards: import("@/lib/types").ConceptCardRead[];
   }>({ reply: null, question: null, cards: [] });
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [brief, setBrief] = useState<ProjectDetail | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
 
   const displayUm = selectedUm ?? activeUm;
   const projectTitle =
@@ -145,7 +150,24 @@ export function WorkspaceShell({
     };
   }, [userProjectId, refreshFiles, loadFile]);
 
-  const runPython = async () => {
+  const openBrief = async () => {
+    const projectId =
+      enrollment.assigned_project_id ??
+      enrollment.user_project?.project_id ??
+      enrollment.assigned_project?.id;
+    setBriefOpen(true);
+    if (!projectId) return;
+    if (brief?.id === projectId) return;
+    setBriefLoading(true);
+    try {
+      setBrief(await api.getProject(projectId));
+    } catch {
+      setBrief(null);
+    } finally {
+      setBriefLoading(false);
+    }
+  };
+
     if (!userProjectId) return;
     if (dirty && activeFile) await saveFile();
     setBusy("run");
@@ -241,9 +263,25 @@ export function WorkspaceShell({
           >
             ← Dashboard
           </Link>
-          <h1 className="font-serif text-lg text-stone-100">{projectTitle}</h1>
+          <h1 className="font-serif text-lg text-stone-100">
+            <button
+              type="button"
+              onClick={() => void openBrief()}
+              className="hover:text-amber-200"
+              title="Open project brief"
+            >
+              {projectTitle}
+            </button>
+          </h1>
           <p className="text-xs text-stone-500">
-            {enrollment.primary_option?.name} · {enrollment.secondary_option?.name}
+            {enrollment.primary_option?.name} · {enrollment.secondary_option?.name}{" "}
+            <button
+              type="button"
+              onClick={() => void openBrief()}
+              className="ml-2 text-amber-600 hover:text-amber-400"
+            >
+              Brief
+            </button>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -398,6 +436,13 @@ export function WorkspaceShell({
           />
         )}
       </div>
+      <ProjectBriefModal
+        open={briefOpen}
+        onClose={() => setBriefOpen(false)}
+        project={brief}
+        loading={briefLoading}
+        currentMilestone={milestoneDetail}
+      />
     </div>
   );
 }

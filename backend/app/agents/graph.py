@@ -16,7 +16,6 @@ from app.agents.policies import (
     fallback_card_reply,
     filter_specialist_reply,
     go_build_reply,
-    guidance_reply,
     later_milestone_concepts,
     next_hint_level,
     pose_question,
@@ -118,9 +117,10 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
         index = int(state.get("question_index") or 0)
         question = pose_question(questions, index)
         if question is None:
-            # Past checkpoints: treat freeform chat as build guidance, not a dead end.
-            reply = guidance_reply(
+            # Past checkpoints: real mentor reply to their question (LLM when configured).
+            reply = llm.mentor_reply(
                 message=state.get("learner_message") or "",
+                project_title=state.get("project_title") or "",
                 milestone_title=state.get("milestone_title") or "",
                 instructions=state.get("milestone_instructions") or "",
                 constraints=list(state.get("constraints") or []),
@@ -227,18 +227,22 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
     return evaluate_node
 
 
-def guidance_node(state: CoachState) -> CoachState:
-    reply = guidance_reply(
-        message=state.get("learner_message") or "",
-        milestone_title=state.get("milestone_title") or "",
-        instructions=state.get("milestone_instructions") or "",
-        constraints=list(state.get("constraints") or []),
-        success_criteria=state.get("success_criteria") or "",
-    )
-    question = state.get("current_question")
-    if question:
-        reply = f"{reply} Still answer the checkpoint first: {question}"
-    return {"reply": reply, "answer_status": "guidance"}
+def make_guidance_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
+    def guidance_node(state: CoachState) -> CoachState:
+        reply = llm.mentor_reply(
+            message=state.get("learner_message") or "",
+            project_title=state.get("project_title") or "",
+            milestone_title=state.get("milestone_title") or "",
+            instructions=state.get("milestone_instructions") or "",
+            constraints=list(state.get("constraints") or []),
+            success_criteria=state.get("success_criteria") or "",
+        )
+        question = state.get("current_question")
+        if question:
+            reply = f"{reply}\n\nStill answer the checkpoint first: {question}"
+        return {"reply": reply, "answer_status": "guidance"}
+
+    return guidance_node
 
 
 def hint_gate_node(state: CoachState) -> CoachState:
@@ -284,13 +288,15 @@ def policy_node(state: CoachState) -> CoachState:
             f"If a checkpoint is open, answer: {question}"
         )
     status = state.get("answer_status") or ""
-    max_sentences = 4 if status in {"complete", "guidance", "hint", "passed", "advanced_with_gap"} else 2
+    max_sentences = 8 if status in {"complete", "guidance", "hint", "passed", "advanced_with_gap"} else 2
     if status == "push_back":
         max_sentences = 1
+    allow_commands = status in {"guidance", "hint", "complete", "passed"}
     filtered, flags = filter_specialist_reply(
         reply,
         later_concepts=state.get("later_concepts") or [],
         allow_code=False,
+        allow_commands=allow_commands,
         max_sentences=max_sentences,
     )
     catalog = state.get("catalog_milestones") or []
@@ -302,6 +308,7 @@ def policy_node(state: CoachState) -> CoachState:
             filtered,
             later_concepts=later,
             allow_code=False,
+            allow_commands=allow_commands,
             max_sentences=max_sentences,
         )
         flags.extend(extra)
@@ -332,7 +339,7 @@ def build_chat_graph(llm: CoachLLM | None = None):
     builder = StateGraph(CoachState)
     builder.add_node("route", route_node)
     builder.add_node("evaluate", make_evaluate_node(llm))
-    builder.add_node("guidance", guidance_node)
+    builder.add_node("guidance", make_guidance_node(llm))
     builder.add_node("hint_gate", hint_gate_node)
     builder.add_node("hint_coach", make_hint_node(llm))
     builder.add_node("card_reply", card_reply_node)
