@@ -11,7 +11,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models.course import Course, CourseOption
-from app.models.project import Milestone, Project, ProjectDifficulty
+from app.models.project import Milestone, Project, ProjectCurriculumMode, ProjectDifficulty
 from app.models.user import User
 from app.seed import seed
 from app.services.sandbox_runner import FakeSandboxRunner, RunResult, set_sandbox_runner
@@ -114,19 +114,22 @@ def auth_headers(client: TestClient, user: User) -> dict[str, str]:
 
 def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int]:
     course = Course(
-        slug="software-engineering",
-        name="Software Engineering",
-        description="SE",
+        slug="javascript",
+        name="JavaScript",
+        description="JS",
         primary_label="Language",
-        secondary_label="Framework",
+        secondary_label="Track",
     )
     db.add(course)
     db.flush()
-    primary = CourseOption(course_id=course.id, name="Python", slug="python")
+    primary = CourseOption(course_id=course.id, name="JavaScript", slug="javascript")
     db.add(primary)
     db.flush()
     secondary = CourseOption(
-        course_id=course.id, name="FastAPI", slug="fastapi", parent_id=primary.id
+        course_id=course.id,
+        name="Node.js core (no framework)",
+        slug="node-core",
+        parent_id=primary.id,
     )
     db.add(secondary)
     db.flush()
@@ -134,19 +137,20 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
     project_id = None
     if with_project:
         project = Project(
-            title="Task Tracker API",
-            description="Build an API",
-            objective="Ship a small task-tracking backend.",
-            difficulty=ProjectDifficulty.beginner,
-            expected_outcome="Auth-aware task CRUD with tests.",
-            prerequisites=["Python", "HTTP basics"],
-            skills=["routing", "auth"],
-            concepts=["ownership isolation"],
-            constraints=["No frontend"],
-            tests=["Happy-path create/list/complete"],
+            title="Build a Simple Backend Framework in JavaScript",
+            description="Build a framework",
+            objective="Ship a small backend framework.",
+            difficulty=ProjectDifficulty.intermediate,
+            expected_outcome="A from-scratch Node.js framework.",
+            prerequisites=["JavaScript"],
+            skills=["routing"],
+            concepts=[],
+            constraints=["No Express"],
+            tests=["GET route works"],
             evaluation_criteria=["Milestones complete"],
-            extension_challenges=["Due dates"],
-            recommended_resources=[{"title": "FastAPI docs", "url": "https://fastapi.tiangolo.com"}],
+            extension_challenges=["Async middleware"],
+            recommended_resources=[{"title": "Node http", "url": "https://nodejs.org/api/http.html"}],
+            curriculum_mode=ProjectCurriculumMode.deterministic,
             course_id=course.id,
             primary_option_id=primary.id,
             secondary_option_id=secondary.id,

@@ -500,47 +500,25 @@ def _latest_user_milestone_id(client: httpx.Client, user_project_id: int) -> int
     return int(pending[0]["id"])
 
 
-def _print_cards(cards: list[dict[str, Any]]) -> None:
-    if not cards:
-        console.print("[dim]No concept cards for this milestone.[/dim]")
+def _print_concept(concept: dict[str, Any]) -> None:
+    if not concept:
+        console.print("[dim]No current concept.[/dim]")
         return
-    for card in cards:
-        console.print(f"\n[bold]{card.get('name')}[/bold] (card_id={card.get('id')})")
-        if card.get("why_it_matters"):
-            console.print(card["why_it_matters"])
-        if card.get("explanation"):
-            console.print(f"[dim]{card['explanation']}[/dim]")
-        questions = card.get("research_questions") or []
-        if questions:
-            console.print("[cyan]Research questions[/cyan]")
-            for question in questions:
-                console.print(f"  • {question}")
-        resources = card.get("resources") or []
-        if resources:
-            console.print("[cyan]Resources[/cyan]")
-            for resource in resources:
-                title = resource.get("title") if isinstance(resource, dict) else str(resource)
-                url = resource.get("url") if isinstance(resource, dict) else ""
-                console.print(f"  • {title}" + (f" — {url}" if url else ""))
-        if card.get("checkpoint"):
-            console.print(f"[green]Checkpoint[/green]\n{card['checkpoint']}")
-
-
-def _prompt_mastery(prompt: str) -> str:
-    """Ask until we get (or can fuzzy-map to) unknown/familiar/can_explain."""
-    from app.agents.policies import normalize_mastery
-
-    allowed = {"unknown", "familiar", "can_explain"}
-    while True:
-        raw = typer.prompt(prompt, default="unknown")
-        mastery = normalize_mastery(raw)
-        if mastery in allowed:
-            if mastery != raw.strip().lower().replace(" ", "_"):
-                console.print(f"[dim]Interpreted as {mastery}[/dim]")
-            return mastery
-        console.print(
-            "[yellow]Please answer unknown, familiar, or can_explain.[/yellow]"
-        )
+    console.print(f"\n[bold]{concept.get('title')}[/bold] ({concept.get('id')})")
+    if concept.get("description"):
+        console.print(concept["description"])
+    questions = concept.get("research_questions") or []
+    if questions:
+        console.print("[cyan]Research questions[/cyan]")
+        for question in questions:
+            console.print(f"  • {question}")
+    resources = concept.get("resources") or []
+    if resources:
+        console.print("[cyan]Resources[/cyan]")
+        for resource in resources:
+            title = resource.get("title") if isinstance(resource, dict) else str(resource)
+            url = resource.get("url") if isinstance(resource, dict) else ""
+            console.print(f"  • {title}" + (f" — {url}" if url else ""))
 
 
 def _print_coach_reply(body: dict) -> None:
@@ -594,7 +572,12 @@ def _coach_answer_loop(client: httpx.Client, user_project_id: int) -> None:
         body = response.json()
         _print_coach_reply(body)
         state = body.get("learner_state") or {}
-        if body.get("answer_status") == "complete" or state.get("questions_complete"):
+        if body.get("contract", {}).get("action") in {
+            "ASK_QUESTION",
+            "ASK_RESEARCH",
+            "ASK_IMPLEMENTATION",
+            "HOLD",
+        }:
             return
 
 
@@ -626,39 +609,14 @@ def coach_cmd(
                 console.print(f"[red]{response.status_code}: {response.text}[/red]")
                 raise typer.Exit(code=1)
             data = response.json()
-            if data.get("status") == "needs_assessment":
-                console.print("[bold]What do you already understand?[/bold]")
-                console.print(
-                    "[dim]Answers: unknown · familiar · can_explain "
-                    "(typos are corrected when possible)[/dim]"
-                )
-                answers = []
-                for question in data.get("assessment_questions") or []:
-                    mastery = _prompt_mastery(question["prompt"])
-                    answers.append({"concept": question["concept"], "mastery": mastery})
-                response = client.post(
-                    f"/api/v1/me/projects/{user_project_id}/coach/start",
-                    headers=_headers(),
-                    json={"answers": answers},
-                )
-                if response.status_code >= 400:
-                    console.print(f"[red]{response.status_code}: {response.text}[/red]")
-                    raise typer.Exit(code=1)
-                data = response.json()
-            if data.get("resumed"):
-                console.print(
-                    "[dim]Resuming — you already have a milestone in progress "
-                    "with an unanswered question:[/dim]"
-                )
-            else:
-                console.print(
-                    f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
-                )
+            console.print(
+                f"[green]Coach {data.get('status')}[/green] session={data.get('session_id')}"
+            )
+            concept = data.get("concept") or {}
+            if concept.get("id"):
+                _print_concept(concept)
             reply = data.get("reply")
             if reply:
-                if data.get("learner_state", {}).get("questions_complete"):
-                    console.print(f"\n[green]{reply}[/green]")
-                    return
                 console.print(f"\n[bold]Q[/bold] {reply}")
                 _coach_answer_loop(client, user_project_id)
             return
@@ -709,19 +667,18 @@ def show_state(
         raise typer.Exit(code=1)
     data = response.json()
     console.print(
-        f"Q {data.get('questions_passed')}/{data.get('questions_total')} "
-        f"(index={data.get('question_index')}) help={data.get('help_received')}"
+        f"concept={data.get('concept_id')} status={data.get('status')} "
+        f"attempts={data.get('attempt_count')} hints={data.get('hints_used')}"
     )
-    if data.get("current_question"):
-        console.print(f"[bold]Current[/bold] {data['current_question']}")
-    if data.get("failed_at"):
-        console.print(f"Failures: {len(data['failed_at'])}")
-    if data.get("researched_concepts"):
-        console.print("Researched: " + ", ".join(data["researched_concepts"]))
+    if data.get("last_explanation"):
+        console.print(f"[dim]Last explanation[/dim] {data['last_explanation'][:200]}")
+    evidence = data.get("evidence") or {}
+    if evidence:
+        console.print("Evidence: " + ", ".join(f"{k}={v}" for k, v in evidence.items()))
 
 
-@app.command("roadmap")
-def show_roadmap(
+@app.command("graph")
+def show_graph(
     user_project_id: Annotated[
         Optional[int],
         typer.Option(help="User project ID"),
@@ -733,46 +690,54 @@ def show_roadmap(
         if user_project_id is None:
             user_project_id = _latest_user_project_id(client)
         response = client.get(
-            f"/api/v1/me/projects/{user_project_id}/roadmap",
+            f"/api/v1/me/projects/{user_project_id}/graph",
             headers=_headers(),
         )
     if response.status_code >= 400:
         console.print(f"[red]{response.status_code}: {response.text}[/red]")
         raise typer.Exit(code=1)
-    items = response.json()
-    if not items:
-        console.print("[yellow]No roadmap yet. Run: socratic coach start[/yellow]")
-        return
-    for item in items:
-        console.print(f"\n[bold]#{item.get('order_index')} {item.get('title')}[/bold]")
+    data = response.json()
+    console.print(
+        f"current={data.get('current_concept_id')} ({data.get('concept_state')})"
+    )
+    for item in data.get("milestones") or []:
+        console.print(f"\n[bold]#{item.get('order_index')} {item.get('title')}[/bold] {item.get('status')}")
         for concept in item.get("concepts") or []:
-            console.print(
-                f"  • {concept.get('name')} — {concept.get('teaching')} "
-                f"({concept.get('mastery')})"
-            )
+            console.print(f"  • {concept.get('id')} — {concept.get('status')}")
 
 
 @app.command("cards")
 def show_cards(
-    user_milestone_id: Annotated[
+    user_project_id: Annotated[
         Optional[int],
-        typer.Option(help="User milestone ID (defaults to current pending)"),
+        typer.Option(help="User project ID (defaults to latest enrollment)"),
     ] = None,
 ) -> None:
-    if not isinstance(user_milestone_id, int):
-        user_milestone_id = None
+    if not isinstance(user_project_id, int):
+        user_project_id = None
     with _client() as client:
-        if user_milestone_id is None:
+        if user_project_id is None:
             user_project_id = _latest_user_project_id(client)
-            user_milestone_id = _latest_user_milestone_id(client, user_project_id)
         response = client.get(
-            f"/api/v1/me/milestones/{user_milestone_id}/cards",
+            f"/api/v1/me/projects/{user_project_id}/state",
             headers=_headers(),
         )
-    if response.status_code >= 400:
-        console.print(f"[red]{response.status_code}: {response.text}[/red]")
-        raise typer.Exit(code=1)
-    _print_cards(response.json())
+        if response.status_code >= 400:
+            console.print(f"[red]{response.status_code}: {response.text}[/red]")
+            raise typer.Exit(code=1)
+        state = response.json()
+        graph = client.get(
+            f"/api/v1/me/projects/{user_project_id}/graph",
+            headers=_headers(),
+        )
+    concept_id = state.get("concept_id")
+    console.print(f"Current concept: {concept_id} ({state.get('status')})")
+    if graph.status_code == 200:
+        for milestone in graph.json().get("milestones") or []:
+            for concept in milestone.get("concepts") or []:
+                if concept.get("id") == concept_id:
+                    _print_concept(concept)
+                    return
 
 
 @app.command("hint")
@@ -1114,7 +1079,7 @@ def sandbox_test(
         typer.Option("--project", help="User project ID (defaults to latest)"),
     ] = None,
 ) -> None:
-    """Run pytest in the sandbox and record the result for the coach."""
+    """Run node --test in the sandbox and record the result for the coach."""
     if not isinstance(user_project_id, int):
         user_project_id = None
     with _client() as client:

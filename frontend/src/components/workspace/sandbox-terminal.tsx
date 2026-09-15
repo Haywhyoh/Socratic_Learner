@@ -98,17 +98,15 @@ export const SandboxTerminal = forwardRef<
         term.writeln("Sandbox terminal — one allowlisted command per line.");
         term.writeln("Examples:");
         term.writeln("  ls -la");
-        term.writeln("  mkdir -p app");
-        term.writeln("  touch app/__init__.py");
-        term.writeln('  python -c "from fastapi import FastAPI"');
-        term.writeln("  uvicorn app.main:app --host 127.0.0.1 --port 8000");
-        term.writeln("  pytest -q");
-        term.writeln("  pip list");
-        term.writeln("  cd app   (client-side cwd)");
+        term.writeln("  mkdir -p lib");
+        term.writeln("  touch server.js");
+        term.writeln("  node server.js");
+        term.writeln("  node --test");
+        term.writeln("  cd lib   (client-side cwd)");
         term.writeln("  clear");
         term.writeln("");
         term.writeln(
-          "Note: no network in the sandbox. FastAPI/uvicorn/pytest are preinstalled.",
+          "Note: no network in the sandbox. Node 20 is preinstalled. No Express.",
         );
         term.writeln(
           "Long-running servers stop after the sandbox timeout (smoke-test only).",
@@ -117,7 +115,7 @@ export const SandboxTerminal = forwardRef<
           "If you see a Docker error: start Colima/Docker on your Mac (host), not here.",
         );
         term.writeln(
-          "  colima start && cd backend && docker build -t socratic-sandbox-python:latest sandbox",
+          "  colima start && cd backend && docker build -t socratic-sandbox-node:latest sandbox",
         );
         writePrompt();
         return;

@@ -55,7 +55,14 @@ export function WorkspaceShell({
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [coachReady, setCoachReady] = useState(false);
-  const [questionsComplete, setQuestionsComplete] = useState(false);
+  const [reflection, setReflection] = useState({
+    what: "",
+    why: "",
+    alternatives: "",
+    difficult: "",
+    scale: "",
+    change: "",
+  });
   const [coachBoot, setCoachBoot] = useState<{
     reply: string | null;
     question: string | null;
@@ -166,14 +173,14 @@ export function WorkspaceShell({
     }
   };
 
-  const runPython = async () => {
+  const runNode = async () => {
     if (!userProjectId) return;
     if (dirty && activeFile) await saveFile();
     setBusy("run");
     try {
-      const cmd = activeFile?.endsWith(".py")
-        ? `python ${activeFile}`
-        : "python main.py";
+      const cmd = activeFile?.endsWith(".js") || activeFile?.endsWith(".mjs")
+        ? `node ${activeFile}`
+        : "node --version";
       await terminalRef.current?.runCommand(cmd);
     } finally {
       setBusy(null);
@@ -185,7 +192,14 @@ export function WorkspaceShell({
     if (dirty && activeFile) await saveFile();
     setBusy("test");
     try {
-      await terminalRef.current?.runCommand("pytest -q");
+      await terminalRef.current?.runCommand("node --test");
+      if (userProjectId) {
+        try {
+          setGraph(await api.getGraph(userProjectId));
+        } catch {
+          /* ignore */
+        }
+      }
     } finally {
       setBusy(null);
     }
@@ -215,11 +229,13 @@ export function WorkspaceShell({
     if (!displayUm || displayUm.id !== activeUm?.id) return;
     setBusy("complete");
     try {
+      await api.submitReflection(displayUm.id, reflection);
       await api.completeMilestone(displayUm.id);
       const updated = await api.getEnrollment(enrollment.id);
       onEnrollmentChange(updated);
       const nextActive = getActiveUserMilestone(updated.user_milestones);
       setSelectedUm(nextActive);
+      if (userProjectId) setGraph(await api.getGraph(userProjectId));
       terminalRef.current?.echo("Milestone completed.");
     } catch (e) {
       terminalRef.current?.echo(
@@ -301,7 +317,7 @@ export function WorkspaceShell({
             variant="secondary"
             className="text-xs"
             disabled={busy !== null}
-            onClick={() => void runPython()}
+            onClick={() => void runNode()}
           >
             <Play className="h-4 w-4" />
             Run
@@ -332,6 +348,31 @@ export function WorkspaceShell({
               >
                 Complete milestone
               </Button>
+              {displayUm?.milestone?.order_index === 12 && (
+                <Button
+                  variant="ghost"
+                  className="text-xs"
+                  disabled={busy !== null}
+                  onClick={async () => {
+                    if (!userProjectId) return;
+                    setBusy("defense");
+                    try {
+                      const defense = await api.startDefense(userProjectId);
+                      terminalRef.current?.echo(
+                        `Defense started.\n${(defense.questions as string[]).map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
+                      );
+                    } catch (e) {
+                      terminalRef.current?.echo(
+                        e instanceof ApiError ? e.message : "Defense failed",
+                      );
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  Start defense
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -341,14 +382,15 @@ export function WorkspaceShell({
         <div className="min-h-0 overflow-hidden">
           <MilestoneRail
             userMilestones={userMilestones}
+            graph={graph}
             selectedId={displayUm?.id ?? null}
-            activeTaskId={activeTask?.id ?? null}
+            activeConceptId={graph?.current_concept_id ?? null}
             onSelect={(um) => {
               setSelectedUm(um);
-              const tasks = parseMilestoneTasks(um.milestone?.instructions);
-              setActiveTask(tasks[0] ?? null);
             }}
-            onSelectTask={setActiveTask}
+            onSelectConcept={() => {
+              /* current concept is engine-driven */
+            }}
           />
         </div>
 
@@ -356,17 +398,40 @@ export function WorkspaceShell({
           {milestoneDetail && (
             <div className="shrink-0 border-b border-stone-800 bg-stone-900/30 px-4 py-3 text-sm">
               <p className="font-medium text-stone-200">{milestoneDetail.title}</p>
-              {activeTask ? (
-                <p className="mt-1 text-stone-400">
-                  <span className="text-amber-500/90">Task {activeTask.index}:</span>{" "}
-                  {activeTask.text}
+              <p className="mt-1 text-stone-500">{milestoneDetail.description}</p>
+              {graph?.current_concept_id && (
+                <p className="mt-1 text-xs text-amber-500/90">
+                  Current concept: {graph.current_concept_id} · {graph.concept_state}
                 </p>
-              ) : (
-                <p className="mt-1 text-stone-500">{milestoneDetail.description}</p>
               )}
               <p className="mt-2 text-xs text-stone-600">
                 Success: {milestoneDetail.success_criteria}
               </p>
+              {displayUm?.id === activeUm?.id && (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {(
+                    [
+                      ["what", "What did you build?"],
+                      ["why", "Why this design?"],
+                      ["alternatives", "What alternatives?"],
+                      ["difficult", "What was difficult?"],
+                      ["scale", "What breaks at scale?"],
+                      ["change", "What would you change?"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label key={key} className="block text-[11px] text-stone-500">
+                      {label}
+                      <input
+                        value={reflection[key]}
+                        onChange={(e) =>
+                          setReflection((prev) => ({ ...prev, [key]: e.target.value }))
+                        }
+                        className="mt-1 w-full rounded border border-stone-800 bg-stone-950 px-2 py-1 text-xs text-stone-200"
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -417,11 +482,11 @@ export function WorkspaceShell({
               userProjectId={userProjectId}
               userMilestoneId={activeUm?.id ?? null}
               milestoneTitle={displayUm?.milestone?.title}
-              activeTask={activeTask}
-              questionsComplete={questionsComplete}
+              graph={graph}
               initialReply={coachBoot.reply}
               initialQuestion={coachBoot.question}
-              initialCards={coachBoot.cards}
+              initialContract={coachBoot.contract}
+              initialConcept={coachBoot.concept}
             />
           </div>
         )}

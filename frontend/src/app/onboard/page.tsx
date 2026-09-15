@@ -157,43 +157,22 @@ function OnboardWizard() {
 
         {step === "mode" && (
           <>
-            <p className="text-sm text-stone-400">Learning mode</p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {(
-                [
-                  {
-                    id: "project" as LearningMode,
-                    title: "Project-based",
-                    desc: "Build milestones in the sandbox with tests and AI review.",
-                  },
-                  {
-                    id: "concept" as LearningMode,
-                    title: "Concept / debate",
-                    desc: "Research, argue, and synthesize — UI stub for now.",
-                  },
-                ] as const
-              ).map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setMode(m.id)}
-                  className={`rounded-xl border p-4 text-left ${
-                    mode === m.id
-                      ? "border-amber-600 bg-amber-950/30"
-                      : "border-stone-800"
-                  }`}
-                >
-                  <p className="font-medium text-stone-100">{m.title}</p>
-                  <p className="mt-2 text-xs text-stone-500">{m.desc}</p>
-                </button>
-              ))}
-            </div>
+            <p className="text-sm text-stone-400">
+              You&apos;ll build a real project with a senior-engineer mentor. Concept/debate
+              mode is deferred until this project is proven.
+            </p>
             {error && <p className="text-sm text-red-400">{error}</p>}
             <div className="flex gap-3 pt-4">
               <Button variant="ghost" onClick={() => setStep("secondary")}>
                 Back
               </Button>
-              <Button disabled={submitting} onClick={() => void enroll()}>
+              <Button
+                disabled={submitting}
+                onClick={() => {
+                  setMode("project");
+                  void enroll();
+                }}
+              >
                 {submitting ? "Enrolling…" : "Enter workspace"}
               </Button>
             </div>

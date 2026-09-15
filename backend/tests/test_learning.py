@@ -1,41 +1,60 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models.coach import MilestoneReview, MilestoneReviewVerdict
 from tests.conftest import make_course_path
 
+REFLECTION = {
+    "what": "I built the smallest possible version of this milestone.",
+    "why": "It was the simplest design that still satisfied the success criteria.",
+    "alternatives": "I considered a more nested layout but rejected it.",
+    "difficult": "Naming the modules without copying a framework.",
+    "scale": "A linear scan would get slow with thousands of routes.",
+    "change": "I would extract a matcher function.",
+}
 
-def _approve_review(db: Session, user_milestone_id: int) -> None:
-    """Test helper: milestone completion is gated on the AI review passing —
 
-    the review pipeline itself (sandbox code + LLM) is covered in
-    test_coach.py, so ordering/restart tests here just approve directly.
-    """
-    review = MilestoneReview(
-        user_milestone_id=user_milestone_id,
-        verdict=MilestoneReviewVerdict.passed,
+def _gate_milestone(client: TestClient, auth_headers: dict[str, str], user_milestone_id: int, *, last: bool, user_project_id: int) -> None:
+    reflected = client.post(
+        f"/api/v1/me/milestones/{user_milestone_id}/reflection",
+        headers=auth_headers,
+        json={"answers": REFLECTION},
     )
-    db.add(review)
-    db.commit()
+    assert reflected.status_code == 200
+    if last:
+        start = client.post(
+            f"/api/v1/me/projects/{user_project_id}/defense/start",
+            headers=auth_headers,
+        )
+        assert start.status_code == 200
+        questions = start.json()["questions"]
+        answers = [
+            "I structured it this way because each concern has a single owner in the code."
+        ] * len(questions)
+        defended = client.post(
+            f"/api/v1/me/projects/{user_project_id}/defense/answer",
+            headers=auth_headers,
+            json={"answers": answers},
+        )
+        assert defended.status_code == 200
+        assert defended.json()["verdict"] == "passed"
 
 
 def test_list_courses_and_nested_options(client: TestClient, seeded_db: Session) -> None:
     courses = client.get("/api/v1/courses")
     assert courses.status_code == 200
     body = courses.json()
-    assert {c["slug"] for c in body} >= {"software-engineering", "business"}
+    assert {c["slug"] for c in body} == {"javascript"}
 
-    se = next(c for c in body if c["slug"] == "software-engineering")
-    primary = client.get(f"/api/v1/courses/{se['id']}/options")
+    js = body[0]
+    primary = client.get(f"/api/v1/courses/{js['id']}/options")
     assert primary.status_code == 200
     names = {o["name"] for o in primary.json()}
-    assert "Python" in names
     assert "JavaScript" in names
 
-    python = next(o for o in primary.json() if o["slug"] == "python")
-    secondary = client.get(f"/api/v1/courses/{se['id']}/options/{python['id']}/options")
+    lang = next(o for o in primary.json() if o["slug"] == "javascript")
+    secondary = client.get(f"/api/v1/courses/{js['id']}/options/{lang['id']}/options")
     assert secondary.status_code == 200
-    assert {o["slug"] for o in secondary.json()} >= {"fastapi", "django"}
+    assert {o["slug"] for o in secondary.json()} >= {"node-core"}
 
 
 def test_enroll_project_mode_assigns_project_and_milestones(
@@ -109,8 +128,14 @@ def test_complete_milestones_in_order(
     )
     assert bad.status_code == 409
 
-    for um in ordered:
-        _approve_review(db, um["id"])
+    for index, um in enumerate(ordered):
+        _gate_milestone(
+            client,
+            auth_headers,
+            um["id"],
+            last=index == len(ordered) - 1,
+            user_project_id=enrolled.json()["user_project"]["id"],
+        )
         ok = client.post(
             f"/api/v1/me/milestones/{um['id']}/complete",
             headers=auth_headers,
@@ -147,8 +172,15 @@ def test_restart_milestone_resets_from_that_point(
             m["order_index"] for m in enrolled.json()["milestones"] if m["id"] == um["milestone_id"]
         ),
     )
-    for um in ordered:
-        _approve_review(db, um["id"])
+    user_project_id = enrolled.json()["user_project"]["id"]
+    for index, um in enumerate(ordered):
+        _gate_milestone(
+            client,
+            auth_headers,
+            um["id"],
+            last=index == len(ordered) - 1,
+            user_project_id=user_project_id,
+        )
         assert (
             client.post(
                 f"/api/v1/me/milestones/{um['id']}/complete",
@@ -173,8 +205,13 @@ def test_restart_milestone_resets_from_that_point(
     assert by_id[ordered[2]["id"]]["status"] == "pending"
     assert by_id[ordered[2]["id"]]["completed_at"] is None
 
-    # Can complete again from the restarted point
-    _approve_review(db, ordered[1]["id"])
+    _gate_milestone(
+        client,
+        auth_headers,
+        ordered[1]["id"],
+        last=False,
+        user_project_id=enrolled.json()["user_project"]["id"],
+    )
     assert (
         client.post(
             f"/api/v1/me/milestones/{ordered[1]['id']}/complete",
@@ -215,25 +252,25 @@ def test_enroll_concept_mode_without_question_is_pending(
     assert body["turns"] == []
 
 
-def test_enroll_concept_mode_assigns_seeded_question(
+def test_enroll_concept_mode_assigns_pending_without_catalog(
     client: TestClient,
     auth_headers: dict[str, str],
     seeded_db: Session,
 ) -> None:
     courses = client.get("/api/v1/courses").json()
-    se = next(c for c in courses if c["slug"] == "software-engineering")
-    primary = client.get(f"/api/v1/courses/{se['id']}/options").json()
-    python = next(o for o in primary if o["slug"] == "python")
-    secondary = client.get(f"/api/v1/courses/{se['id']}/options/{python['id']}/options").json()
-    fastapi = next(o for o in secondary if o["slug"] == "fastapi")
+    js = next(c for c in courses if c["slug"] == "javascript")
+    primary = client.get(f"/api/v1/courses/{js['id']}/options").json()
+    lang = next(o for o in primary if o["slug"] == "javascript")
+    secondary = client.get(f"/api/v1/courses/{js['id']}/options/{lang['id']}/options").json()
+    node = next(o for o in secondary if o["slug"] == "node-core")
 
     response = client.post(
         "/api/v1/enrollments",
         headers=auth_headers,
         json={
-            "course_id": se["id"],
-            "primary_option_id": python["id"],
-            "secondary_option_id": fastapi["id"],
+            "course_id": js["id"],
+            "primary_option_id": lang["id"],
+            "secondary_option_id": node["id"],
             "learning_mode": "concept",
         },
     )
@@ -244,56 +281,35 @@ def test_enroll_concept_mode_assigns_seeded_question(
     )
     assert session.status_code == 200
     body = session.json()
-    assert body["status"] == "active"
-    assert body["question_text"]
-    assert "FastAPI" in body["question_text"] or "dependency" in body["question_text"].lower()
+    assert body["status"] == "pending_generation"
+    assert body["question_text"] is None
 
 
-def test_seeded_python_projects_exist(client: TestClient, seeded_db: Session) -> None:
+def test_seeded_js_framework_project_exists(client: TestClient, seeded_db: Session) -> None:
     courses = client.get("/api/v1/courses").json()
-    se = next(c for c in courses if c["slug"] == "software-engineering")
-    primary = client.get(f"/api/v1/courses/{se['id']}/options").json()
-    python = next(o for o in primary if o["slug"] == "python")
-    secondary = client.get(f"/api/v1/courses/{se['id']}/options/{python['id']}/options").json()
-    fastapi = next(o for o in secondary if o["slug"] == "fastapi")
-    django = next(o for o in secondary if o["slug"] == "django")
+    js = next(c for c in courses if c["slug"] == "javascript")
+    primary = client.get(f"/api/v1/courses/{js['id']}/options").json()
+    lang = next(o for o in primary if o["slug"] == "javascript")
+    secondary = client.get(f"/api/v1/courses/{js['id']}/options/{lang['id']}/options").json()
+    node = next(o for o in secondary if o["slug"] == "node-core")
 
-    fastapi_projects = client.get(
+    projects = client.get(
         "/api/v1/projects",
         params={
-            "course_id": se["id"],
-            "primary_option_id": python["id"],
-            "secondary_option_id": fastapi["id"],
+            "course_id": js["id"],
+            "primary_option_id": lang["id"],
+            "secondary_option_id": node["id"],
         },
     ).json()
-    django_projects = client.get(
-        "/api/v1/projects",
-        params={
-            "course_id": se["id"],
-            "primary_option_id": python["id"],
-            "secondary_option_id": django["id"],
-        },
-    ).json()
-
-    assert {p["title"] for p in fastapi_projects} >= {
-        "Task Tracker API",
-        "Notes API with Tags",
+    assert {p["title"] for p in projects} >= {
+        "Build a Simple Backend Framework in JavaScript",
     }
-    assert {p["title"] for p in django_projects} >= {"Library Catalog"}
-
-    task = next(p for p in fastapi_projects if p["title"] == "Task Tracker API")
-    detail = client.get(f"/api/v1/projects/{task['id']}")
+    project = projects[0]
+    detail = client.get(f"/api/v1/projects/{project['id']}")
     assert detail.status_code == 200
     body = detail.json()
-    assert body["difficulty"] == "beginner"
+    assert body["difficulty"] == "intermediate"
     assert body["objective"]
-    assert "task-tracking" in body["objective"].lower() or "task" in body["objective"].lower()
-    assert isinstance(body["skills"], list) and body["skills"]
-    assert isinstance(body["tests"], list) and body["tests"]
-    assert isinstance(body["recommended_resources"], list) and body["recommended_resources"]
-    assert body["recommended_resources"][0]["title"]
-    assert body["recommended_resources"][0]["url"]
-    assert "brief" not in body
-    assert len(body["milestones"]) == 3
+    assert len(body["milestones"]) == 12
     assert body["milestones"][0]["instructions"]
     assert "What to do" in body["milestones"][0]["instructions"]
