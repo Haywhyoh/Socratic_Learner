@@ -5,7 +5,6 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.project import MilestoneRead, ProjectDetail, ProjectRead, UserMilestoneRead, UserProjectRead
-from app.services import coach as coach_service
 from app.services import learning as learning_service
 
 router = APIRouter(tags=["projects"])
@@ -58,9 +57,6 @@ def complete_milestone(
     current_user: User = Depends(get_current_user),
 ) -> UserMilestoneRead:
     result = learning_service.complete_user_milestone(db, current_user, user_milestone_id)
-    coach_service.ensure_cards_for_current_milestone(
-        db, current_user, result.user_project_id
-    )
     return result
 
 

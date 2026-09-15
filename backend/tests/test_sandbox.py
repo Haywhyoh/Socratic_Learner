@@ -333,3 +333,13 @@ def test_docker_sandbox_smoke(tmp_path: Path) -> None:
     assert result.timed_out is False
     assert result.exit_code == 0
     assert "ok" in result.stdout
+
+
+def test_parse_node_test_counts() -> None:
+    from app.services.sandbox import _parse_node_test_counts
+
+    passed, failed, errors = _parse_node_test_counts("# tests 3\n# pass 3\n# fail 0\n")
+    assert (passed, failed, errors) == (3, 0, 0)
+    passed, failed, errors = _parse_node_test_counts("# tests 1\n# pass 0\n# fail 1\n")
+    assert (passed, failed) == (0, 1)
+

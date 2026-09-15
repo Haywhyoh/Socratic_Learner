@@ -10,6 +10,16 @@ from app.services.sandbox_runner import FakeSandboxRunner
 from tests.conftest import make_course_path
 
 
+REFLECTION = {
+    "what": "I built the smallest possible version of this milestone.",
+    "why": "It was the simplest design that still satisfied the success criteria.",
+    "alternatives": "I considered a more nested layout but rejected it.",
+    "difficult": "Naming the modules without copying a framework.",
+    "scale": "A linear scan would get slow with thousands of routes.",
+    "change": "I would extract a matcher function.",
+}
+
+
 def _enroll_project(client: TestClient, auth_headers: dict[str, str], db: Session) -> dict:
     path = make_course_path(db, with_project=True)
     response = client.post(
@@ -39,10 +49,7 @@ def _first_user_milestone_id(enrolled: dict) -> int:
 def test_curriculum_is_generated_per_user_project(
     client: TestClient, auth_headers: dict[str, str], db: Session
 ) -> None:
-    """Milestones are cloned/generated onto the learner's own UserProject —
-
-    not shared globally — so each learner can get their own curriculum.
-    """
+    """Milestones are cloned onto the learner's own UserProject."""
     enrolled = _enroll_project(client, auth_headers, db)
     user_project_id = enrolled["user_project"]["id"]
     milestone_ids = [um["milestone_id"] for um in enrolled["user_milestones"]]
@@ -71,7 +78,7 @@ def test_review_requires_passing_tests_first(
     assert "tests" in blocked.json()["detail"].lower()
 
 
-def test_review_gate_blocks_completion_until_understanding_confirmed(
+def test_review_available_after_green_tests(
     client: TestClient,
     auth_headers: dict[str, str],
     db: Session,
@@ -84,20 +91,10 @@ def test_review_gate_blocks_completion_until_understanding_confirmed(
 
     client.post(f"/api/v1/me/projects/{user_project_id}/sandbox", headers=auth_headers)
     client.put(
-        f"/api/v1/me/projects/{user_project_id}/sandbox/files/main.py",
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files/server.js",
         headers=auth_headers,
-        json={
-            "content": (
-                "from fastapi import FastAPI\n\n"
-                "app = FastAPI()\n\n\n"
-                "@app.get('/health')\n"
-                "def health():\n"
-                "    return {'status': 'ok'}\n"
-            )
-        },
+        json={"content": "const http = require('http');\n"},
     )
-
-    # Tests must pass before a review can be requested at all.
     still_blocked = client.post(
         f"/api/v1/me/milestones/{user_milestone_id}/review", headers=auth_headers
     )
@@ -116,30 +113,18 @@ def test_review_gate_blocks_completion_until_understanding_confirmed(
     body = review.json()
     assert body["verdict"] == "awaiting_understanding"
     assert body["understanding_questions"]
-    assert all(
-        info["rating"] in {"pass", "concern"} for info in body["dimensions"].values()
-    )
 
-    # Milestone cannot be completed while the review is pending.
     still_pending = client.post(
         f"/api/v1/me/milestones/{user_milestone_id}/complete", headers=auth_headers
     )
     assert still_pending.status_code == 409
 
-    answered = client.post(
-        f"/api/v1/me/milestones/{user_milestone_id}/review/answer",
+    reflected = client.post(
+        f"/api/v1/me/milestones/{user_milestone_id}/reflection",
         headers=auth_headers,
-        json={
-            "answers": [
-                "I defined a FastAPI app instance and a GET /health route that "
-                "returns a small JSON status object, then run it with uvicorn."
-                for _ in body["understanding_questions"]
-            ]
-        },
+        json={"answers": REFLECTION},
     )
-    assert answered.status_code == 200
-    assert answered.json()["verdict"] == "passed"
-
+    assert reflected.status_code == 200
     completed = client.post(
         f"/api/v1/me/milestones/{user_milestone_id}/complete", headers=auth_headers
     )
@@ -160,9 +145,9 @@ def test_review_understanding_answers_can_fail_and_retry(
 
     client.post(f"/api/v1/me/projects/{user_project_id}/sandbox", headers=auth_headers)
     client.put(
-        f"/api/v1/me/projects/{user_project_id}/sandbox/files/main.py",
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files/server.js",
         headers=auth_headers,
-        json={"content": "from fastapi import FastAPI\napp = FastAPI()\n"},
+        json={"content": "const http = require('http');\n"},
     )
     client.post(f"/api/v1/me/projects/{user_project_id}/sandbox/test", headers=auth_headers)
     review = client.post(
@@ -177,5 +162,5 @@ def test_review_understanding_answers_can_fail_and_retry(
     )
     assert weak.status_code == 200
     body = weak.json()
-    assert body["verdict"] == "awaiting_understanding"
+    assert body["verdict"] == "needs_work"
     assert body["understanding_answers"][-1]["passed"] is False

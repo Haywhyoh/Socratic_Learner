@@ -100,6 +100,16 @@ def learner_milestones(user_project: UserProject) -> list[Milestone]:
     )
 
 
+def _existing_concept_ids(db: Session, candidate_ids: list[str]) -> list[str]:
+    if not candidate_ids:
+        return []
+    known = {
+        row[0]
+        for row in db.query(Concept.id).filter(Concept.id.in_(candidate_ids)).all()
+    }
+    return [cid for cid in candidate_ids if cid in known]
+
+
 def concept_ids_for_milestone(db: Session, milestone_id: int) -> list[str]:
     rows = (
         db.query(MilestoneConcept)
@@ -110,7 +120,7 @@ def concept_ids_for_milestone(db: Session, milestone_id: int) -> list[str]:
     if rows:
         return [row.concept_id for row in rows]
     milestone = db.get(Milestone, milestone_id)
-    return list((milestone.concepts if milestone else []) or [])
+    return _existing_concept_ids(db, list((milestone.concepts if milestone else []) or []))
 
 
 def all_project_concept_ids(db: Session, project_id: int) -> list[str]:

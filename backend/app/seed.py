@@ -209,6 +209,13 @@ def _ensure_project(
         print(f"Updated project definition: {title}")
 
     _sync_milestones(db, project)
+    others = (
+        db.query(Project)
+        .filter(Project.id != project.id, Project.is_active.is_(True))
+        .all()
+    )
+    for other in others:
+        other.is_active = False
     return project
 
 

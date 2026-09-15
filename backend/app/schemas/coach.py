@@ -204,6 +204,8 @@ class UnderstandingAnswerRead(BaseModel):
 
 
 class MilestoneReviewRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     user_milestone_id: int
     verdict: MilestoneReviewVerdict
