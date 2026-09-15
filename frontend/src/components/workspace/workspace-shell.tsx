@@ -31,6 +31,20 @@ import type {
 } from "@/lib/types";
 import { ApiError } from "@/lib/types";
 
+function milestoneReadyForReflection(
+  graph: GraphRead | null,
+  userMilestoneId: number | undefined,
+): boolean {
+  if (!graph || userMilestoneId == null) return false;
+  const gm = graph.milestones.find((m) => m.user_milestone_id === userMilestoneId);
+  if (!gm || gm.status === "completed") return false;
+  const concepts = gm.concepts ?? [];
+  if (concepts.length === 0) return false;
+  return concepts.every(
+    (concept) => concept.status === "mastered" || concept.status === "verified",
+  );
+}
+
 interface WorkspaceShellProps {
   enrollment: EnrollmentDetail;
   onEnrollmentChange: (e: EnrollmentDetail) => void;
@@ -407,8 +421,13 @@ export function WorkspaceShell({
               <p className="mt-2 text-xs text-stone-600">
                 Success: {milestoneDetail.success_criteria}
               </p>
-              {displayUm?.id === activeUm?.id && (
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {displayUm?.id === activeUm?.id &&
+                milestoneReadyForReflection(graph, displayUm?.id) && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-amber-600/90">
+                    Milestone reflection — close this out before moving on
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
                   {(
                     [
                       ["what", "What did you build?"],
@@ -430,6 +449,7 @@ export function WorkspaceShell({
                       />
                     </label>
                   ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -487,6 +507,7 @@ export function WorkspaceShell({
               initialQuestion={coachBoot.question}
               initialContract={coachBoot.contract}
               initialConcept={coachBoot.concept}
+              onGraphChange={setGraph}
             />
           </div>
         )}

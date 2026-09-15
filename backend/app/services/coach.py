@@ -41,17 +41,25 @@ from app.services import curriculum_graph
 from app.services import learning as learning_service
 
 
+def _looks_like_concept_id(value: str) -> bool:
+    cleaned = value.strip()
+    return bool(cleaned) and " " not in cleaned and len(cleaned) <= 100
+
+
 def _normalize_gap(value: Any) -> dict[str, Any] | None:
     if not value:
         return None
     if isinstance(value, dict) and value.get("concept"):
+        concept = str(value["concept"]).strip()
+        if not _looks_like_concept_id(concept):
+            return None
         try:
             confidence = float(value.get("confidence") or 0)
         except (TypeError, ValueError):
             confidence = 0.0
-        return {"concept": str(value["concept"]), "confidence": confidence}
-    if isinstance(value, str) and value.strip():
-        return {"concept": value.strip()[:120], "confidence": 0.0}
+        return {"concept": concept, "confidence": confidence}
+    if isinstance(value, str) and _looks_like_concept_id(value):
+        return {"concept": value.strip(), "confidence": 0.0}
     return None
 
 
