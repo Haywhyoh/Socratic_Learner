@@ -15,7 +15,12 @@ from app.models.sandbox import SandboxWorkspace, SandboxWorkspaceStatus
 from app.models.user import User
 from app.services import coach as coach_service
 from app.services import learning as learning_service
-from app.services.sandbox_runner import get_sandbox_runner, validate_argv
+from app.services.sandbox_runner import (
+    FS_MUTATING_BINARIES,
+    get_sandbox_runner,
+    resolve_run_argv,
+    validate_cwd,
+)
 
 _PYTEST_COUNTS_RE = re.compile(
     r"(?P<failed>\d+)\s+failed"
@@ -166,18 +171,33 @@ def delete_file(db: Session, user: User, user_project_id: int, relative: str) ->
 
 
 def run_command(
-    db: Session, user: User, user_project_id: int, argv: list[str]
+    db: Session,
+    user: User,
+    user_project_id: int,
+    *,
+    argv: list[str] | None = None,
+    command: str | None = None,
+    cwd: str | None = None,
 ) -> dict[str, Any]:
     _require_enabled()
     row = ensure_workspace(db, user, user_project_id)
     try:
-        safe_argv = validate_argv(argv)
+        safe_argv = resolve_run_argv(argv=argv, command=command)
+        safe_cwd = validate_cwd(cwd)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    if safe_cwd is not None:
+        cwd_path = workspace_path_for(user_project_id) / safe_cwd
+        if not cwd_path.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"cwd does not exist: {safe_cwd}",
+            )
+
     workspace = workspace_path_for(user_project_id)
     try:
-        result = get_sandbox_runner().run(workspace, safe_argv)
+        result = get_sandbox_runner().run(workspace, safe_argv, cwd=safe_cwd)
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -194,6 +214,8 @@ def run_command(
         "stderr": result.stderr[-50_000:],
         "timed_out": result.timed_out,
         "argv": safe_argv,
+        "cwd": safe_cwd,
+        "mutates_fs": safe_argv[0] in FS_MUTATING_BINARIES,
     }
 
 

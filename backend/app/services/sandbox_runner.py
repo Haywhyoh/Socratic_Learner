@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,37 @@ from typing import Protocol
 
 from app.core.config import settings
 
-ALLOWED_BINARIES = frozenset({"python", "python3", "pytest"})
+# Learner-facing tools available in the sandbox image (python:3.12-slim + requirements).
+# Keep this tight — no bash/sh/curl/wget/sudo.
+ALLOWED_BINARIES = frozenset(
+    {
+        "python",
+        "python3",
+        "pytest",
+        "uvicorn",
+        "pip",
+        "pip3",
+        "ls",
+        "mkdir",
+        "touch",
+        "cat",
+        "head",
+        "tail",
+        "pwd",
+        "rm",
+        "mv",
+        "cp",
+        "find",
+        "wc",
+        "echo",
+        "which",
+        "stat",
+        "tree",
+    }
+)
+
+# Commands that create/delete/rename files — frontend refreshes the tree after these.
+FS_MUTATING_BINARIES = frozenset({"mkdir", "touch", "rm", "mv", "cp"})
 
 
 @dataclass
@@ -21,7 +52,31 @@ class RunResult:
 
 
 class SandboxRunner(Protocol):
-    def run(self, workspace: Path, argv: list[str]) -> RunResult: ...
+    def run(
+        self,
+        workspace: Path,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+    ) -> RunResult: ...
+
+
+def validate_cwd(cwd: str | None) -> str | None:
+    """Normalize a workspace-relative cwd. Returns None for workspace root."""
+    if cwd is None:
+        return None
+    cleaned = cwd.strip().replace("\\", "/")
+    if not cleaned or cleaned in {".", "./", "/workspace", "workspace"}:
+        return None
+    cleaned = cleaned.lstrip("/")
+    if cleaned.startswith("workspace/"):
+        cleaned = cleaned[len("workspace/") :]
+    if not cleaned or cleaned in {".", ".."}:
+        return None
+    parts = Path(cleaned).parts
+    if ".." in parts or any(p == "" for p in parts):
+        raise ValueError("cwd path traversal is not allowed")
+    return Path(*parts).as_posix()
 
 
 def validate_argv(argv: list[str]) -> list[str]:
@@ -32,12 +87,49 @@ def validate_argv(argv: list[str]) -> list[str]:
     binary = Path(argv[0]).name
     if binary not in ALLOWED_BINARIES:
         raise ValueError(
-            f"command '{binary}' is not allowed; use one of: {', '.join(sorted(ALLOWED_BINARIES))}"
+            f"command '{binary}' is not allowed; use one of: "
+            f"{', '.join(sorted(ALLOWED_BINARIES))}"
         )
     for part in argv:
         if "\x00" in part:
             raise ValueError("argv contains null bytes")
     return [binary, *argv[1:]]
+
+
+def parse_command_line(command: str) -> list[str]:
+    """Split a shell-like line into argv. No pipes/redirects/subshells."""
+    line = command.strip()
+    if not line:
+        raise ValueError("command must not be empty")
+    if len(line) > 4_000:
+        raise ValueError("command too long")
+    try:
+        argv = shlex.split(line)
+    except ValueError as exc:
+        raise ValueError(f"could not parse command: {exc}") from exc
+    if not argv:
+        raise ValueError("command must not be empty")
+    # Soft block shell operators so learners get a clear error instead of odd argv.
+    for token in argv:
+        if token in {"|", "||", "&", "&&", ";", ">", ">>", "<", "$(", "`"}:
+            raise ValueError(
+                "shell operators are not supported — run one allowlisted command at a time"
+            )
+    return validate_argv(argv)
+
+
+def resolve_run_argv(
+    *,
+    argv: list[str] | None = None,
+    command: str | None = None,
+) -> list[str]:
+    if argv is not None and command is not None:
+        raise ValueError("provide either argv or command, not both")
+    if command is not None:
+        return parse_command_line(command)
+    if argv is not None:
+        return validate_argv(argv)
+    raise ValueError("provide argv or command")
 
 
 class DockerSandboxRunner:
@@ -75,10 +167,19 @@ class DockerSandboxRunner:
                 "  docker build -t socratic-sandbox-python:latest sandbox"
             ) from exc
 
-    def run(self, workspace: Path, argv: list[str]) -> RunResult:
+    def run(
+        self,
+        workspace: Path,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+    ) -> RunResult:
         from docker.errors import DockerException, ImageNotFound
 
         safe_argv = validate_argv(argv)
+        safe_cwd = validate_cwd(cwd)
+        working_dir = f"/workspace/{safe_cwd}" if safe_cwd else "/workspace"
+
         client = self._client()
         try:
             client.images.get(self.image)
@@ -103,7 +204,7 @@ class DockerSandboxRunner:
             container = client.containers.run(
                 self.image,
                 command=safe_argv,
-                working_dir="/workspace",
+                working_dir=working_dir,
                 volumes={str(workspace.resolve()): {"bind": "/workspace", "mode": "rw"}},
                 network_mode="none",
                 mem_limit=f"{self.memory_mb}m",
@@ -133,7 +234,11 @@ class DockerSandboxRunner:
             except Exception:
                 stdout = ""
             if timed_out and not stderr:
-                stderr = f"Execution timed out after {self.timeout_sec}s\n"
+                stderr = (
+                    f"Execution timed out after {self.timeout_sec}s "
+                    "(long-running servers are stopped automatically — "
+                    "use a short smoke command or Tests instead)\n"
+                )
         except RuntimeError:
             raise
         except Exception as exc:
@@ -158,13 +263,20 @@ class FakeSandboxRunner:
 
     def __init__(self, result: RunResult | None = None) -> None:
         self.result = result or RunResult(exit_code=0, stdout="", stderr="")
-        self.calls: list[tuple[Path, list[str]]] = []
+        self.calls: list[tuple[Path, list[str], str | None]] = []
         self.lock = threading.Lock()
 
-    def run(self, workspace: Path, argv: list[str]) -> RunResult:
+    def run(
+        self,
+        workspace: Path,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+    ) -> RunResult:
         safe_argv = validate_argv(argv)
+        safe_cwd = validate_cwd(cwd)
         with self.lock:
-            self.calls.append((workspace, safe_argv))
+            self.calls.append((workspace, safe_argv, safe_cwd))
         return self.result
 
 

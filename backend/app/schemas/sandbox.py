@@ -35,7 +35,15 @@ class SandboxFileWrite(BaseModel):
 
 
 class SandboxRunRequest(BaseModel):
-    argv: list[str] = Field(..., min_length=1, max_length=50)
+    """Run an allowlisted command. Prefer `command` for terminal input; `argv` for tools."""
+
+    argv: list[str] | None = Field(default=None, min_length=1, max_length=50)
+    command: str | None = Field(default=None, min_length=1, max_length=4_000)
+    cwd: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Workspace-relative working directory (e.g. 'app')",
+    )
 
 
 class SandboxRunResult(BaseModel):
@@ -44,6 +52,8 @@ class SandboxRunResult(BaseModel):
     stderr: str
     timed_out: bool = False
     argv: list[str]
+    cwd: str | None = None
+    mutates_fs: bool = False
 
 
 class SandboxTestResult(BaseModel):

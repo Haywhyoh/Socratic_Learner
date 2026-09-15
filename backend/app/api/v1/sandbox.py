@@ -104,7 +104,14 @@ def run_sandbox(
     current_user: User = Depends(get_current_user),
 ) -> SandboxRunResult:
     return SandboxRunResult.model_validate(
-        sandbox_service.run_command(db, current_user, user_project_id, payload.argv)
+        sandbox_service.run_command(
+            db,
+            current_user,
+            user_project_id,
+            argv=payload.argv,
+            command=payload.command,
+            cwd=payload.cwd,
+        )
     )
 
 
