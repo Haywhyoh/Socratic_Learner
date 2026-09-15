@@ -5,6 +5,12 @@ import os
 import re
 from typing import Protocol
 
+from app.agents.build_coach import (
+    build_steps_for_milestone,
+    enforce_single_build_step,
+    format_step_header,
+    resource_hint,
+)
 from app.agents.policies import (
     REVIEW_DIMENSIONS,
     fallback_card,
@@ -53,6 +59,9 @@ class CoachLLM(Protocol):
         instructions: str,
         constraints: list[str],
         success_criteria: str,
+        build_step_index: int = 0,
+        build_steps: list[str] | None = None,
+        resources: list[dict[str, str]] | None = None,
     ) -> str: ...
 
     def generate_curriculum(
@@ -130,11 +139,26 @@ class StubCoachLLM:
         instructions: str,
         constraints: list[str],
         success_criteria: str,
+        build_step_index: int = 0,
+        build_steps: list[str] | None = None,
+        resources: list[dict[str, str]] | None = None,
     ) -> str:
+        steps = build_steps or build_steps_for_milestone(instructions)
+        idx = max(0, min(build_step_index, max(len(steps) - 1, 0)))
+        current = steps[idx] if steps else "Create the smallest runnable scaffold"
+        total = max(len(steps), 1)
+        header = format_step_header(step_index=idx, total=total, task=current)
+        # Dependency / README steps: point at resources instead of dumping files.
+        lower_task = current.lower()
+        if any(k in lower_task for k in ("pyproject", "dependenc", "requirement", "readme")):
+            return (
+                f"{header}\n"
+                + resource_hint(resources or [], topic=current)
+            )
         return guidance_reply(
-            message=message,
+            message=f"{message}\n(Focus only on: {current})",
             milestone_title=milestone_title,
-            instructions=instructions,
+            instructions=f"1. {current}",
             constraints=constraints,
             success_criteria=success_criteria,
             project_title=project_title,
@@ -285,33 +309,52 @@ class LangChainCoachLLM:
         instructions: str,
         constraints: list[str],
         success_criteria: str,
+        build_step_index: int = 0,
+        build_steps: list[str] | None = None,
+        resources: list[dict[str, str]] | None = None,
     ) -> str:
+        steps = build_steps or build_steps_for_milestone(instructions)
+        idx = max(0, min(build_step_index, max(len(steps) - 1, 0)))
+        current = steps[idx] if steps else "Create the smallest runnable scaffold"
+        total = max(len(steps), 1)
+        header = format_step_header(step_index=idx, total=total, task=current)
+        resource_lines = []
+        for item in (resources or [])[:3]:
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if title and url:
+                resource_lines.append(f"- {title}: {url}")
+        resource_block = "\n".join(resource_lines) or "- FastAPI docs: https://fastapi.tiangolo.com/"
         prompt = (
-            "You are a senior engineer mentoring a junior on a learning platform. "
-            "Answer THEIR specific question helpfully and concretely. "
-            "You MAY give short terminal commands (mkdir, touch, uvicorn import path). "
-            "You must NOT paste a full FastAPI application, multi-file solution, or long Python source. "
-            "If they already chose a package/project name, use that name — do not re-ask them to pick names. "
-            "Do not repeat a canned lecture about 'clean layout'. "
-            "Keep the reply under ~8 short sentences or a small command block + 2 sentences. "
-            "End with at most one follow-up question if useful.\n\n"
+            "You are a senior engineer mentoring a beginner ONE STEP AT A TIME.\n"
+            "Hard rules:\n"
+            f"- ONLY help with this current step ({idx + 1} of {total}): {current}\n"
+            "- Do NOT mention later steps, databases, CRUD, auth, or 'what's next'.\n"
+            "- Give clear beginner instructions for THIS step only.\n"
+            "- You MAY give exact terminal commands (mkdir, touch, uvicorn).\n"
+            "- For dependency files (pyproject/requirements) or README: do NOT paste a full file. "
+            "Tell them what fields/sections to include and point them at the resources below.\n"
+            "- You MAY show one tiny /health FastAPI example (under 12 lines) only if this step needs it.\n"
+            "- Never paste a multi-file app or long solution.\n"
+            "- End by asking them to reply **done** (or paste terminal output) before the next step.\n\n"
             f"Project: {project_title or 'learner project'}\n"
             f"Milestone: {milestone_title or 'current'}\n"
-            f"Milestone tasks / instructions:\n{instructions or '(none)'}\n"
+            f"Current step header: {header}\n"
             f"Constraints: {', '.join(constraints) or 'n/a'}\n"
-            f"Success criteria: {success_criteria or 'n/a'}\n"
+            f"Overall success criteria (do not jump ahead): {success_criteria or 'n/a'}\n"
+            f"Recommended resources:\n{resource_block}\n"
             f"Learner message: {message}\n"
         )
         try:
             raw = self._invoke(prompt).strip()
             if raw:
-                return raw
+                return enforce_single_build_step(f"{header}\n\n{raw}")
         except Exception:
             pass
         return guidance_reply(
-            message=message,
+            message=f"{message}\n(Focus only on: {current})",
             milestone_title=milestone_title,
-            instructions=instructions,
+            instructions=f"1. {current}",
             constraints=constraints,
             success_criteria=success_criteria,
             project_title=project_title,

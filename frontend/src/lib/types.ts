@@ -176,8 +176,9 @@ export interface LearnerStateRead {
   failed_at: Record<string, unknown>[];
   can_explain: string[];
   can_reproduce: boolean;
-  help_received: number;
+    help_received: number;
   questions_complete: boolean;
+  build_step_index: number;
 }
 
 export interface CoachMessageResponse {

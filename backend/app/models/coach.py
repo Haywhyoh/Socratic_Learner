@@ -102,6 +102,7 @@ class LearnerState(Base):
     can_explain: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     can_reproduce: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     help_received: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    build_step_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

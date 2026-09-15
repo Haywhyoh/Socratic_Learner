@@ -78,6 +78,8 @@ class CoachState(TypedDict, total=False):
     answer_status: str | None
     push_back: str | None
     questions_complete: bool
+    build_step_index: int
+    build_steps: list[str]
     hint_blocked_reason: NotRequired[str | None]
     policy_flags: list[str]
     eval_result: EvalResult

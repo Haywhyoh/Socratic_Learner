@@ -93,6 +93,76 @@ def test_policy_filter_strips_full_solutions_and_later_concepts() -> None:
     assert "ownership isolation" not in filtered.lower()
 
 
+def test_policy_keeps_beginner_instructions_when_trimming_dump() -> None:
+    reply = (
+        "First create the package.\n"
+        "mkdir -p scaffold\n"
+        "touch scaffold/main.py\n"
+        "Then add /health yourself.\n"
+        "```python\n"
+        + "\n".join(
+            [
+                "from fastapi import FastAPI, Depends, HTTPException",
+                "from sqlalchemy import create_engine",
+                "app = FastAPI()",
+                "@app.get('/items')",
+                "def list_items():",
+                "    return []",
+                "@app.post('/items')",
+                "def create_item():",
+                "    return {}",
+                "@app.delete('/items/{id}')",
+                "def delete_item():",
+                "    return {}",
+                "class Item:",
+                "    pass",
+                "engine = create_engine('sqlite://')",
+                "def get_db():",
+                "    pass",
+            ]
+        )
+        + "\n```\n"
+        "After that run uvicorn."
+    )
+    filtered, flags = filter_specialist_reply(
+        reply,
+        later_concepts=[],
+        allow_commands=True,
+        max_sentences=12,
+    )
+    assert "stripped_solution" in flags
+    assert "mkdir -p scaffold" in filtered
+    assert "First create the package" in filtered
+    assert "No full app dumps" not in filtered
+    assert "create_engine" not in filtered
+    assert "fastapi.tiangolo.com" in filtered.lower() or "yourself" in filtered.lower()
+
+
+def test_enforce_single_build_step_cuts_later_sections() -> None:
+    from app.agents.build_coach import enforce_single_build_step
+
+    dumped = (
+        "Step 1 of 4: create folders\n"
+        "mkdir -p app\n"
+        "## Step 2: Add dependencies\n"
+        "paste a whole pyproject\n"
+        "## Step 3: health\n"
+        "more stuff\n"
+    )
+    clipped = enforce_single_build_step(dumped)
+    assert "mkdir -p app" in clipped
+    assert "Step 2" not in clipped
+    assert "done" in clipped.lower()
+
+
+def test_build_step_advances_on_done() -> None:
+    from app.agents.build_coach import detect_build_step_advance
+
+    assert detect_build_step_advance("done")
+    assert detect_build_step_advance("I created the folders, what's next?")
+    assert not detect_build_step_advance("how do i create the folders?")
+
+
 def test_brevity_enforced() -> None:
     long = "One. Two. Three. Four."
     assert enforce_brevity(long, max_sentences=2) == "One. Two."
@@ -181,7 +251,8 @@ def test_evaluate_pass_then_push_back_then_go_build() -> None:
     )
     assert done["answer_status"] == "passed"
     assert done["questions_complete"] is True
-    assert "Go build" in done["reply"]
+    assert "Step 1" in done["reply"] or "step 1" in done["reply"].lower()
+    assert "Step 2" not in done["reply"]
 
 
 def test_guidance_intent_for_layout_question() -> None:
@@ -204,7 +275,9 @@ def test_guidance_intent_for_layout_question() -> None:
     )
     assert "mkdir" in reply.lower()
     assert "scaffold" in reply.lower()
+    assert "first thing" in reply.lower() or "mkdir -p" in reply.lower()
     assert "clean layout usually means" not in reply.lower()
+    assert "No full app dumps" not in reply
 
     graph = build_chat_graph(StubCoachLLM())
     result = graph.invoke(

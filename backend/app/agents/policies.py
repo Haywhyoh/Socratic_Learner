@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import re
 
+from app.agents.build_coach import replacement_for_stripped_dump
 from app.agents.state import (
     CardDraft,
     CatalogMilestone,
@@ -30,6 +31,7 @@ MAX_REVIEW_ATTEMPTS = 3
 """How many post-milestone review cycles before the coach notes remaining
 gaps and lets the learner proceed, rather than blocking indefinitely."""
 SOLUTION_FENCE_LINES = 8
+_MINI_EXAMPLE_LINES = 14
 _FENCE_RE = re.compile(r"```[\w+-]*\n(.*?)```", re.DOTALL)
 _ATTEMPT_MARKERS = (
     "i tried",
@@ -328,7 +330,6 @@ def guidance_reply(
     tasks = parse_instruction_tasks(instructions)
     title = milestone_title or "this milestone"
     success = success_criteria or "meet the milestone success criteria"
-    # Prefer an explicit package name the learner mentioned (quoted or after "named"/"called").
     pkg = "app"
     named = re.search(
         r"(?:named|called|package|project)\s+[\"']?([a-zA-Z_][\w]*)[\"']?",
@@ -337,39 +338,58 @@ def guidance_reply(
     )
     if named:
         pkg = named.group(1).lower()
-    elif re.search(r"\bscaffold\b", lower) and "fastapi" not in lower:
-        # Learner said they named something scaffold — use it as the package.
+    elif re.search(r"\bscaffold\b", lower):
         pkg = "scaffold"
 
-    if any(
-        word in lower
-        for word in (
+    beginner_first = any(
+        phrase in lower
+        for phrase in (
+            "first thing",
+            "first step",
+            "where do i start",
+            "what do i do",
+            "don't know",
+            "dont know",
+            "beginner",
+            "getting started",
+            "get started",
+            "clean project",
+            "create a project",
+            "create the api",
+            "scaffold",
+            "how do i",
+            "how to",
+            "next command",
+            "which command",
+            "what command",
             "command",
             "mkdir",
             "touch",
             "terminal",
-            "scaffold",
             "create",
-            "how do i",
-            "how to",
         )
-    ):
+    )
+    if beginner_first:
         return (
-            f"In the sandbox terminal, start with:\n"
+            f"First thing: create the package folders in the terminal (nothing fancy yet).\n"
             f"mkdir -p {pkg}\n"
             f"touch {pkg}/__init__.py {pkg}/main.py {pkg}/config.py\n"
-            f"Then open {pkg}/main.py and create a FastAPI `app` with GET /health. "
-            f"Success for '{title}': {success}."
+            f"Then open {pkg}/main.py in the editor and add a FastAPI app with GET /health "
+            f"returning {{\"status\": \"ok\"}}. "
+            f"After that, smoke-test with: uvicorn {pkg}.main:app --host 127.0.0.1 --port 8000 "
+            f"(it will time out here — that still means it started). "
+            f"Milestone '{title}' success: {success}."
         )
     if tasks:
         return (
-            f"You're on '{title}'. Next concrete step: {tasks[0]} "
-            "Tell me the exact blocker (command failed, import error, unsure which file) "
-            "and I'll answer that — not a generic lecture."
+            f"You're on '{title}'. Next concrete step: {tasks[0]}\n"
+            f"If you need the first commands: mkdir -p {pkg} && "
+            f"touch {pkg}/__init__.py {pkg}/main.py {pkg}/config.py\n"
+            "Tell me the exact error if a command fails."
         )
     return (
-        f"What exact step is blocked on '{title}'? "
-        "Name the command or file you're stuck on."
+        f"Start in the terminal with mkdir/touch for package `{pkg}`, "
+        f"then edit main.py for /health. Success for '{title}': {success}."
     )
 
 
@@ -427,42 +447,72 @@ def fallback_card_reply(cards: list[CardDraft]) -> str:
 def enforce_brevity(text: str, *, max_sentences: int = 2) -> str:
     """Keep coach replies abrupt: at most max_sentences.
 
-    Lines that look like shell commands are preserved even when sentence
-    splitting would otherwise truncate mid-block.
+    Multi-line instructional replies (commands / tiny examples) are kept intact.
     """
     cleaned = text.strip()
     if not cleaned:
         return cleaned
-    # Preserve multi-line command blocks (mkdir/touch/uvicorn examples).
-    if "\n" in cleaned and any(
-        line.strip().startswith(("mkdir", "touch", "python", "uvicorn", "pytest", "pip", "ls", "cd "))
-        or line.strip().startswith("```")
-        for line in cleaned.splitlines()
-    ):
+    if "\n" in cleaned:
         return cleaned
     collapsed = " ".join(cleaned.split())
     parts = re.split(r"(?<=[.!?])\s+", collapsed)
     return " ".join(parts[:max_sentences]).strip()
 
 
-def _strip_solution_fences(text: str, *, allow_commands: bool = False) -> tuple[str, bool]:
+def _looks_like_full_app(body: str) -> bool:
+    """True for multi-file / CRUD-sized dumps — not a tiny /health teaching snippet."""
+    line_count = body.count("\n") + 1
+    route_count = len(re.findall(r"@(?:app|router)\.(get|post|put|patch|delete)\b", body, re.I))
+    has_models = bool(re.search(r"\b(class \w+\(.*Base|SQLAlchemy|create_engine)\b", body))
+    has_crud = bool(
+        re.search(r"\b(Session|Depends|HTTPException|oauth2|JWT|password)\b", body, re.I)
+    )
+    if line_count > _MINI_EXAMPLE_LINES and (route_count >= 2 or has_models or has_crud):
+        return True
+    if line_count >= SOLUTION_FENCE_LINES * 2:
+        return True
+    if route_count >= 3:
+        return True
+    return False
+
+
+def _strip_solution_fences(
+    text: str,
+    *,
+    allow_mini_examples: bool = False,
+    resources: list[dict[str, str]] | None = None,
+) -> tuple[str, bool]:
+    """Remove oversized solution dumps, but keep surrounding instructions."""
     stripped = False
 
     def replacer(match: re.Match[str]) -> str:
         nonlocal stripped
         body = match.group(1)
         line_count = body.count("\n") + 1
-        looks_like_app = bool(
-            re.search(r"\b(def |class |FastAPI\(|APIRouter\(|@app\.|import fastapi)", body)
-        )
-        if allow_commands and line_count <= 8 and not looks_like_app:
-            return match.group(0)
-        if line_count >= SOLUTION_FENCE_LINES or looks_like_app:
-            stripped = True
-            return (
-                "[full solution removed — implement it yourself; "
-                "ask about the next command or design choice]"
+        lang = (match.group(0).split("\n", 1)[0] or "").lower()
+        is_shell = any(x in lang for x in ("bash", "sh", "shell", "zsh", "console")) or (
+            line_count <= 8
+            and all(
+                (not ln.strip())
+                or ln.strip().startswith(
+                    ("mkdir", "touch", "python", "uvicorn", "pytest", "pip", "ls", "cd ", "#")
+                )
+                for ln in body.splitlines()
             )
+        )
+        if is_shell:
+            return match.group(0)
+        if allow_mini_examples and line_count <= _MINI_EXAMPLE_LINES and not _looks_like_full_app(body):
+            # Tiny /health teaching snippet is OK; still block dependency-file dumps.
+            if "[project]" in body.lower() or "dependencies" in body.lower() and len(body) > 200:
+                stripped = True
+                return "\n" + replacement_for_stripped_dump(body, resources=resources) + "\n"
+            return match.group(0)
+        if _looks_like_full_app(body) or line_count >= SOLUTION_FENCE_LINES or (
+            "[project]" in body.lower() or (line_count >= 6 and "dependencies" in body.lower())
+        ):
+            stripped = True
+            return "\n" + replacement_for_stripped_dump(body, resources=resources) + "\n"
         return match.group(0)
 
     return _FENCE_RE.sub(replacer, text), stripped
@@ -475,19 +525,23 @@ def filter_specialist_reply(
     allow_code: bool = False,
     allow_commands: bool = False,
     max_sentences: int = 2,
+    resources: list[dict[str, str]] | None = None,
 ) -> tuple[str, list[str]]:
     flags: list[str] = []
     text = enforce_brevity(reply, max_sentences=max_sentences)
     if not allow_code:
-        text, stripped = _strip_solution_fences(text, allow_commands=allow_commands)
+        text, stripped = _strip_solution_fences(
+            text,
+            allow_mini_examples=allow_commands,
+            resources=resources,
+        )
         if stripped:
             flags.append("stripped_solution")
-            text = (
-                "No full app dumps. Ask about the next command or file decision instead."
-            )
         elif "```" in text and not allow_commands:
             flags.append("stripped_solution")
-            text = "No code dumps. Describe the approach; you write the files."
+            text, _ = _strip_solution_fences(
+                text, allow_mini_examples=False, resources=resources
+            )
     for concept in later_concepts:
         if concept and concept.lower() in text.lower():
             flags.append("blocked_later_concept")

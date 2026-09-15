@@ -149,14 +149,14 @@ export function CoachPanel({
 
   const suggestions = activeTask
     ? [
-        `What terminal commands should I run for task ${activeTask.index}?`,
-        "I hit an import error — what should I check?",
-        "How do I smoke-test /health with uvicorn here?",
+        `How do I do step/task ${activeTask.index}?`,
+        "I finished this step — done",
+        "I hit an error on this step",
       ]
     : [
-        "What commands create the FastAPI package scaffold?",
-        "I hit an import error — what should I check?",
-        "How do I smoke-test uvicorn in this sandbox?",
+        "How do I get started on the first step?",
+        "done",
+        "I hit an error — what should I check?",
       ];
 
   return (

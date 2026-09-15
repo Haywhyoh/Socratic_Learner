@@ -162,6 +162,7 @@ class LearnerStateRead(BaseModel):
     can_reproduce: bool = False
     help_received: int = 0
     questions_complete: bool = False
+    build_step_index: int = 0
 
 
 class CoachMessageResponse(BaseModel):

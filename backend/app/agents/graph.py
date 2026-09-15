@@ -4,6 +4,11 @@ from typing import Callable
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agents.build_coach import (
+    build_steps_for_milestone,
+    detect_build_step_advance,
+    enforce_single_build_step,
+)
 from app.agents.llm import CoachLLM, StubCoachLLM
 from app.agents.policies import (
     MAX_QUESTION_ATTEMPTS,
@@ -15,12 +20,35 @@ from app.agents.policies import (
     enforce_brevity,
     fallback_card_reply,
     filter_specialist_reply,
-    go_build_reply,
     later_milestone_concepts,
     next_hint_level,
     pose_question,
 )
 from app.agents.state import CoachState
+
+
+def _paced_build_reply(llm: CoachLLM, state: CoachState) -> tuple[str, int]:
+    """One milestone task at a time; advance only when the learner signals progress."""
+    steps = list(state.get("build_steps") or []) or build_steps_for_milestone(
+        state.get("milestone_instructions") or ""
+    )
+    idx = int(state.get("build_step_index") or 0)
+    message = state.get("learner_message") or ""
+    if detect_build_step_advance(message) and idx < max(len(steps) - 1, 0):
+        idx += 1
+    idx = max(0, min(idx, max(len(steps) - 1, 0)))
+    reply = llm.mentor_reply(
+        message=message,
+        project_title=state.get("project_title") or "",
+        milestone_title=state.get("milestone_title") or "",
+        instructions=state.get("milestone_instructions") or "",
+        constraints=list(state.get("constraints") or []),
+        success_criteria=state.get("success_criteria") or "",
+        build_step_index=idx,
+        build_steps=steps,
+        resources=list(state.get("resources") or []),
+    )
+    return enforce_single_build_step(reply), idx
 
 
 def assess_node(state: CoachState) -> CoachState:
@@ -76,17 +104,20 @@ def question_node(state: CoachState) -> CoachState:
     index = int(state.get("question_index") or 0)
     question = pose_question(questions, index)
     if question is None:
-        reply = go_build_reply(
-            constraints=list(state.get("constraints") or []),
-            success_criteria=state.get("success_criteria") or "",
-            instructions=state.get("milestone_instructions") or "",
-            milestone_title=state.get("milestone_title") or "",
+        steps = build_steps_for_milestone(state.get("milestone_instructions") or "")
+        task = steps[0] if steps else "Create the smallest runnable scaffold"
+        reply = (
+            f"Checkpoints done. Step 1 of {max(len(steps), 1)}: {task}\n"
+            "Ask me how to do this step if you need commands — "
+            "I'll only cover this step until you reply **done**."
         )
         return {
             "reply": reply,
             "current_question": None,
             "questions_complete": True,
             "answer_status": "complete",
+            "build_step_index": 0,
+            "build_steps": steps,
         }
     return {
         "reply": question,
@@ -117,20 +148,13 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
         index = int(state.get("question_index") or 0)
         question = pose_question(questions, index)
         if question is None:
-            # Past checkpoints: real mentor reply to their question (LLM when configured).
-            reply = llm.mentor_reply(
-                message=state.get("learner_message") or "",
-                project_title=state.get("project_title") or "",
-                milestone_title=state.get("milestone_title") or "",
-                instructions=state.get("milestone_instructions") or "",
-                constraints=list(state.get("constraints") or []),
-                success_criteria=state.get("success_criteria") or "",
-            )
+            reply, step_idx = _paced_build_reply(llm, state)
             return {
                 "reply": reply,
                 "questions_complete": True,
                 "answer_status": "guidance",
                 "current_question": None,
+                "build_step_index": step_idx,
             }
         result = llm.evaluate_answer(
             question=question,
@@ -142,12 +166,18 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
             new_passed = int(state.get("questions_passed") or 0) + 1
             next_q = pose_question(questions, new_index)
             if next_q is None:
-                reply = go_build_reply(
-                    constraints=list(state.get("constraints") or []),
-                    success_criteria=state.get("success_criteria") or "",
-                    instructions=state.get("milestone_instructions") or "",
-                    milestone_title=state.get("milestone_title") or "",
-                )
+                # First build step only — do not dump the whole milestone.
+                boot_state = {
+                    **state,
+                    "learner_message": (
+                        "I finished the checkpoints. What is the first build step?"
+                    ),
+                    "build_step_index": 0,
+                    "build_steps": build_steps_for_milestone(
+                        state.get("milestone_instructions") or ""
+                    ),
+                }
+                reply, step_idx = _paced_build_reply(llm, boot_state)  # type: ignore[arg-type]
                 return {
                     "question_index": new_index,
                     "questions_passed": new_passed,
@@ -158,6 +188,7 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
                     "questions_complete": True,
                     "current_question": None,
                     "eval_result": result,
+                    "build_step_index": step_idx,
                 }
             return {
                 "question_index": new_index,
@@ -182,24 +213,28 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
                 "We'll revisit this in the milestone review."
             )
             if next_q is None:
-                build_reply = go_build_reply(
-                    constraints=list(state.get("constraints") or []),
-                    success_criteria=state.get("success_criteria") or "",
-                    instructions=state.get("milestone_instructions") or "",
-                    milestone_title=state.get("milestone_title") or "",
-                )
+                boot_state = {
+                    **state,
+                    "learner_message": "What is the first build step?",
+                    "build_step_index": 0,
+                    "build_steps": build_steps_for_milestone(
+                        state.get("milestone_instructions") or ""
+                    ),
+                }
+                build_reply, step_idx = _paced_build_reply(llm, boot_state)  # type: ignore[arg-type]
                 return {
                     "question_index": new_index,
                     "question_attempts": 0,
                     "gap_question": question,
                     "reply": enforce_brevity(
-                        f"{gap_note} {build_reply}", max_sentences=4
+                        f"{gap_note}\n\n{build_reply}", max_sentences=12
                     ),
                     "answer_status": "advanced_with_gap",
                     "push_back": None,
                     "questions_complete": True,
                     "current_question": None,
                     "eval_result": result,
+                    "build_step_index": step_idx,
                 }
             return {
                 "question_index": new_index,
@@ -229,18 +264,18 @@ def make_evaluate_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
 
 def make_guidance_node(llm: CoachLLM) -> Callable[[CoachState], CoachState]:
     def guidance_node(state: CoachState) -> CoachState:
-        reply = llm.mentor_reply(
-            message=state.get("learner_message") or "",
-            project_title=state.get("project_title") or "",
-            milestone_title=state.get("milestone_title") or "",
-            instructions=state.get("milestone_instructions") or "",
-            constraints=list(state.get("constraints") or []),
-            success_criteria=state.get("success_criteria") or "",
-        )
+        # During open checkpoints, still answer with paced build help but remind them.
+        reply, step_idx = _paced_build_reply(llm, state)
         question = state.get("current_question")
         if question:
-            reply = f"{reply}\n\nStill answer the checkpoint first: {question}"
-        return {"reply": reply, "answer_status": "guidance"}
+            reply = (
+                f"{reply}\n\nStill answer the checkpoint first: {question}"
+            )
+        return {
+            "reply": reply,
+            "answer_status": "guidance",
+            "build_step_index": step_idx,
+        }
 
     return guidance_node
 
@@ -298,6 +333,7 @@ def policy_node(state: CoachState) -> CoachState:
         allow_code=False,
         allow_commands=allow_commands,
         max_sentences=max_sentences,
+        resources=list(state.get("resources") or []),
     )
     catalog = state.get("catalog_milestones") or []
     milestone_id = state.get("milestone_id")
@@ -310,8 +346,11 @@ def policy_node(state: CoachState) -> CoachState:
             allow_code=False,
             allow_commands=allow_commands,
             max_sentences=max_sentences,
+            resources=list(state.get("resources") or []),
         )
         flags.extend(extra)
+    if status in {"guidance", "complete", "passed"}:
+        filtered = enforce_single_build_step(filtered)
     return {"reply": filtered, "policy_flags": flags}
 
 

@@ -5,12 +5,12 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
+from app.agents.build_coach import build_steps_for_milestone
 from app.agents.graph import build_chat_graph, build_start_graph
 from app.agents.llm import get_coach_llm
 from app.agents.policies import (
     MAX_REVIEW_ATTEMPTS,
     current_teach_concepts,
-    go_build_reply,
     message_looks_like_attempt,
 )
 from app.agents.state import CatalogMilestone, CoachState
@@ -205,6 +205,7 @@ def _get_or_create_learner_state(
             can_explain=[],
             can_reproduce=False,
             help_received=0,
+            build_step_index=0,
         )
         db.add(row)
         db.flush()
@@ -364,6 +365,7 @@ def _learner_state_payload(row: LearnerState, questions: list[str]) -> dict:
         "can_reproduce": row.can_reproduce,
         "help_received": row.help_received,
         "questions_complete": index >= len(questions),
+        "build_step_index": int(getattr(row, "build_step_index", 0) or 0),
     }
 
 
@@ -389,11 +391,16 @@ def start_coach(
             if learner_state.question_index < len(questions):
                 reply = questions[learner_state.question_index]
             else:
-                reply = go_build_reply(
-                    constraints=list(user_project.project.constraints or []),
-                    success_criteria=current.milestone.success_criteria or "",
-                    instructions=current.milestone.instructions or "",
-                    milestone_title=current.milestone.title,
+                steps = build_steps_for_milestone(
+                    current.milestone.instructions or ""
+                )
+                step_idx = int(getattr(learner_state, "build_step_index", 0) or 0)
+                step_idx = max(0, min(step_idx, max(len(steps) - 1, 0)))
+                task = steps[step_idx] if steps else "Create the smallest runnable scaffold"
+                reply = (
+                    f"Step {step_idx + 1} of {max(len(steps), 1)}: {task}\n"
+                    "Ask how to do this step for commands. "
+                    "Reply **done** when finished and I'll unlock the next step only."
                 )
         db.commit()
         return {
@@ -634,6 +641,10 @@ def post_message(
                 if 0 <= learner_state.question_index < len(questions)
                 else None
             ),
+            "build_step_index": int(getattr(learner_state, "build_step_index", 0) or 0),
+            "build_steps": build_steps_for_milestone(
+                current.milestone.instructions or ""
+            ),
         }
     )
     result = build_chat_graph(get_coach_llm()).invoke(state)
@@ -680,6 +691,9 @@ def post_message(
         failed = list(learner_state.failed_at or [])
         failed.append({"description": message[:200], "at": now})
         learner_state.failed_at = failed[-20:]
+
+    if result.get("build_step_index") is not None:
+        learner_state.build_step_index = int(result["build_step_index"])
 
     hint_level = None
     blocked = result.get("hint_blocked_reason")
