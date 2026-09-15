@@ -351,18 +351,23 @@ def enforce_brevity(text: str, *, max_sentences: int = 2) -> str:
 
 
 def _looks_like_full_app(body: str) -> bool:
-    """True for multi-file / CRUD-sized dumps — not a tiny /health teaching snippet."""
+    """True for a pasted solution / whole server — not a tiny teaching snippet."""
     line_count = body.count("\n") + 1
-    route_count = len(re.findall(r"@(?:app|router)\.(get|post|put|patch|delete)\b", body, re.I))
+    route_count = len(
+        re.findall(r"\b(?:app|router)\.(get|post|put|patch|delete|use)\b", body, re.I)
+    )
     has_models = bool(re.search(r"\b(class \w+\(.*Base|SQLAlchemy|create_engine)\b", body))
     has_crud = bool(
         re.search(r"\b(Session|Depends|HTTPException|oauth2|JWT|password)\b", body, re.I)
     )
-    if line_count > _MINI_EXAMPLE_LINES and (route_count >= 2 or has_models or has_crud):
+    js_server = bool(re.search(r"\bcreateServer\b", body) and re.search(r"\b\.listen\b", body))
+    if line_count > _MINI_EXAMPLE_LINES and (route_count >= 2 or has_models or has_crud or js_server):
         return True
     if line_count >= SOLUTION_FENCE_LINES * 2:
         return True
     if route_count >= 3:
+        return True
+    if js_server and route_count >= 1 and line_count > 10:
         return True
     return False
 
@@ -370,10 +375,13 @@ def _looks_like_full_app(body: str) -> bool:
 def _strip_solution_fences(
     text: str,
     *,
-    allow_mini_examples: bool = False,
+    allow_mini_examples: bool = True,
     resources: list[dict[str, str]] | None = None,
 ) -> tuple[str, bool]:
-    """Remove oversized solution dumps, but keep surrounding instructions."""
+    """Remove oversized solution dumps, but keep surrounding instructions.
+
+    Tiny fenced snippets (a handful of lines) are teaching examples and stay.
+    """
     stripped = False
 
     def replacer(match: re.Match[str]) -> str:
@@ -395,8 +403,9 @@ def _strip_solution_fences(
         if is_shell:
             return match.group(0)
         if allow_mini_examples and line_count <= _MINI_EXAMPLE_LINES and not _looks_like_full_app(body):
-            # Tiny /health teaching snippet is OK; still block dependency-file dumps.
-            if "[project]" in body.lower() or "dependencies" in body.lower() and len(body) > 200:
+            if "[project]" in body.lower() or (
+                "dependencies" in body.lower() and len(body) > 200
+            ):
                 stripped = True
                 return "\n" + replacement_for_stripped_dump(body, resources=resources) + "\n"
             return match.group(0)
@@ -416,24 +425,22 @@ def filter_specialist_reply(
     later_concepts: list[str],
     allow_code: bool = False,
     allow_commands: bool = False,
+    allow_mini_examples: bool = True,
     max_sentences: int = 2,
     resources: list[dict[str, str]] | None = None,
 ) -> tuple[str, list[str]]:
     flags: list[str] = []
     text = enforce_brevity(reply, max_sentences=max_sentences)
     if not allow_code:
+        # Commands (shell fences) always pass; teaching snippets pass when
+        # allow_mini_examples is on. Full solutions still get stripped.
         text, stripped = _strip_solution_fences(
             text,
-            allow_mini_examples=allow_commands,
+            allow_mini_examples=allow_mini_examples or allow_commands,
             resources=resources,
         )
         if stripped:
             flags.append("stripped_solution")
-        elif "```" in text and not allow_commands:
-            flags.append("stripped_solution")
-            text, _ = _strip_solution_fences(
-                text, allow_mini_examples=False, resources=resources
-            )
     for concept in later_concepts:
         if concept and concept.lower() in text.lower():
             flags.append("blocked_later_concept")

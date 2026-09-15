@@ -26,7 +26,7 @@ def test_hint_levels_cannot_skip_without_effort() -> None:
 
 
 def test_policy_filter_strips_full_solutions_and_later_concepts() -> None:
-    dump = "Here you go:\n```javascript\n" + "\n".join(f"line{i} = {i}" for i in range(10)) + "\n```\n"
+    dump = "Here you go:\n```javascript\n" + "\n".join(f"line{i} = {i}" for i in range(20)) + "\n```\n"
     filtered, flags = filter_specialist_reply(dump, later_concepts=["middleware.pipeline"])
     assert "stripped_solution" in flags
     assert "line3 = 3" not in filtered
@@ -34,6 +34,23 @@ def test_policy_filter_strips_full_solutions_and_later_concepts() -> None:
     filtered, flags = filter_specialist_reply(leaked, later_concepts=["middleware.pipeline"])
     assert "blocked_later_concept" in flags
     assert "middleware.pipeline" not in filtered.lower()
+
+
+def test_policy_filter_keeps_small_teaching_snippets() -> None:
+    snippet = (
+        "A function is a value, so you can pass it:\n"
+        "```javascript\n"
+        "function later(cb) {\n"
+        "  cb('done');\n"
+        "}\n"
+        "later((msg) => console.log(msg));\n"
+        "```\n"
+        "Who calls `cb`, and when?"
+    )
+    filtered, flags = filter_specialist_reply(snippet, later_concepts=["middleware.pipeline"])
+    assert "stripped_solution" not in flags
+    assert "function later(cb)" in filtered
+    assert "console.log" in filtered
 
 
 def test_brevity_enforced() -> None:

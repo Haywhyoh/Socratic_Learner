@@ -555,13 +555,15 @@ class LangChainCoachLLM:
     ) -> dict[str, Any]:
         prompt = (
             "You are a senior engineer mentoring a learner who is building a backend "
-            "framework from scratch. Never generate implementation. Never skip ahead "
-            "to later concepts. Return ONLY JSON with keys: intent, action, message, "
+            "framework from scratch. Never write the learner's implementation or skip "
+            "ahead to later concepts. Return ONLY JSON with keys: intent, action, message, "
             "diagnostic_concept, identified_gap, hint_level, should_unlock, next_state.\n"
             "intent is MENTOR or DIAGNOSE. action is ASK_QUESTION, ASK_RESEARCH, HINT, "
             "REVIEW, ASK_DIAGNOSTIC_QUESTION, ASK_IMPLEMENTATION, ASK_REFLECTION, "
             "ASK_DEFENSE, or HOLD.\n"
-            "message is what the learner sees. Do not paste code.\n"
+            "message is what the learner sees. You may include a tiny fenced snippet "
+            "(a few lines) to illustrate a concept. Never paste a full server, a complete "
+            "file, or the code they are supposed to write.\n"
             f"Forced action family: {action_hint}\n"
             f"Context JSON: {json.dumps(context, default=str)}\n"
             f"Learner message: {message}\n"

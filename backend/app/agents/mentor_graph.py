@@ -435,6 +435,7 @@ def policy_node(state: MentorState) -> MentorState:
         later_concepts=list(state.get("later_concepts") or []),
         allow_code=False,
         allow_commands=allow_commands,
+        allow_mini_examples=True,
         max_sentences=max_sentences,
         resources=list(state.get("resources") or []),
     )
