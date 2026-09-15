@@ -155,12 +155,26 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
         db.add(project)
         db.flush()
         for index, title in enumerate(["Scaffold", "CRUD", "Auth"], start=1):
+            if title == "Scaffold":
+                instructions = (
+                    "What to do:\n"
+                    "1. Create a clean project layout (app package, settings, entrypoint).\n"
+                    "2. Add a GET /health endpoint that returns JSON like {\"status\": \"ok\"}.\n"
+                    "3. Wire dependency management and a README with run steps.\n"
+                    "4. Confirm uvicorn starts locally without import errors."
+                )
+            else:
+                instructions = (
+                    f"What to do:\n"
+                    f"1. Implement the core of {title}.\n"
+                    f"2. Add tests that prove {title} works.\n"
+                )
             db.add(
                 Milestone(
                     project_id=project.id,
                     title=title,
                     description=f"{title} description",
-                    instructions=f"{title} instructions",
+                    instructions=instructions,
                     order_index=index,
                     success_criteria=f"{title} done",
                     concepts=[title.lower()],

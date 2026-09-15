@@ -182,3 +182,46 @@ def test_evaluate_pass_then_push_back_then_go_build() -> None:
     assert done["answer_status"] == "passed"
     assert done["questions_complete"] is True
     assert "Go build" in done["reply"]
+
+
+def test_guidance_intent_for_layout_question() -> None:
+    from app.agents.policies import classify_intent, guidance_reply, parse_instruction_tasks
+
+    assert classify_intent("how do i create a clean layout for this project") == "guidance"
+    assert classify_intent("I am stuck — please give me a hint") == "hint"
+    instructions = (
+        "What to do:\n"
+        "1. Create a clean project layout (app package, settings, entrypoint).\n"
+        "2. Add a GET /health endpoint.\n"
+    )
+    assert len(parse_instruction_tasks(instructions)) == 2
+    reply = guidance_reply(
+        message="how do i create a clean layout",
+        milestone_title="Scaffold the API",
+        instructions=instructions,
+        constraints=["No frontend UI"],
+        success_criteria="GET /health returns 200",
+    )
+    assert "package" in reply.lower()
+    assert "```" not in reply
+
+    graph = build_chat_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "how do i create a clean layout for this project",
+            "milestone_title": "Scaffold the API",
+            "milestone_instructions": instructions,
+            "constraints": ["No frontend UI"],
+            "success_criteria": "GET /health returns 200",
+            "milestone_questions": [],
+            "question_index": 0,
+            "questions_passed": 0,
+            "current_concepts": ["layout"],
+            "hint_level": -1,
+            "effort": {},
+            "cards": [],
+        }
+    )
+    assert result["answer_status"] == "guidance"
+    assert "package" in result["reply"].lower()
+    assert "```" not in result["reply"]

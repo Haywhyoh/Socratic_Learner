@@ -18,7 +18,11 @@ import {
   type SandboxTerminalHandle,
 } from "@/components/workspace/sandbox-terminal";
 import { api } from "@/lib/api";
-import { getActiveUserMilestone } from "@/lib/milestones";
+import {
+  getActiveUserMilestone,
+  parseMilestoneTasks,
+  type MilestoneTask,
+} from "@/lib/milestones";
 import type {
   EnrollmentDetail,
   SandboxFileEntry,
@@ -43,12 +47,17 @@ export function WorkspaceShell({
   const [selectedUm, setSelectedUm] = useState<UserMilestoneRead | null>(
     activeUm,
   );
+  const [activeTask, setActiveTask] = useState<MilestoneTask | null>(() => {
+    const tasks = parseMilestoneTasks(activeUm?.milestone?.instructions);
+    return tasks[0] ?? null;
+  });
   const [files, setFiles] = useState<SandboxFileEntry[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [coachReady, setCoachReady] = useState(false);
+  const [questionsComplete, setQuestionsComplete] = useState(false);
   const [coachBoot, setCoachBoot] = useState<{
     reply: string | null;
     question: string | null;
@@ -112,6 +121,10 @@ export function WorkspaceShell({
           question: coach.current_question,
           cards: coach.cards,
         });
+        setQuestionsComplete(
+          Boolean(coach.learner_state?.questions_complete) ||
+            !coach.current_question,
+        );
         setCoachReady(true);
         const py = listed?.find((f) => f.path === "main.py" && !f.is_dir);
         const first =
@@ -287,19 +300,33 @@ export function WorkspaceShell({
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[240px_1fr_340px]">
+      <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr_360px]">
         <MilestoneRail
           userMilestones={userMilestones}
           selectedId={displayUm?.id ?? null}
-          onSelect={setSelectedUm}
+          activeTaskId={activeTask?.id ?? null}
+          onSelect={(um) => {
+            setSelectedUm(um);
+            const tasks = parseMilestoneTasks(um.milestone?.instructions);
+            setActiveTask(tasks[0] ?? null);
+          }}
+          onSelectTask={setActiveTask}
         />
 
         <div className="flex min-w-0 flex-col">
           {milestoneDetail && (
-            <div className="max-h-28 shrink-0 overflow-y-auto border-b border-stone-800 bg-stone-900/30 px-4 py-3 text-sm">
+            <div className="shrink-0 border-b border-stone-800 bg-stone-900/30 px-4 py-3 text-sm">
               <p className="font-medium text-stone-200">{milestoneDetail.title}</p>
-              <p className="mt-1 whitespace-pre-wrap text-stone-500">
-                {milestoneDetail.instructions}
+              {activeTask ? (
+                <p className="mt-1 text-stone-400">
+                  <span className="text-amber-500/90">Task {activeTask.index}:</span>{" "}
+                  {activeTask.text}
+                </p>
+              ) : (
+                <p className="mt-1 text-stone-500">{milestoneDetail.description}</p>
+              )}
+              <p className="mt-2 text-xs text-stone-600">
+                Success: {milestoneDetail.success_criteria}
               </p>
             </div>
           )}
@@ -362,6 +389,9 @@ export function WorkspaceShell({
           <CoachPanel
             userProjectId={userProjectId}
             userMilestoneId={activeUm?.id ?? null}
+            milestoneTitle={displayUm?.milestone?.title}
+            activeTask={activeTask}
+            questionsComplete={questionsComplete}
             initialReply={coachBoot.reply}
             initialQuestion={coachBoot.question}
             initialCards={coachBoot.cards}

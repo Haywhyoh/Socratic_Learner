@@ -144,7 +144,7 @@ export interface ConceptCardRead {
 
 export interface MentorTurnRead {
   id: number;
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tutor";
   content: string;
   created_at: string;
 }
