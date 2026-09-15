@@ -302,6 +302,16 @@ export interface MilestoneReviewRead {
   updated_at: string;
 }
 
+export interface ProjectDefenseRead {
+  id: number;
+  user_project_id: number;
+  questions: string[];
+  answers: unknown[];
+  verdict: string;
+  summary: string;
+  attempts: number;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

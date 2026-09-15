@@ -2,7 +2,6 @@ import { clearToken, getToken } from "./auth-token";
 import type {
   CoachMessageResponse,
   CoachStartResponse,
-  ConceptRead,
   CourseOptionRead,
   CourseRead,
   EnrollmentCreate,
@@ -10,6 +9,7 @@ import type {
   EnrollmentRead,
   GraphRead,
   MilestoneReviewRead,
+  ProjectDefenseRead,
   SandboxFileEntry,
   SandboxRunResult,
   SandboxTestResult,
@@ -211,12 +211,6 @@ export const api = {
     );
   },
 
-  listCards(userMilestoneId: number) {
-    return request<ConceptRead[]>(
-      `/api/v1/me/milestones/${userMilestoneId}/cards`,
-    );
-  },
-
   getLearnerState(userProjectId: number) {
     return request<import("./types").LearnerStateRead>(
       `/api/v1/me/projects/${userProjectId}/state`,
@@ -286,16 +280,22 @@ export const api = {
   },
 
   startDefense(userProjectId: number) {
-    return request(`/api/v1/me/projects/${userProjectId}/defense/start`, {
-      method: "POST",
-    });
+    return request<ProjectDefenseRead>(
+      `/api/v1/me/projects/${userProjectId}/defense/start`,
+      {
+        method: "POST",
+      },
+    );
   },
 
   answerDefense(userProjectId: number, answers: string[]) {
-    return request(`/api/v1/me/projects/${userProjectId}/defense/answer`, {
-      method: "POST",
-      body: { answers },
-    });
+    return request<ProjectDefenseRead>(
+      `/api/v1/me/projects/${userProjectId}/defense/answer`,
+      {
+        method: "POST",
+        body: { answers },
+      },
+    );
   },
 
   listRetrievalChecks(userProjectId: number) {

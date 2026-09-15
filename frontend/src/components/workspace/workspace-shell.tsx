@@ -359,7 +359,7 @@ export function WorkspaceShell({
                     try {
                       const defense = await api.startDefense(userProjectId);
                       terminalRef.current?.echo(
-                        `Defense started.\n${(defense.questions as string[]).map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
+                        `Defense started.\n${defense.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
                       );
                     } catch (e) {
                       terminalRef.current?.echo(
