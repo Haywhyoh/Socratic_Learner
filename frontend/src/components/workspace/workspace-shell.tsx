@@ -123,6 +123,35 @@ export function WorkspaceShell({
     }
   }, [userProjectId, activeFile, editorContent]);
 
+  const createFile = useCallback(
+    async (path: string) => {
+      if (!userProjectId) return;
+      if (dirty && activeFile) await saveFile();
+      await api.writeSandboxFile(userProjectId, path, "");
+      await refreshFiles();
+      terminalRef.current?.echo(`created ${path}`);
+      await loadFile(path);
+    },
+    [userProjectId, dirty, activeFile, saveFile, refreshFiles, loadFile],
+  );
+
+  const createFolder = useCallback(
+    async (path: string) => {
+      if (!userProjectId) return;
+      const result = await api.runSandbox(userProjectId, {
+        argv: ["mkdir", "-p", path],
+      });
+      if (result.exit_code !== 0) {
+        const detail =
+          (result.stderr || result.stdout || "mkdir failed").trim() ||
+          "mkdir failed";
+        throw new Error(detail);
+      }
+      await refreshFiles();
+      terminalRef.current?.echo(`created folder ${path}`);
+    },
+    [userProjectId, refreshFiles],
+  );
   useEffect(() => {
     if (!userProjectId) return;
     let cancelled = false;
@@ -457,13 +486,13 @@ export function WorkspaceShell({
 
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <aside className="w-52 shrink-0 overflow-y-auto border-r border-stone-800 bg-stone-950 p-2">
-              <p className="px-2 py-1 text-xs font-medium uppercase text-stone-600">
-                Files
-              </p>
               <FileTree
                 entries={files}
                 activePath={activeFile}
+                busy={busy !== null}
                 onSelectFile={(path) => void loadFile(path)}
+                onCreateFile={createFile}
+                onCreateFolder={createFolder}
               />
             </aside>
 
