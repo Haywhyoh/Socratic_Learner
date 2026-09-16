@@ -1,0 +1,116 @@
+name: Deploy to server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: haywhyoh
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+            image: socratic-learner-api
+          - name: web
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            image: socratic-learner-web
+          - name: sandbox-node
+            context: ./backend/sandbox
+            dockerfile: ./backend/sandbox/Dockerfile
+            image: socratic-sandbox-node
+          - name: sandbox-python
+            context: ./backend/sandbox
+            dockerfile: ./backend/sandbox/Dockerfile.python
+            image: socratic-sandbox-python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}"
+          SHA_TAG="${GITHUB_SHA::7}"
+          echo "tags=${IMAGE}:latest,${IMAGE}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          build-args: ${{ matrix.name == 'web' && format('NEXT_PUBLIC_API_URL={0}', vars.NEXT_PUBLIC_API_URL || 'https://noslopapi.codemygig.com') || '' }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          OWNER: ${{ env.OWNER }}
+          SHA_TAG: ${{ github.sha }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: deploy
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          envs: GHCR_TOKEN,GHCR_USER,OWNER,SHA_TAG
+          script: |
+            set -euo pipefail
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            cd "${{ secrets.APP_PATH }}"
+            git -c http.extraheader="AUTHORIZATION: bearer ${GHCR_TOKEN}" fetch https://github.com/${{ github.repository }}.git main
+            git reset --hard FETCH_HEAD
+
+            SHORT_SHA="${SHA_TAG:0:7}"
+            export API_IMAGE="ghcr.io/${OWNER}/socratic-learner-api:${SHORT_SHA}"
+            export WEB_IMAGE="ghcr.io/${OWNER}/socratic-learner-web:${SHORT_SHA}"
+
+            # Retag sandbox images to the local names the API / seed data expect.
+            docker pull "ghcr.io/${OWNER}/socratic-sandbox-node:${SHORT_SHA}"
+            docker pull "ghcr.io/${OWNER}/socratic-sandbox-python:${SHORT_SHA}"
+            docker tag "ghcr.io/${OWNER}/socratic-sandbox-node:${SHORT_SHA}" socratic-sandbox-node:latest
+            docker tag "ghcr.io/${OWNER}/socratic-sandbox-python:${SHORT_SHA}" socratic-sandbox-python:latest
+
+            docker compose pull api web
+            docker compose up -d --pull never
+            docker image prune -f
+            docker logout ghcr.io

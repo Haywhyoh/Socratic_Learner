@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -115,12 +116,19 @@ def ensure_workspace(db: Session, user: User, user_project_id: int) -> SandboxWo
             status=SandboxWorkspaceStatus.ready,
         )
         db.add(row)
-        db.commit()
-        db.refresh(row)
+        try:
+            db.commit()
+            db.refresh(row)
+        except IntegrityError:
+            db.rollback()
+            row = (
+                db.query(SandboxWorkspace)
+                .filter(SandboxWorkspace.user_project_id == user_project.id)
+                .first()
+            )
+            if row is None:
+                raise
     return row
-
-
-def list_files(db: Session, user: User, user_project_id: int) -> list[dict[str, Any]]:
     ensure_workspace(db, user, user_project_id)
     root = workspace_path_for(user_project_id).resolve()
     entries: list[dict[str, Any]] = []

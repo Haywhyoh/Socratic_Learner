@@ -108,6 +108,13 @@ def test_sandbox_init_and_files(
     assert "README.md" in paths
     assert "tests" not in paths
 
+    again = client.post(
+        f"/api/v1/me/projects/{user_project_id}/sandbox",
+        headers=auth_headers,
+    )
+    assert again.status_code == 200
+    assert again.json()["user_project_id"] == user_project_id
+
 
 def test_sandbox_path_traversal_rejected(
     client: TestClient,

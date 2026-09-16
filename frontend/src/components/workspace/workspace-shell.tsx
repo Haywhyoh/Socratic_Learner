@@ -229,7 +229,11 @@ export function WorkspaceShell({
     async function boot() {
       setBusy("init");
       try {
-        await api.initSandbox(userProjectId!);
+        try {
+          await api.initSandbox(userProjectId!);
+        } catch {
+          /* Strict Mode may already have created the workspace */
+        }
         const listed = await refreshFiles();
         const coach = await api.coachStart(userProjectId!);
         if (cancelled) return;
