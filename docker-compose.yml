@@ -32,10 +32,12 @@ services:
     env_file:
       - .env
     environment:
-      SANDBOX_WORKSPACES_ROOT: /app/data/workspaces
+      # Must be a real host path: sandbox containers are started via docker.sock,
+      # so bind mounts resolve on the host, not inside this API container.
+      SANDBOX_WORKSPACES_ROOT: ${SANDBOX_WORKSPACES_ROOT:-/var/www/noslop/data/workspaces}
       SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
     volumes:
-      - workspace_data:/app/data/workspaces
+      - ${SANDBOX_WORKSPACES_ROOT:-/var/www/noslop/data/workspaces}:${SANDBOX_WORKSPACES_ROOT:-/var/www/noslop/data/workspaces}
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:${API_PORT:-8010}:8000"
@@ -57,4 +59,3 @@ services:
 
 volumes:
   postgres_data:
-  workspace_data:
