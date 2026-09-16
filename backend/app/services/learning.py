@@ -328,6 +328,9 @@ def complete_user_milestone(
 
     user_milestone.status = UserMilestoneStatus.completed
     user_milestone.completed_at = datetime.now(UTC)
+    from app.services.coach import archive_mentor_sessions
+
+    archive_mentor_sessions(db, [user_milestone.id])
 
     user_project = user_milestone.user_project
     if user_project.status == UserProjectStatus.assigned:
@@ -381,6 +384,9 @@ def restart_user_milestone(db: Session, user: User, user_milestone_id: int) -> U
             MilestoneReview.user_milestone_id.in_(reset_ids)
         ).delete(synchronize_session=False)
         curriculum_graph.reset_from_milestone(db, user_project, restart_from)
+        from app.services.coach import archive_mentor_sessions
+
+        archive_mentor_sessions(db, reset_ids)
 
     completed_count = sum(
         1 for um in user_project.user_milestones if um.status == UserMilestoneStatus.completed

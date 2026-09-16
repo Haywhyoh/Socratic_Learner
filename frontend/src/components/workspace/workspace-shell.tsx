@@ -6,6 +6,7 @@ import {
   FlaskConical,
   Save,
   Loader2,
+  RotateCcw,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,8 @@ import {
 import type {
   EnrollmentDetail,
   GraphRead,
+  MentorSessionSummary,
+  MentorTurnRead,
   ProjectDetail,
   SandboxFileEntry,
   UserMilestoneRead,
@@ -82,7 +85,22 @@ export function WorkspaceShell({
     question: string | null;
     contract: import("@/lib/types").MentorContractRead | null;
     concept: import("@/lib/types").ConceptRead | null;
-  }>({ reply: null, question: null, contract: null, concept: null });
+    turns: MentorTurnRead[];
+    sessionId: number | null;
+    readOnly: boolean;
+    attempts: MentorSessionSummary[];
+    attempt: number | null;
+  }>({
+    reply: null,
+    question: null,
+    contract: null,
+    concept: null,
+    turns: [],
+    sessionId: null,
+    readOnly: false,
+    attempts: [],
+    attempt: null,
+  });
   const [briefOpen, setBriefOpen] = useState(false);
   const [brief, setBrief] = useState<ProjectDetail | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
@@ -168,6 +186,11 @@ export function WorkspaceShell({
           question: coach.current_question,
           contract: coach.contract,
           concept: coach.concept,
+          turns: coach.turns ?? [],
+          sessionId: coach.session_id,
+          readOnly: false,
+          attempts: [],
+          attempt: null,
         });
         if (coach.graph) setGraph(coach.graph);
         else {
@@ -197,6 +220,52 @@ export function WorkspaceShell({
       cancelled = true;
     };
   }, [userProjectId, refreshFiles, loadFile]);
+
+  const loadCoachForMilestone = useCallback(
+    async (um: UserMilestoneRead, attempt?: number) => {
+      if (!userProjectId) return;
+      const live = um.status === "pending";
+      if (live) {
+        const coach = await api.coachStart(userProjectId);
+        let attempts: MentorSessionSummary[] = [];
+        try {
+          const chat = await api.getMilestoneCoach(um.id, attempt);
+          attempts = chat.attempts;
+        } catch {
+          /* attempts are optional */
+        }
+        setCoachBoot({
+          reply: coach.reply,
+          question: coach.current_question,
+          contract: coach.contract,
+          concept: coach.concept,
+          turns: coach.turns ?? [],
+          sessionId: coach.session_id,
+          readOnly: false,
+          attempts,
+          attempt: null,
+        });
+        if (coach.graph) setGraph(coach.graph);
+        return;
+      }
+      const chat = await api.getMilestoneCoach(um.id, attempt);
+      const lastTutor = [...(chat.session?.turns ?? [])]
+        .reverse()
+        .find((turn) => turn.role === "tutor" || turn.role === "assistant");
+      setCoachBoot({
+        reply: lastTutor?.content ?? null,
+        question: null,
+        contract: null,
+        concept: null,
+        turns: chat.session?.turns ?? [],
+        sessionId: chat.session?.id ?? null,
+        readOnly: chat.read_only,
+        attempts: chat.attempts,
+        attempt: chat.session?.attempt ?? attempt ?? null,
+      });
+    },
+    [userProjectId],
+  );
 
   const openBrief = async () => {
     const projectId =
@@ -279,10 +348,38 @@ export function WorkspaceShell({
       const nextActive = getActiveUserMilestone(updated.user_milestones);
       setSelectedUm(nextActive);
       if (userProjectId) setGraph(await api.getGraph(userProjectId));
-      terminalRef.current?.echo("Milestone completed.");
+      if (nextActive) await loadCoachForMilestone(nextActive);
+      terminalRef.current?.echo("Milestone completed. New chat opened for the next one.");
     } catch (e) {
       terminalRef.current?.echo(
         e instanceof ApiError ? e.message : "Could not complete milestone",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restartMilestone = async () => {
+    if (!displayUm) return;
+    const later = displayUm.status === "completed"
+      ? "This reopens the milestone and resets everything after it. Previous chats stay saved."
+      : "This resets this milestone and everything after it. Previous chats stay saved.";
+    if (!window.confirm(`${later} Continue?`)) return;
+    setBusy("restart");
+    try {
+      await api.restartMilestone(displayUm.id);
+      const updated = await api.getEnrollment(enrollment.id);
+      onEnrollmentChange(updated);
+      const restarted =
+        updated.user_milestones.find((um) => um.id === displayUm.id) ??
+        getActiveUserMilestone(updated.user_milestones);
+      setSelectedUm(restarted);
+      if (userProjectId) setGraph(await api.getGraph(userProjectId));
+      if (restarted) await loadCoachForMilestone(restarted);
+      terminalRef.current?.echo("Milestone reopened. A new chat is ready.");
+    } catch (e) {
+      terminalRef.current?.echo(
+        e instanceof ApiError ? e.message : "Could not redo milestone",
       );
     } finally {
       setBusy(null);
@@ -374,6 +471,17 @@ export function WorkspaceShell({
             <FlaskConical className="h-4 w-4" />
             Tests
           </Button>
+          {displayUm?.status === "completed" && (
+            <Button
+              variant="secondary"
+              className="text-xs"
+              disabled={busy !== null}
+              onClick={() => void restartMilestone()}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Redo milestone
+            </Button>
+          )}
           {displayUm?.id === activeUm?.id && (
             <>
               <Button
@@ -430,6 +538,7 @@ export function WorkspaceShell({
             activeConceptId={graph?.current_concept_id ?? null}
             onSelect={(um) => {
               setSelectedUm(um);
+              void loadCoachForMilestone(um);
             }}
             onSelectConcept={() => {
               /* current concept is engine-driven */
@@ -528,14 +637,24 @@ export function WorkspaceShell({
         {coachReady && (
           <div className="min-h-0 overflow-hidden">
             <CoachPanel
+              key={`${displayUm?.id ?? "none"}-${coachBoot.sessionId ?? "new"}-${coachBoot.attempt ?? 0}`}
               userProjectId={userProjectId}
-              userMilestoneId={activeUm?.id ?? null}
+              userMilestoneId={
+                coachBoot.readOnly ? displayUm?.id ?? null : activeUm?.id ?? null
+              }
               milestoneTitle={displayUm?.milestone?.title}
               graph={graph}
               initialReply={coachBoot.reply}
               initialQuestion={coachBoot.question}
+              initialTurns={coachBoot.turns}
               initialContract={coachBoot.contract}
               initialConcept={coachBoot.concept}
+              readOnly={coachBoot.readOnly}
+              attempts={coachBoot.attempts}
+              selectedAttempt={coachBoot.attempt}
+              onSelectAttempt={(attempt) => {
+                if (displayUm) void loadCoachForMilestone(displayUm, attempt);
+              }}
               onGraphChange={setGraph}
             />
           </div>

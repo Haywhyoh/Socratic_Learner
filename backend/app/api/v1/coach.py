@@ -14,6 +14,9 @@ from app.schemas.coach import (
     ExplanationResultRead,
     GraphRead,
     LearnerStateRead,
+    MilestoneCoachRead,
+    MentorSessionRead,
+    MentorSessionSummary,
     MilestoneReviewRead,
     ProjectDefenseRead,
     ReflectionRead,
@@ -60,6 +63,52 @@ def coach_message(
         db, current_user, user_project_id, payload.message
     )
     return CoachMessageResponse.model_validate(result)
+
+
+@router.get(
+    "/me/projects/{user_project_id}/coach/sessions",
+    response_model=list[MentorSessionSummary],
+)
+def list_coach_sessions(
+    user_project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[MentorSessionSummary]:
+    return [
+        MentorSessionSummary.model_validate(row)
+        for row in coach_service.list_mentor_sessions(db, current_user, user_project_id)
+    ]
+
+
+@router.get(
+    "/me/coach/sessions/{session_id}",
+    response_model=MentorSessionRead,
+)
+def get_coach_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MentorSessionRead:
+    return MentorSessionRead.model_validate(
+        coach_service.get_mentor_session(db, current_user, session_id)
+    )
+
+
+@router.get(
+    "/me/milestones/{user_milestone_id}/coach",
+    response_model=MilestoneCoachRead,
+)
+def get_milestone_coach(
+    user_milestone_id: int,
+    attempt: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MilestoneCoachRead:
+    return MilestoneCoachRead.model_validate(
+        coach_service.get_milestone_coach(
+            db, current_user, user_milestone_id, attempt=attempt
+        )
+    )
 
 
 @router.get(

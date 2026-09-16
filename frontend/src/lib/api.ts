@@ -8,6 +8,9 @@ import type {
   EnrollmentDetail,
   EnrollmentRead,
   GraphRead,
+  MilestoneCoachRead,
+  MentorSessionRead,
+  MentorSessionSummary,
   MilestoneReviewRead,
   ProjectDefenseRead,
   SandboxFileEntry,
@@ -204,6 +207,23 @@ export const api = {
     );
   },
 
+  listCoachSessions(userProjectId: number) {
+    return request<MentorSessionSummary[]>(
+      `/api/v1/me/projects/${userProjectId}/coach/sessions`,
+    );
+  },
+
+  getCoachSession(sessionId: number) {
+    return request<MentorSessionRead>(`/api/v1/me/coach/sessions/${sessionId}`);
+  },
+
+  getMilestoneCoach(userMilestoneId: number, attempt?: number) {
+    const query = attempt != null ? `?attempt=${attempt}` : "";
+    return request<MilestoneCoachRead>(
+      `/api/v1/me/milestones/${userMilestoneId}/coach${query}`,
+    );
+  },
+
   requestHint(userMilestoneId: number) {
     return request<CoachMessageResponse>(
       `/api/v1/me/milestones/${userMilestoneId}/hints`,
@@ -312,6 +332,13 @@ export const api = {
   completeMilestone(userMilestoneId: number) {
     return request<import("./types").UserMilestoneRead>(
       `/api/v1/me/milestones/${userMilestoneId}/complete`,
+      { method: "POST" },
+    );
+  },
+
+  restartMilestone(userMilestoneId: number) {
+    return request<import("./types").UserProjectRead>(
+      `/api/v1/me/milestones/${userMilestoneId}/restart`,
       { method: "POST" },
     );
   },

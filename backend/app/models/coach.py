@@ -39,13 +39,22 @@ class MilestoneReviewVerdict(str, enum.Enum):
 class MentorSession(Base):
     __tablename__ = "mentor_sessions"
     __table_args__ = (
-        UniqueConstraint("user_project_id", name="uq_mentor_session_user_project"),
+        UniqueConstraint(
+            "user_milestone_id",
+            "attempt",
+            name="uq_mentor_session_milestone_attempt",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_project_id: Mapped[int] = mapped_column(
         ForeignKey("user_projects.id", ondelete="CASCADE"), nullable=False
     )
+    user_milestone_id: Mapped[int | None] = mapped_column(
+        ForeignKey("user_milestones.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[MentorSessionStatus] = mapped_column(
         Enum(MentorSessionStatus, name="mentor_session_status", native_enum=False),
         default=MentorSessionStatus.needs_assessment,
@@ -54,8 +63,12 @@ class MentorSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user_project = relationship("UserProject")
+    user_milestone = relationship("UserMilestone")
     turns = relationship(
         "MentorTurn",
         back_populates="session",

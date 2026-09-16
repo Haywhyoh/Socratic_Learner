@@ -151,6 +151,29 @@ export interface MentorTurnRead {
   created_at: string;
 }
 
+export interface MentorSessionSummary {
+  id: number;
+  user_project_id: number;
+  user_milestone_id: number | null;
+  milestone_title: string;
+  attempt: number;
+  status: string;
+  turn_count: number;
+  created_at: string;
+  closed_at: string | null;
+}
+
+export interface MentorSessionRead extends MentorSessionSummary {
+  turns: MentorTurnRead[];
+}
+
+export interface MilestoneCoachRead {
+  user_milestone_id: number;
+  read_only: boolean;
+  session: MentorSessionRead | null;
+  attempts: MentorSessionSummary[];
+}
+
 export type ConceptStatus =
   | "locked"
   | "available"
@@ -270,6 +293,7 @@ export interface CoachStartResponse {
   status: string;
   user_project_id: number;
   session_id: number;
+  user_milestone_id: number | null;
   milestone_id: number | null;
   assessment_questions: { concept: string; prompt: string }[];
   roadmap: unknown[];
@@ -278,6 +302,7 @@ export interface CoachStartResponse {
   current_question: string | null;
   answer_status: string | null;
   resumed: boolean;
+  turns: MentorTurnRead[];
   learner_state: LearnerStateRead | null;
   contract: MentorContractRead | null;
   concept: ConceptRead | null;

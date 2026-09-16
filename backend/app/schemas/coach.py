@@ -63,6 +63,29 @@ class MentorTurnRead(BaseModel):
     created_at: datetime
 
 
+class MentorSessionSummary(BaseModel):
+    id: int
+    user_project_id: int
+    user_milestone_id: int | None = None
+    milestone_title: str = ""
+    attempt: int = 1
+    status: MentorSessionStatus | str
+    turn_count: int = 0
+    created_at: datetime
+    closed_at: datetime | None = None
+
+
+class MentorSessionRead(MentorSessionSummary):
+    turns: list[MentorTurnRead] = []
+
+
+class MilestoneCoachRead(BaseModel):
+    user_milestone_id: int
+    read_only: bool = False
+    session: MentorSessionRead | None = None
+    attempts: list[MentorSessionSummary] = []
+
+
 class IdentifiedGapRead(BaseModel):
     concept: str
     confidence: float = 0.0
@@ -186,6 +209,7 @@ class CoachStartResponse(BaseModel):
     status: MentorSessionStatus | str
     user_project_id: int
     session_id: int
+    user_milestone_id: int | None = None
     milestone_id: int | None = None
     assessment_questions: list[dict[str, Any]] = []
     roadmap: list[dict[str, Any]] = []
@@ -194,6 +218,7 @@ class CoachStartResponse(BaseModel):
     current_question: str | None = None
     answer_status: str | None = None
     resumed: bool = False
+    turns: list[MentorTurnRead] = []
     learner_state: LearnerStateRead | None = None
     contract: MentorContractRead | None = None
     concept: ConceptRead | None = None

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.agents.llm import get_coach_llm
@@ -40,7 +41,7 @@ from app.models.learning_state import (
     RetrievalCheck,
     RetrievalCheckStatus,
 )
-from app.models.project import UserMilestone, UserProject
+from app.models.project import UserMilestone, UserMilestoneStatus, UserProject
 from app.models.sandbox import SandboxWorkspace
 from app.models.user import User
 from app.services import curriculum_graph
@@ -77,22 +78,134 @@ def current_user_milestone(user_project: UserProject) -> UserMilestone | None:
     return curriculum_graph.current_user_milestone(user_project)
 
 
-def _session(db: Session, user_project: UserProject) -> MentorSession:
-    session = (
+def archive_mentor_sessions(db: Session, user_milestone_ids: list[int]) -> None:
+    if not user_milestone_ids:
+        return
+    now = datetime.now(UTC)
+    rows = (
+        db.query(MentorSession)
+        .filter(
+            MentorSession.user_milestone_id.in_(user_milestone_ids),
+            MentorSession.status != MentorSessionStatus.completed,
+        )
+        .all()
+    )
+    for row in rows:
+        row.status = MentorSessionStatus.completed
+        row.closed_at = now
+
+
+def _turns_payload(session: MentorSession) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": turn.id,
+            "role": turn.role.value if hasattr(turn.role, "value") else turn.role,
+            "content": turn.content,
+            "created_at": turn.created_at,
+        }
+        for turn in list(session.turns or [])
+    ]
+
+
+def _session_summary(session: MentorSession, *, milestone_title: str = "") -> dict[str, Any]:
+    return {
+        "id": session.id,
+        "user_project_id": session.user_project_id,
+        "user_milestone_id": session.user_milestone_id,
+        "milestone_title": milestone_title,
+        "attempt": int(session.attempt or 1),
+        "status": session.status.value if hasattr(session.status, "value") else session.status,
+        "turn_count": len(list(session.turns or [])),
+        "created_at": session.created_at,
+        "closed_at": session.closed_at,
+    }
+
+
+def _session(
+    db: Session,
+    user_project: UserProject,
+    *,
+    user_milestone: UserMilestone | None = None,
+    create: bool = True,
+) -> MentorSession:
+    um = user_milestone or current_user_milestone(user_project)
+    if um is None:
+        session = (
+            db.query(MentorSession)
+            .options(joinedload(MentorSession.turns))
+            .filter(MentorSession.user_project_id == user_project.id)
+            .order_by(MentorSession.id.desc())
+            .first()
+        )
+        if session is None and create:
+            session = MentorSession(
+                user_project_id=user_project.id,
+                status=MentorSessionStatus.active,
+                attempt=1,
+            )
+            db.add(session)
+            db.flush()
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No mentor chat yet",
+            )
+        return session
+
+    active = (
         db.query(MentorSession)
         .options(joinedload(MentorSession.turns))
-        .filter(MentorSession.user_project_id == user_project.id)
+        .filter(
+            MentorSession.user_milestone_id == um.id,
+            MentorSession.status != MentorSessionStatus.completed,
+        )
+        .order_by(MentorSession.id.desc())
         .first()
     )
-    if session is None:
-        session = MentorSession(
-            user_project_id=user_project.id,
-            status=MentorSessionStatus.active,
+    if active is not None:
+        if active.status == MentorSessionStatus.needs_assessment:
+            active.status = MentorSessionStatus.active
+        return active
+    if not create:
+        latest = (
+            db.query(MentorSession)
+            .options(joinedload(MentorSession.turns))
+            .filter(MentorSession.user_milestone_id == um.id)
+            .order_by(MentorSession.attempt.desc(), MentorSession.id.desc())
+            .first()
         )
-        db.add(session)
-        db.flush()
-    elif session.status == MentorSessionStatus.needs_assessment:
-        session.status = MentorSessionStatus.active
+        if latest is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No mentor chat for this milestone",
+            )
+        return latest
+
+    for stray in (
+        db.query(MentorSession)
+        .filter(
+            MentorSession.user_project_id == user_project.id,
+            MentorSession.status == MentorSessionStatus.active,
+            MentorSession.user_milestone_id != um.id,
+        )
+        .all()
+    ):
+        stray.status = MentorSessionStatus.completed
+        stray.closed_at = datetime.now(UTC)
+
+    max_attempt = (
+        db.query(func.max(MentorSession.attempt))
+        .filter(MentorSession.user_milestone_id == um.id)
+        .scalar()
+    )
+    session = MentorSession(
+        user_project_id=user_project.id,
+        user_milestone_id=um.id,
+        attempt=int(max_attempt or 0) + 1,
+        status=MentorSessionStatus.active,
+    )
+    db.add(session)
+    db.flush()
     return session
 
 
@@ -402,18 +515,48 @@ def start_coach(
     answers: list | None = None,
 ) -> dict[str, Any]:
     user_project = _user_project(db, user, user_project_id)
-    session = _session(db, user_project)
     curriculum_graph.initialize_learning_state(db, user_project)
+    session = _session(db, user_project)
     ctx = _mentor_context(db, user_project)
     state_row = ctx["state_row"]
     if state_row and state_row.status == ConceptStatus.available:
         curriculum_graph.introduce_concept(db, user_project, state_row.concept_id)
+    if session.turns:
+        db.commit()
+        db.refresh(session)
+        position = curriculum_graph.resolve_current_position(db, user_project)
+        last_tutor = next(
+            (turn.content for turn in reversed(list(session.turns or [])) if turn.role == MentorTurnRole.tutor),
+            None,
+        )
+        return {
+            "status": session.status.value if hasattr(session.status, "value") else session.status,
+            "user_project_id": user_project.id,
+            "session_id": session.id,
+            "user_milestone_id": session.user_milestone_id,
+            "milestone_id": position.get("milestone_id"),
+            "assessment_questions": [],
+            "roadmap": [],
+            "cards": [],
+            "reply": last_tutor,
+            "current_question": last_tutor,
+            "answer_status": "ASK_QUESTION",
+            "resumed": True,
+            "turns": _turns_payload(session),
+            "learner_state": _state_payload(ctx["state_row"], position),
+            "contract": None,
+            "concept": _concept_payload(ctx["concept"]),
+            "position": position,
+            "graph": curriculum_graph.graph_payload(db, user_project),
+        }
     result = _run_mentor(db, user_project, "What should I think about first?")
+    db.refresh(session)
     position = result["position"]
     return {
         "status": MentorSessionStatus.active,
         "user_project_id": user_project.id,
         "session_id": session.id,
+        "user_milestone_id": session.user_milestone_id,
         "milestone_id": position.get("milestone_id"),
         "assessment_questions": [],
         "roadmap": [],
@@ -421,7 +564,8 @@ def start_coach(
         "reply": result["reply"],
         "current_question": result["current_question"],
         "answer_status": result["answer_status"],
-        "resumed": len(session.turns) > 2,
+        "resumed": False,
+        "turns": result.get("turns") or _turns_payload(session),
         "learner_state": result["learner_state"],
         "contract": result["contract"],
         "concept": result["concept"],
@@ -444,6 +588,101 @@ def post_message(
             curriculum_graph.mark_discussing(db, user_project, state_row.concept_id)
     result = _run_mentor(db, user_project, message)
     return result
+
+
+def _milestone_title_for_session(db: Session, session: MentorSession) -> str:
+    if not session.user_milestone_id:
+        return ""
+    um = (
+        db.query(UserMilestone)
+        .options(joinedload(UserMilestone.milestone))
+        .filter(UserMilestone.id == session.user_milestone_id)
+        .first()
+    )
+    if um is None or um.milestone is None:
+        return ""
+    return um.milestone.title
+
+
+def list_mentor_sessions(db: Session, user: User, user_project_id: int) -> list[dict[str, Any]]:
+    user_project = _user_project(db, user, user_project_id)
+    rows = (
+        db.query(MentorSession)
+        .options(joinedload(MentorSession.turns))
+        .filter(MentorSession.user_project_id == user_project.id)
+        .order_by(MentorSession.created_at.asc(), MentorSession.id.asc())
+        .all()
+    )
+    return [
+        _session_summary(row, milestone_title=_milestone_title_for_session(db, row))
+        for row in rows
+    ]
+
+
+def get_mentor_session(db: Session, user: User, session_id: int) -> dict[str, Any]:
+    session = (
+        db.query(MentorSession)
+        .options(joinedload(MentorSession.turns), joinedload(MentorSession.user_project))
+        .filter(MentorSession.id == session_id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    _user_project(db, user, session.user_project_id)
+    title = _milestone_title_for_session(db, session)
+    payload = _session_summary(session, milestone_title=title)
+    payload["turns"] = _turns_payload(session)
+    return payload
+
+
+def get_milestone_coach(
+    db: Session,
+    user: User,
+    user_milestone_id: int,
+    *,
+    attempt: int | None = None,
+) -> dict[str, Any]:
+    um = (
+        db.query(UserMilestone)
+        .options(
+            joinedload(UserMilestone.milestone),
+            joinedload(UserMilestone.user_project).joinedload(UserProject.enrollment),
+        )
+        .filter(UserMilestone.id == user_milestone_id)
+        .first()
+    )
+    if um is None or um.user_project.enrollment.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+    rows = (
+        db.query(MentorSession)
+        .options(joinedload(MentorSession.turns))
+        .filter(MentorSession.user_milestone_id == um.id)
+        .order_by(MentorSession.attempt.asc(), MentorSession.id.asc())
+        .all()
+    )
+    title = um.milestone.title if um.milestone is not None else ""
+    summaries = [_session_summary(row, milestone_title=title) for row in rows]
+    chosen = None
+    if attempt is not None:
+        chosen = next((row for row in rows if int(row.attempt or 1) == attempt), None)
+    if chosen is None:
+        chosen = next(
+            (row for row in reversed(rows) if row.status != MentorSessionStatus.completed),
+            rows[-1] if rows else None,
+        )
+    read_only = um.status == UserMilestoneStatus.completed or (
+        chosen is not None and chosen.status == MentorSessionStatus.completed
+    )
+    session_payload = None
+    if chosen is not None:
+        session_payload = _session_summary(chosen, milestone_title=title)
+        session_payload["turns"] = _turns_payload(chosen)
+    return {
+        "user_milestone_id": um.id,
+        "read_only": read_only,
+        "session": session_payload,
+        "attempts": summaries,
+    }
 
 
 def get_graph(db: Session, user: User, user_project_id: int) -> dict[str, Any]:

@@ -8,6 +8,7 @@ import type {
   ConceptRead,
   GraphRead,
   MentorContractRead,
+  MentorSessionSummary,
   MentorTurnRead,
 } from "@/lib/types";
 import { CoachMessageContent } from "@/components/workspace/coach-message";
@@ -22,6 +23,10 @@ interface CoachPanelProps {
   initialTurns?: MentorTurnRead[];
   initialContract?: MentorContractRead | null;
   initialConcept?: ConceptRead | null;
+  readOnly?: boolean;
+  attempts?: MentorSessionSummary[];
+  selectedAttempt?: number | null;
+  onSelectAttempt?: (attempt: number) => void;
   onGraphChange?: (graph: GraphRead) => void;
 }
 
@@ -35,6 +40,10 @@ export function CoachPanel({
   milestoneTitle,
   initialReply,
   initialTurns = [],
+  readOnly = false,
+  attempts = [],
+  selectedAttempt = null,
+  onSelectAttempt,
   onGraphChange,
 }: CoachPanelProps) {
   const [message, setMessage] = useState("");
@@ -45,10 +54,13 @@ export function CoachPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!initialReply) return;
+    setTurns(initialTurns);
+  }, [initialTurns]);
+
+  useEffect(() => {
+    if (!initialReply || initialTurns.length > 0) return;
     setTurns((prev) => {
       if (prev.length > 0) return prev;
-      if (prev.some((t) => t.content === initialReply)) return prev;
       return [
         {
           id: Date.now(),
@@ -58,7 +70,7 @@ export function CoachPanel({
         },
       ];
     });
-  }, [initialReply]);
+  }, [initialReply, initialTurns.length]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -146,10 +158,31 @@ export function CoachPanel({
       <div className="shrink-0 border-b border-stone-800 px-4 py-3">
         <h2 className="font-serif text-lg text-stone-100">Senior Engineer</h2>
         <p className="text-xs text-stone-500">
-          {milestoneTitle
-            ? `Working through ${milestoneTitle}. Ask, answer, or say what you tried.`
-            : "Ask, answer, or say what you tried."}
+          {readOnly
+            ? milestoneTitle
+              ? `Saved chat for ${milestoneTitle}. This thread is read-only.`
+              : "Saved chat. This thread is read-only."
+            : milestoneTitle
+              ? `Working through ${milestoneTitle}. Ask, answer, or say what you tried.`
+              : "Ask, answer, or say what you tried."}
         </p>
+        {attempts.length > 1 && (
+          <label className="mt-2 block text-[11px] text-stone-500">
+            Attempt
+            <select
+              className="ml-2 rounded border border-stone-700 bg-stone-950 px-2 py-1 text-xs text-stone-200"
+              value={selectedAttempt ?? attempts[attempts.length - 1]?.attempt ?? 1}
+              onChange={(e) => onSelectAttempt?.(Number(e.target.value))}
+            >
+              {attempts.map((item) => (
+                <option key={item.id} value={item.attempt}>
+                  {item.attempt}
+                  {item.status === "completed" ? " (saved)" : " (current)"}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
@@ -175,6 +208,11 @@ export function CoachPanel({
         <p className="shrink-0 px-4 pb-2 text-xs text-amber-600/90">{hintMeta}</p>
       )}
 
+      {readOnly ? (
+        <p className="shrink-0 border-t border-stone-800 px-4 py-3 text-xs text-stone-500">
+          This conversation was saved with the milestone. Redo the milestone to start a new chat.
+        </p>
+      ) : (
       <div className="shrink-0 border-t border-stone-800 p-3">
         <div className="flex gap-2">
           <Button
@@ -210,6 +248,7 @@ export function CoachPanel({
           </Button>
         </div>
       </div>
+      )}
     </div>
   );
 }
