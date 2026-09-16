@@ -12,6 +12,7 @@ from typing import Any
 
 from app.agents.misconceptions import (
     answer_shows_live_closure,
+    last_tutor_asks_closures,
     names_invoking,
     names_passing,
 )
@@ -151,6 +152,19 @@ def normalize_control(raw: Any, *, concept_id: str = "") -> dict[str, Any]:
     return base
 
 
+def bound_control(raw: Any, *, concept_id: str = "") -> dict[str, Any]:
+    """Drop leftover memory when the knowledge graph has moved to a new concept."""
+    if isinstance(raw, dict):
+        stored = str(raw.get("concept_id") or "")
+        if stored and concept_id and stored != concept_id:
+            return empty_control(concept_id)
+    return normalize_control(raw, concept_id=concept_id)
+
+
+def _closure_shown(message: str, last_tutor: str) -> bool:
+    return last_tutor_asks_closures(last_tutor) and answer_shows_live_closure(message)
+
+
 def learner_frustrated(message: str) -> bool:
     text = message.lower()
     return any(phrase in text for phrase in _FRUSTRATION)
@@ -192,7 +206,7 @@ def understandings_from_answer(message: str, last_tutor: str) -> list[str]:
         found.append(PASS_UNDERSTANDING)
     if names_invoking(message):
         found.append(INVOKE_UNDERSTANDING)
-    if answer_shows_live_closure(message):
+    if last_tutor_asks_closures(last_tutor) and answer_shows_live_closure(message):
         found.append(CLOSURE_UNDERSTANDING)
     tutor = last_tutor.lower()
     if ("deleted" in tutor or "removed" in tutor) and re.search(
@@ -257,17 +271,18 @@ def closure_proved(control: dict[str, Any]) -> bool:
     return CLOSURE_UNDERSTANDING in confirmed or "closure_live_link" in purposes
 
 
-def _concept_cares_about_functions(
+def has_evidence_ledger(
     objectives: list[str] | None,
     *,
     concept_id: str = "",
     concept_title: str = "",
 ) -> bool:
-    blob = " ".join([concept_id, concept_title, *(objectives or [])]).lower()
-    return any(
-        token in blob
-        for token in ("callback", "closure", "later", "programming.functions", "first-class")
-    )
+    """True only for concepts this module actually tracks. Empty missing ≠ done."""
+    cid = (concept_id or "").lower()
+    if cid == "programming.functions":
+        return True
+    blob = " ".join([*(objectives or []), concept_title]).lower()
+    return "callback" in blob or "closure" in blob
 
 
 def missing_required_evidence(
@@ -276,15 +291,17 @@ def missing_required_evidence(
     *,
     concept_id: str = "",
     concept_title: str = "",
-) -> list[dict[str, str]]:
-    """Return only the evidence this concept still needs. Empty → advance."""
+) -> list[dict[str, str]] | None:
+    """Remaining ledger items. None = this concept has no specialized ledger."""
     control = normalize_control(control)
     objectives = list(objectives or [])
     concept_id = concept_id or str(control.get("concept_id") or "")
-    missing: list[dict[str, str]] = []
-    if _concept_cares_about_functions(
+    if not has_evidence_ledger(
         objectives, concept_id=concept_id, concept_title=concept_title
-    ) and not callback_distinction_proved(control):
+    ):
+        return None
+    missing: list[dict[str, str]] = []
+    if not callback_distinction_proved(control):
         missing.append(
             {
                 "skill": "pass_vs_invoke",
@@ -313,16 +330,13 @@ def required_conversational_evidence_satisfied(
     concept_id: str = "",
     concept_title: str = "",
 ) -> bool:
-    if not _concept_cares_about_functions(
-        objectives, concept_id=concept_id, concept_title=concept_title
-    ):
-        return False
-    return not missing_required_evidence(
+    missing = missing_required_evidence(
         control,
         objectives,
         concept_id=concept_id,
         concept_title=concept_title,
     )
+    return missing == []
 
 
 def apply_learner_turn(
@@ -359,7 +373,7 @@ def apply_learner_turn(
         "await_pass",
     } or (
         names_passing(message) and names_invoking(message)
-    ) or answer_shows_live_closure(message)
+    ) or _closure_shown(message, last_tutor)
     if branch == "remediate":
         success = False
     control["attempts"] = (list(control.get("attempts") or []) + [
@@ -406,7 +420,7 @@ def apply_learner_turn(
             )
 
     types = dict(control.get("evidence_types") or empty_control()["evidence_types"])
-    if names_passing(message) or names_invoking(message) or answer_shows_live_closure(message):
+    if names_passing(message) or names_invoking(message) or _closure_shown(message, last_tutor):
         types["answer"] = True
     if names_passing(message) and names_invoking(message):
         types["conceptual_model"] = True
@@ -570,9 +584,10 @@ def teaching_branch(
         concept_id=str(control.get("concept_id") or ""),
         concept_title=concept_title,
     )
+    ledger = missing is not None
     frustrated = control["learner_frustration_signal"] or learner_frustrated(message)
 
-    if not missing and (
+    if ledger and missing == [] and (
         callback_distinction_proved(control) or closure_proved(control)
     ) and branch in {
         "retest",
@@ -587,25 +602,28 @@ def teaching_branch(
     }:
         return "proved_this"
 
-    if callback_distinction_proved(control) and branch in {
+    if ledger and callback_distinction_proved(control) and branch in {
         "retest",
         "remediate",
         "await_invoke",
         "await_pass",
         "cleared",
     }:
-        return "proved_this" if not missing else "missing_evidence"
+        return "proved_this" if missing == [] else "missing_evidence"
 
-    if branch == "cleared" and callback_distinction_proved(control):
-        return "proved_this" if not missing else "missing_evidence"
+    if ledger and branch == "cleared" and callback_distinction_proved(control):
+        return "proved_this" if missing == [] else "missing_evidence"
 
     if frustrated:
-        if not missing and (
+        if ledger and missing == [] and (
             callback_distinction_proved(control) or closure_proved(control)
         ):
             return "proved_this"
         if missing:
             return "missing_evidence"
+        return None
+
+    if not ledger:
         return None
 
     if control["strategy"] == "new_example" and branch not in {
@@ -654,7 +672,7 @@ def teaching_branch(
     }:
         if names_passing(message) and names_invoking(message):
             return "proved_this"
-        if answer_shows_live_closure(message):
+        if _closure_shown(message, last_tutor):
             return "closure_pass"
         return "change_representation"
 

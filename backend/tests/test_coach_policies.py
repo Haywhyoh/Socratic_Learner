@@ -608,3 +608,85 @@ def test_misconception_status_is_suspected_on_caller_confusion() -> None:
     )
     assert control["active_misconception_status"] == "suspected"
     assert "callback-caller-confusion" in control["active_misconceptions"]
+
+
+def test_finding_user_id_two_does_not_verify_arrays() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        {
+            "learner_message": "i would itereate through each list and filter where the id == 2",
+            "concept_state": "introduced",
+            "current_concept": "programming.arrays",
+            "concept_title": "Arrays, iteration, searching, collections",
+            "concept_description": "Arrays as ordered collections; finding an element that matches a condition.",
+            "learning_objectives": [
+                "Explain how to find the first element in an array matching a condition",
+                "Explain why an array of objects is a reasonable way to store a 'table' of records",
+            ],
+            "diagnostic_questions": [
+                "How would you find the first item in a list that matches some condition?",
+                "What does an array method return when nothing matches?",
+            ],
+            "misconceptions": [],
+            "last_tutor_message": (
+                "Imagine you have an array of user objects. You need to find the user "
+                "with id: 2. Walk me through how you would write that—what would your "
+                "first instinct be?"
+            ),
+            "next_concept_title": "Networking",
+            "hints": [],
+            "allowed_ai_behavior": ["question"],
+            "hint_level": -1,
+            "effort": {},
+        }
+    )
+    reply = result["reply"].lower()
+    assert "required evidence" not in reply
+    assert "marking this concept verified" not in reply
+    assert result["contract"]["action"] != "REVIEW"
+    assert result.get("next_state") != "verification"
+
+
+def test_number_two_is_not_closure_proof_off_a_find_question() -> None:
+    from app.agents.learning_control import (
+        CLOSURE_UNDERSTANDING,
+        apply_learner_turn,
+        empty_control,
+        teaching_branch,
+    )
+    from app.agents.misconceptions import classify_learner_turn
+
+    message = "i would itereate through each list and filter where the id == 2"
+    last_tutor = (
+        "You need to find the user with id: 2. Walk me through how you would write that."
+    )
+    classified = classify_learner_turn(
+        message,
+        [],
+        [],
+        attempt_count_after=1,
+        last_tutor_message=last_tutor,
+        control=empty_control("programming.arrays"),
+        objectives=[
+            "Explain how to find the first element in an array matching a condition",
+        ],
+        concept_title="Arrays, iteration, searching, collections",
+    )
+    assert classified["branch"] != "proved_this"
+    control = apply_learner_turn(
+        empty_control("programming.arrays"),
+        message=message,
+        last_tutor=last_tutor,
+        classified=classified,
+    )
+    assert CLOSURE_UNDERSTANDING not in control["confirmed_understandings"]
+    assert teaching_branch(
+        classified,
+        control,
+        message=message,
+        last_tutor=last_tutor,
+        objectives=[
+            "Explain how to find the first element in an array matching a condition",
+        ],
+        concept_title="Arrays, iteration, searching, collections",
+    ) != "proved_this"

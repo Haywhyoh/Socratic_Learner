@@ -445,10 +445,10 @@ def mark_discussing(db: Session, user_project: UserProject, concept_id: str) -> 
 
 
 def get_learning_control(row: ConceptState) -> dict[str, Any]:
-    from app.agents.learning_control import normalize_control
+    from app.agents.learning_control import bound_control
 
     evidence = dict(row.evidence or empty_evidence())
-    return normalize_control(evidence.get("learning_control"), concept_id=row.concept_id)
+    return bound_control(evidence.get("learning_control"), concept_id=row.concept_id)
 
 
 def save_learning_control(row: ConceptState, control: dict[str, Any]) -> None:

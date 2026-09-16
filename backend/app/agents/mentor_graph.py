@@ -15,6 +15,7 @@ from app.agents.llm import CoachLLM, StubCoachLLM
 from app.agents.learning_control import (
     callback_distinction_proved,
     closure_proved,
+    has_evidence_ledger,
     missing_required_evidence,
     representation_script,
     required_conversational_evidence_satisfied,
@@ -211,6 +212,11 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
             concept_id=str(state.get("current_concept") or ""),
             concept_title=str(state.get("concept_title") or ""),
         ),
+        "evidence_ledger_active": has_evidence_ledger(
+            list(state.get("learning_objectives") or []),
+            concept_id=str(state.get("current_concept") or ""),
+            concept_title=str(state.get("concept_title") or ""),
+        ),
         "recent_learner_answers": [
             item.get("answer") if isinstance(item, dict) else str(item)
             for item in (state.get("diagnostic_answers") or [])[-4:]
@@ -247,6 +253,9 @@ def make_question_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
             else:
                 next_state = status
             contract["next_state"] = next_state
+            if str(contract.get("action") or "") == "REVIEW" and not _ledger_satisfied(state):
+                contract["action"] = "ASK_QUESTION"
+                contract["should_unlock"] = False
         return {
             "reply": str(contract.get("message") or ""),
             "contract": contract,
@@ -340,7 +349,7 @@ def make_teach_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     return teach
 
 
-def _control_missing(state: MentorState) -> list[dict[str, str]]:
+def _control_missing(state: MentorState) -> list[dict[str, str]] | None:
     return missing_required_evidence(
         state.get("learning_control") or {},
         list(state.get("learning_objectives") or []),
@@ -349,16 +358,20 @@ def _control_missing(state: MentorState) -> list[dict[str, str]]:
     )
 
 
-def _advance_or_missing_if_ready(state: MentorState) -> MentorState | None:
-    control = state.get("learning_control") or {}
-    if required_conversational_evidence_satisfied(
-        control,
+def _ledger_satisfied(state: MentorState) -> bool:
+    return required_conversational_evidence_satisfied(
+        state.get("learning_control") or {},
         list(state.get("learning_objectives") or []),
         concept_id=str(state.get("current_concept") or ""),
         concept_title=str(state.get("concept_title") or ""),
-    ):
+    )
+
+
+def _advance_or_missing_if_ready(state: MentorState) -> MentorState | None:
+    if _ledger_satisfied(state):
         return proved_this_node(state)
-    if callback_distinction_proved(control) and _control_missing(state):
+    missing = _control_missing(state)
+    if missing and callback_distinction_proved(state.get("learning_control") or {}):
         return missing_evidence_node(state)
     return None
 
@@ -401,13 +414,23 @@ def _advance_payload(state: MentorState) -> MentorState:
 def missing_evidence_node(state: MentorState) -> MentorState:
     title = state.get("concept_title") or "this concept"
     missing = _control_missing(state)
+    if missing is None:
+        questions = list(state.get("diagnostic_questions") or [])
+        ask = questions[0] if questions else "What can you still prove about this, in your own words?"
+        message = f"We're still on '{title}'. Next: {ask}"
+        contract = empty_contract(
+            intent="MENTOR",
+            action="ASK_QUESTION",
+            message=message,
+            next_state=ConceptStatus.discussing.value,
+        )
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": ConceptStatus.discussing.value,
+        }
     if not missing:
-        if required_conversational_evidence_satisfied(
-            state.get("learning_control") or {},
-            list(state.get("learning_objectives") or []),
-            concept_id=str(state.get("current_concept") or ""),
-            concept_title=str(state.get("concept_title") or ""),
-        ):
+        if _ledger_satisfied(state):
             return _advance_payload(state)
         questions = list(state.get("diagnostic_questions") or [])
         ask = questions[0] if questions else "What can you still prove about this, in your own words?"
@@ -526,10 +549,9 @@ def closure_pass_node(state: MentorState) -> MentorState:
     prefix = (
         "Right. It prints 2. The inner function does not copy `n` — it keeps a live link to it.\n\n"
     )
-    control = state.get("learning_control") or {}
-    if callback_distinction_proved(control) and not _control_missing(state):
+    if _ledger_satisfied(state):
         result = _advance_payload(state)
-    elif callback_distinction_proved(control):
+    elif _control_missing(state):
         result = missing_evidence_node(state)
     else:
         result = application_check_node(state)
@@ -544,7 +566,23 @@ def proved_this_node(state: MentorState) -> MentorState:
     missing = _control_missing(state)
     if missing:
         return missing_evidence_node(state)
-    return _advance_payload(state)
+    if _ledger_satisfied(state):
+        return _advance_payload(state)
+    title = state.get("concept_title") or "this concept"
+    questions = list(state.get("diagnostic_questions") or [])
+    ask = questions[0] if questions else "Show me that on a different example — one instinct is not enough."
+    message = f"We're still on '{title}'. {ask}"
+    contract = empty_contract(
+        intent="MENTOR",
+        action="ASK_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+    }
 
 
 def change_representation_node(state: MentorState) -> MentorState:
@@ -732,17 +770,18 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
         )
         passed = bool(result.get("passed"))
         if passed:
-            control = state.get("learning_control") or {}
-            missing = _control_missing(state)
             leftover = uncovered_objectives(
                 list(state.get("learning_objectives") or []),
                 answer,
             )
-            if not missing and (
-                callback_distinction_proved(control) or closure_proved(control)
-            ):
+            if _ledger_satisfied(state):
                 return proved_this_node(state)
-            if leftover and any("closure" in item.lower() for item in leftover) and not closure_proved(control):
+            missing = _control_missing(state)
+            if missing:
+                return missing_evidence_node(state)
+            if leftover and any("closure" in item.lower() for item in leftover) and not closure_proved(
+                state.get("learning_control") or {}
+            ):
                 message = (
                     "The callback part is solid — passing stores the function, `cb()` runs it later.\n\n"
                     "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "
@@ -759,9 +798,33 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
                     "contract": contract,
                     "next_state": ConceptStatus.discussing.value,
                 }
-            if missing:
-                return missing_evidence_node(state)
-            return application_check_node(state)
+            if has_evidence_ledger(
+                list(state.get("learning_objectives") or []),
+                concept_id=str(state.get("current_concept") or ""),
+                concept_title=str(state.get("concept_title") or ""),
+            ):
+                return application_check_node(state)
+            questions = list(state.get("diagnostic_questions") or [])
+            ask = (
+                questions[1]
+                if len(questions) > 1
+                else (questions[0] if questions else "Show me that on a different example.")
+            )
+            message = (
+                f"{result.get('feedback') or 'That instinct is a start — not yet verified.'}\n\n"
+                f"{ask}"
+            )
+            contract = empty_contract(
+                intent="MENTOR",
+                action="ASK_QUESTION",
+                message=message,
+                next_state=ConceptStatus.discussing.value,
+            )
+            return {
+                "reply": message,
+                "contract": contract,
+                "next_state": ConceptStatus.discussing.value,
+            }
         else:
             contract = empty_contract(
                 intent="DIAGNOSE",
