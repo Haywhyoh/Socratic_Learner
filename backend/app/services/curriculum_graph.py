@@ -362,6 +362,7 @@ def record_evidence(
         if key in EMPTY_EVIDENCE:
             evidence[key] = bool(value)
     row.evidence = evidence
+    flag_modified(row, "evidence")
     db.flush()
     return row
 

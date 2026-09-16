@@ -135,7 +135,7 @@ export function CoachPanel({
         setSending(false);
       }
     },
-    [sending, userProjectId, refreshGraph],
+    [sending, userProjectId, refreshGraph, onOpenFile],
   );
 
   const applyCoachResult = useCallback(
