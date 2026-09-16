@@ -129,6 +129,8 @@ export function CoachPanel({
           ]);
         }
         await refreshGraph();
+        const nextFile = res.contract?.assigned_file;
+        if (nextFile && onOpenFile) await onOpenFile(nextFile);
       } finally {
         setSending(false);
       }
@@ -157,8 +159,10 @@ export function CoachPanel({
         ]);
       }
       await refreshGraph();
+      const nextFile = res.contract?.assigned_file;
+      if (nextFile && onOpenFile) await onOpenFile(nextFile);
     },
-    [refreshGraph],
+    [refreshGraph, onOpenFile],
   );
 
   const checkWork = useCallback(async () => {

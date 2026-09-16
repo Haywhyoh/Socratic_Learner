@@ -66,7 +66,7 @@ def next_practice_task(
     for task in tasks:
         if task["id"] not in done:
             return task
-    return tasks[-1]
+    return None
 
 
 def run_argv_for_task(task: dict[str, Any], project: Project | None) -> list[str]:

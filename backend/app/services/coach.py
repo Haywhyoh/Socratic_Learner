@@ -361,6 +361,7 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
             "practice_tasks": practice_service.practice_tasks_for(concept),
             "assigned_file": (task or {}).get("filename"),
             "practice_task_id": (task or {}).get("id"),
+            "evidence": dict((state_row.evidence if state_row else None) or {}),
             "mentor_scripts": dict(getattr(concept, "mentor_scripts", None) or {}),
             "gap_reason": gap_reason,
             "awaiting_reflection": awaiting_reflection,
@@ -369,7 +370,67 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
     }
 
 
-def _apply_next_state(
+def _has_substantive_explanation(
+    state_row: ConceptState | None, graph_state: dict[str, Any]
+) -> bool:
+    evidence = dict((state_row.evidence if state_row else None) or {})
+    if evidence.get("explanation"):
+        return True
+    texts = [str(graph_state.get("learner_last_explanation") or "")]
+    if state_row:
+        texts.append(str(state_row.last_explanation or ""))
+        for item in list(state_row.diagnostic_answers or []):
+            if isinstance(item, dict):
+                texts.append(str(item.get("answer") or ""))
+            else:
+                texts.append(str(item))
+    return any(
+        len(text.strip()) >= 40 and not asks_for_practice_eval(text)
+        for text in texts
+    )
+
+
+def _attach_follow_on_assignment(
+    db: Session,
+    user_project: UserProject,
+    *,
+    actor: User | None,
+    started_concept_id: str | None,
+    reply: str,
+    contract: dict[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any], Concept | None, ConceptState | None]:
+    position = curriculum_graph.resolve_current_position(db, user_project)
+    new_id = str(position.get("current_concept_id") or "") or None
+    concept = db.get(Concept, new_id) if new_id else None
+    state_row = (
+        curriculum_graph.get_or_create_state(db, user_project, new_id) if new_id else None
+    )
+    if new_id and new_id != started_concept_id and state_row is not None:
+        if state_row.status == ConceptStatus.available:
+            state_row = curriculum_graph.introduce_concept(db, user_project, new_id)
+        task = practice_service.next_practice_task(concept, state_row)
+        if task:
+            if actor is not None:
+                _ensure_practice_file(db, actor, user_project.id, task["filename"])
+            assignment = practice_service.assignment_message(
+                task, concept.title if concept else "this concept"
+            )
+            if task["filename"] not in reply:
+                reply = reply.rstrip() + "\n\n" + assignment
+            contract["assigned_file"] = task["filename"]
+            contract["practice_task_id"] = task["id"]
+            contract["action"] = "ASK_IMPLEMENTATION"
+            contract["message"] = reply
+        elif concept and (concept.diagnostic_questions or []):
+            ask = str(concept.diagnostic_questions[0])
+            title = concept.title
+            if ask not in reply:
+                reply = reply.rstrip() + f"\n\nNext concept: {title}. {ask}"
+            contract["assigned_file"] = None
+            contract["practice_task_id"] = None
+            contract["action"] = "ASK_QUESTION"
+            contract["message"] = reply
+    return reply, contract, position, concept, state_row
     db: Session,
     user_project: UserProject,
     concept_id: str | None,
@@ -419,7 +480,11 @@ def _run_mentor(
         control = curriculum_graph.get_learning_control(state_row)
     objectives = list((concept.learning_objectives if concept else None) or [])
     concept_title = concept.title if concept else ""
-    if state_row and not is_boot_message(message):
+    if (
+        state_row
+        and not is_boot_message(message)
+        and not asks_for_practice_eval(message)
+    ):
         classified = classify_learner_turn(
             message,
             list((concept.misconceptions if concept else None) or []),
@@ -485,38 +550,51 @@ def _run_mentor(
     if state_row:
         curriculum_graph.save_learning_control(state_row, control)
     concept_id = ctx["graph_state"].get("current_concept") or None
+    started_concept_id = str(concept_id) if concept_id else None
+    unlocked = bool(contract.get("should_unlock") or result.get("should_unlock"))
+    task_id = str(contract.get("practice_task_id") or result.get("practice_task_id") or "").strip()
+    if started_concept_id and task_id and unlocked:
+        curriculum_graph.record_practice_pass(
+            db, user_project, started_concept_id, task_id
+        )
     if (
-        concept_id
+        started_concept_id
         and contract.get("action") == "REVIEW"
         and next_state == ConceptStatus.verification.value
     ):
-        curriculum_graph.explanation_passed(db, user_project, str(concept_id), message)
+        curriculum_graph.explanation_passed(
+            db, user_project, started_concept_id, message
+        )
+    elif started_concept_id and unlocked and _has_substantive_explanation(
+        state_row, graph_state
+    ):
+        curriculum_graph.record_evidence(
+            db, user_project, started_concept_id, explanation=True
+        )
+        curriculum_graph.try_master(db, user_project, started_concept_id)
     elif next_state:
-        _apply_next_state(db, user_project, str(concept_id) if concept_id else None, next_state)
-    if result.get("identified_gap") and concept_id:
-        suspects = curriculum_graph.suspect_gaps(db, user_project, str(concept_id))
-        curriculum_graph.persist_suspected_gaps(db, user_project, str(concept_id), suspects)
+        _apply_next_state(db, user_project, started_concept_id, next_state)
+    if started_concept_id and unlocked:
+        curriculum_graph.try_master(db, user_project, started_concept_id)
+    if result.get("identified_gap") and started_concept_id:
+        suspects = curriculum_graph.suspect_gaps(db, user_project, started_concept_id)
+        curriculum_graph.persist_suspected_gaps(
+            db, user_project, started_concept_id, suspects
+        )
     assigned = str(contract.get("assigned_file") or result.get("assigned_file") or "").strip()
     if assigned and actor is not None:
         _ensure_practice_file(db, actor, user_project.id, assigned)
-    task_id = str(contract.get("practice_task_id") or result.get("practice_task_id") or "").strip()
-    if (
-        concept_id
-        and task_id
-        and bool(contract.get("should_unlock") or result.get("should_unlock"))
-        and str(contract.get("action") or "") in {"REVIEW", "PRACTICE_EVAL"}
-    ):
-        curriculum_graph.record_practice_pass(db, user_project, str(concept_id), task_id)
-        curriculum_graph.try_master(db, user_project, str(concept_id))
+    reply, contract, position, follow_concept, state_row = _attach_follow_on_assignment(
+        db,
+        user_project,
+        actor=actor,
+        started_concept_id=started_concept_id,
+        reply=reply,
+        contract=contract,
+    )
     _append_turn(db, session, MentorTurnRole.tutor, reply)
     db.commit()
     db.refresh(session)
-    position = curriculum_graph.resolve_current_position(db, user_project)
-    state_row = (
-        curriculum_graph.get_or_create_state(db, user_project, str(position["current_concept_id"]))
-        if position.get("current_concept_id")
-        else None
-    )
     return {
         "intent": contract.get("intent") or result.get("intent") or "MENTOR",
         "action": contract.get("action") or "ASK_QUESTION",
@@ -541,12 +619,12 @@ def _run_mentor(
                 contract.get("identified_gap") or result.get("identified_gap")
             ),
             "hint_level": contract.get("hint_level") or 0,
-            "should_unlock": bool(contract.get("should_unlock") or result.get("should_unlock")),
+            "should_unlock": unlocked,
             "next_state": next_state,
             "assigned_file": contract.get("assigned_file") or result.get("assigned_file"),
             "practice_task_id": contract.get("practice_task_id") or result.get("practice_task_id"),
         },
-        "concept": _concept_payload(ctx["concept"]),
+        "concept": _concept_payload(follow_concept or ctx["concept"]),
         "position": position,
     }
 

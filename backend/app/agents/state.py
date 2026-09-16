@@ -119,6 +119,7 @@ class MentorState(TypedDict, total=False):
     transfer_prompt: NotRequired[str]
     application_prompt: NotRequired[str]
     mentor_scripts: NotRequired[dict[str, Any]]
+    evidence: NotRequired[dict[str, Any]]
 
 
 class CoachState(TypedDict, total=False):
