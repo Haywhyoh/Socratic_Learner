@@ -431,6 +431,9 @@ def _attach_follow_on_assignment(
             contract["action"] = "ASK_QUESTION"
             contract["message"] = reply
     return reply, contract, position, concept, state_row
+
+
+def _apply_next_state(
     db: Session,
     user_project: UserProject,
     concept_id: str | None,
