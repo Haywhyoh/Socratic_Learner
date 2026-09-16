@@ -103,8 +103,13 @@ jobs:
               exit 1
             fi
             cd "$APP_DIR"
-            git -c http.extraheader="AUTHORIZATION: bearer ${GHCR_TOKEN}" fetch https://github.com/${{ github.repository }}.git main
-            git reset --hard FETCH_HEAD
+
+            git config --global --add safe.directory "$APP_DIR"
+            # Prefer token URL auth — http.extraheader often fails when forwarded via SSH envs.
+            GIT_TERMINAL_PROMPT=0 \
+              git fetch --force "https://x-access-token:${GHCR_TOKEN}@github.com/${{ github.repository }}.git" \
+              "+refs/heads/main:refs/remotes/origin/main"
+            git reset --hard origin/main
 
             SHORT_SHA="${SHA_TAG:0:7}"
             export API_IMAGE="ghcr.io/${OWNER}/socratic-learner-api:${SHORT_SHA}"
