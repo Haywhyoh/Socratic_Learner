@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -35,6 +36,7 @@ class ProjectRead(BaseModel):
     primary_option_id: int
     secondary_option_id: int
     is_active: bool
+    runtime: dict[str, Any] = {}
 
 
 class ProjectDetail(ProjectRead):

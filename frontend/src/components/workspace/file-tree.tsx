@@ -127,6 +127,7 @@ interface FileTreeProps {
   onCreateFile?: (path: string) => Promise<void> | void;
   onCreateFolder?: (path: string) => Promise<void> | void;
   busy?: boolean;
+  filePlaceholder?: string;
 }
 
 export function FileTree({
@@ -136,6 +137,7 @@ export function FileTree({
   onCreateFile,
   onCreateFolder,
   busy = false,
+  filePlaceholder = "src/index.js",
 }: FileTreeProps) {
   const tree = useMemo(() => buildFileTree(entries), [entries]);
   const [expanded, setExpanded] = useState<Set<string>>(() =>
@@ -282,7 +284,7 @@ export function FileTree({
               }
             }}
             placeholder={
-              createMode === "file" ? "src/index.js" : "src/utils"
+              createMode === "file" ? filePlaceholder : "src/utils"
             }
             className="w-full rounded border border-stone-700 bg-stone-950 px-1.5 py-1 text-xs text-stone-200 outline-none focus:border-amber-700"
           />

@@ -157,7 +157,7 @@ def normalize_misconceptions(raw: list[Any] | None) -> list[dict[str, Any]]:
         )
     ids = {item["id"] for item in out}
     blob = " ".join(item["description"].lower() for item in out)
-    if "callback-caller-confusion" not in ids and ("callback" in blob or "invok" in blob):
+    if "callback-caller-confusion" not in ids and "callback" in blob:
         out.append(CALLBACK_CALLER_CONFUSION)
     return out
 

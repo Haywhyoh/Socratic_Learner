@@ -207,6 +207,16 @@ export const api = {
     );
   },
 
+  evaluatePractice(
+    userProjectId: number,
+    payload?: { filename?: string; task_id?: string },
+  ) {
+    return request<CoachMessageResponse>(
+      `/api/v1/me/projects/${userProjectId}/coach/evaluate-practice`,
+      { method: "POST", body: payload ?? {} },
+    );
+  },
+
   listCoachSessions(userProjectId: number) {
     return request<MentorSessionSummary[]>(
       `/api/v1/me/projects/${userProjectId}/coach/sessions`,

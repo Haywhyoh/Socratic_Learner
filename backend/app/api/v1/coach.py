@@ -18,6 +18,7 @@ from app.schemas.coach import (
     MentorSessionRead,
     MentorSessionSummary,
     MilestoneReviewRead,
+    PracticeEvalRequest,
     ProjectDefenseRead,
     ReflectionRead,
     ReflectionRequest,
@@ -61,6 +62,27 @@ def coach_message(
 ) -> CoachMessageResponse:
     result = coach_service.post_message(
         db, current_user, user_project_id, payload.message
+    )
+    return CoachMessageResponse.model_validate(result)
+
+
+@router.post(
+    "/me/projects/{user_project_id}/coach/evaluate-practice",
+    response_model=CoachMessageResponse,
+)
+def evaluate_practice(
+    user_project_id: int,
+    payload: PracticeEvalRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CoachMessageResponse:
+    body = payload or PracticeEvalRequest()
+    result = coach_service.evaluate_practice(
+        db,
+        current_user,
+        user_project_id,
+        filename=body.filename,
+        task_id=body.task_id,
     )
     return CoachMessageResponse.model_validate(result)
 

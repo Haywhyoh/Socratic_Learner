@@ -119,6 +119,19 @@ class CoachLLM(Protocol):
         current_question: str = "",
     ) -> dict[str, Any]: ...
 
+    def evaluate_practice(
+        self,
+        *,
+        concept_title: str,
+        filename: str,
+        prompt: str,
+        rubric: str,
+        source: str,
+        run_result: dict[str, Any],
+        expect_check: dict[str, Any],
+        language: str = "",
+    ) -> dict[str, Any]: ...
+
 
 class StubCoachLLM:
     """Deterministic specialist used in tests and when no model key is configured."""
@@ -247,12 +260,50 @@ class StubCoachLLM:
     ) -> dict[str, Any]:
         return fallback_explanation(answer)
 
+    def evaluate_practice(
+        self,
+        *,
+        concept_title: str,
+        filename: str,
+        prompt: str,
+        rubric: str,
+        source: str,
+        run_result: dict[str, Any],
+        expect_check: dict[str, Any],
+        language: str = "",
+    ) -> dict[str, Any]:
+        ran = bool(source.strip())
+        expect_ok = bool(expect_check.get("passed"))
+        passed = ran and expect_ok
+        if not source.strip():
+            feedback = f"`{filename}` is empty. Write the snippet, then check again."
+        elif not expect_ok:
+            missing = expect_check.get("missing_stdout") or []
+            feedback = (
+                f"`{filename}` ran but did not match the expected output"
+                + (f" (missing {missing})." if missing else ".")
+            )
+        else:
+            feedback = f"`{filename}` ran and matches the practice check."
+        return {"passed": passed, "feedback": feedback}
+
+    def bind_workspace_tools(self, tools: list[Any] | None) -> None:
+        return None
+
+
+class LLMConfigurationError(RuntimeError):
+    """Raised when a real model is configured but cannot be initialized."""
+
 
 def get_coach_llm() -> CoachLLM:
     model_name = (settings.llm_model or "stub").strip()
-    api_key = settings.resolved_llm_api_key().strip()
-    if model_name.lower() in {"stub", "none", "fake"} or not api_key:
+    if model_name.lower() in {"stub", "none", "fake"}:
         return StubCoachLLM()
+    api_key = settings.resolved_llm_api_key().strip()
+    if not api_key:
+        raise LLMConfigurationError(
+            f"LLM_MODEL={model_name} requires ANTHROPIC_API_KEY or LLM_API_KEY"
+        )
     try:
         from langchain.chat_models import init_chat_model
 
@@ -263,17 +314,21 @@ def get_coach_llm() -> CoachLLM:
 
         model = init_chat_model(model_name, api_key=api_key)
         return LangChainCoachLLM(model)
-    except Exception:
-        return StubCoachLLM()
+    except LLMConfigurationError:
+        raise
+    except Exception as exc:
+        raise LLMConfigurationError(f"Failed to initialize LLM {model_name}: {exc}") from exc
 
 
 class LangChainCoachLLM:
-    def __init__(self, model: object) -> None:
+    def __init__(self, model: object, tools: list[Any] | None = None) -> None:
         self._model = model
+        self._tools = list(tools or [])
 
-    def _invoke(self, prompt: str) -> str:
-        result = getattr(self._model, "invoke")(prompt)
-        content = getattr(result, "content", result)
+    def bind_workspace_tools(self, tools: list[Any] | None) -> None:
+        self._tools = list(tools or [])
+
+    def _normalize_content(self, content: object) -> str:
         if isinstance(content, list):
             parts: list[str] = []
             for item in content:
@@ -287,13 +342,71 @@ class LangChainCoachLLM:
             return "".join(parts)
         return str(content)
 
+    def _invoke(self, prompt: str) -> str:
+        result = getattr(self._model, "invoke")(prompt)
+        return self._normalize_content(getattr(result, "content", result))
+
+    def _invoke_with_tools(self, system: str, user: str, *, max_rounds: int = 4) -> str:
+        if not self._tools:
+            return self._invoke(f"{system}\n\n{user}")
+        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+        model = self._model.bind_tools(self._tools)  # type: ignore[attr-defined]
+        messages: list[Any] = [SystemMessage(content=system), HumanMessage(content=user)]
+        tool_map = {str(getattr(tool, "name", "")): tool for tool in self._tools}
+        last = ""
+        for _ in range(max_rounds):
+            result = model.invoke(messages)
+            last = self._normalize_content(getattr(result, "content", result))
+            calls = getattr(result, "tool_calls", None) or []
+            if not calls:
+                return last
+            messages.append(result)
+            for call in calls:
+                if isinstance(call, dict):
+                    name = str(call.get("name") or "")
+                    args = call.get("args") or {}
+                    call_id = str(call.get("id") or "")
+                else:
+                    name = str(getattr(call, "name", "") or "")
+                    args = getattr(call, "args", {}) or {}
+                    call_id = str(getattr(call, "id", "") or "")
+                tool = tool_map.get(name)
+                try:
+                    output = tool.invoke(args) if tool is not None else f"unknown tool {name}"
+                except Exception as exc:
+                    output = f"ERROR: {exc}"
+                messages.append(ToolMessage(content=str(output), tool_call_id=call_id))
+        return last
+
     def generate_card(
         self,
         concept: str,
         milestone_title: str,
         resources: list[dict[str, str]],
     ) -> CardDraft:
-        return fallback_card(concept, milestone_title, resources)
+        prompt = (
+            "Write a short concept card for a mentored learner. Return ONLY JSON with keys "
+            "name, why_it_matters, research_questions (array of strings), resources "
+            "(array of {title,url}), checkpoint, explanation. No code dumps, no full solutions.\n"
+            f"Concept: {concept}\n"
+            f"Milestone: {milestone_title}\n"
+            f"Resources: {json.dumps(resources)}\n"
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            return {
+                "name": str(payload.get("name") or concept),
+                "why_it_matters": str(payload.get("why_it_matters") or ""),
+                "research_questions": [str(q) for q in (payload.get("research_questions") or [])],
+                "resources": list(payload.get("resources") or resources),
+                "checkpoint": str(payload.get("checkpoint") or ""),
+                "explanation": str(payload.get("explanation") or ""),
+            }
+        except Exception:
+            return fallback_card(concept, milestone_title, resources)
 
     def evaluate_answer(
         self,
@@ -340,6 +453,20 @@ class LangChainCoachLLM:
         *,
         instructions: str = "",
     ) -> str:
+        prompt = (
+            "Give one Socratic hint. Never paste a full solution or complete file. "
+            "Hint levels: 0=question, 1=direction, 2=concept, 3=structure, 4=targeted. "
+            f"Use level {level} only.\n"
+            f"Milestone: {milestone_title}\n"
+            f"Concepts: {', '.join(concepts) or 'n/a'}\n"
+            f"Extra instructions: {instructions or 'n/a'}\n"
+        )
+        try:
+            raw = self._invoke(prompt).strip()
+            if raw:
+                return raw
+        except Exception:
+            pass
         return fallback_hint(level, milestone_title, concepts, instructions=instructions)
 
     def mentor_reply(
@@ -555,63 +682,12 @@ class LangChainCoachLLM:
         message: str,
         action_hint: str,
     ) -> dict[str, Any]:
-        prompt = (
-            "You are a senior engineer mentoring a learner who is building a backend "
-            "framework from scratch. Never write the learner's implementation or skip "
-            "ahead to later concepts. Return ONLY JSON with keys: intent, action, message, "
-            "diagnostic_concept, identified_gap, hint_level, should_unlock, next_state.\n"
-            "intent is MENTOR or DIAGNOSE. action is ASK_QUESTION, ASK_RESEARCH, HINT, "
-            "REVIEW, ASK_DIAGNOSTIC_QUESTION, ASK_IMPLEMENTATION, ASK_REFLECTION, "
-            "ASK_DEFENSE, or HOLD.\n"
-            "message is what the learner sees. You may include a tiny fenced snippet "
-            "(a few lines) to illustrate a concept. Never paste a full server, a complete "
-            "file, or the code they are supposed to write.\n"
-            "## LEARNING ENGINE (CRITICAL)\n"
-            "Your job is evidence collection, not conversation length. Never ask a question "
-            "because you can think of another one. Before asking, check "
-            "do_not_ask_purposes, subskills_verified, missing_required_evidence, and "
-            "learning_control. If a question produces no new evidence, do not ask it.\n"
-            "If the learner already demonstrated passing a function, invoking it, naming "
-            "those lines, and predicting what happens if invocation is removed, do NOT "
-            "ask another callback distinction question. Record the evidence, mark that "
-            "sub-skill verified, and ask only for missing_required_evidence when "
-            "evidence_ledger_active is true. If evidence_ledger_active is false, "
-            "missing_required_evidence is null — that does NOT mean the concept is done. "
-            "Keep teaching the current concept. One instinctive answer is not mastery. "
-            "Never set action REVIEW or mark a concept verified unless "
-            "evidence_ledger_active is true AND missing_required_evidence is []. "
-            "You do not choose the next concept (callbacks → closures → objects is not "
-            "automatic).\n"
-            "One correct answer is not mastery. All required evidence collected is enough "
-            "to stop. Evaluate answer, reasoning, conceptual model, application, transfer, "
-            "explanation, and retrieval separately. A correct answer with wrong reasoning "
-            "is not full mastery.\n"
-            "If the learner is wrong, do not ask a generic follow-up. Name the known "
-            "misconception (status suspected) and remediate: (1) precise distinction, "
-            "(2) one minimal example, (3) one guided trace, (4) one NEW transfer example. "
-            "Not five variations of the same example. After two failures on the same "
-            "concept, change representation (verbal / trace / diagram / analogy / apply).\n"
-            "If they say we keep going over the same thing / can we move on / I already "
-            "answered this / you're repeating yourself: if required evidence is collected, "
-            "move forward. If not, name the exact missing evidence. Do not repeat.\n"
-            "JavaScript objects: do NOT teach 'passed by reference' as the complete model. "
-            "JS passes arguments by value. When the value is an object reference, the "
-            "parameter gets a copy of that reference, so both variables can mutate the "
-            "same object. Do not require memory addresses unless that is the concept.\n"
-            "Never praise an incorrect causal model. Never say Good / Great / Exactly / "
-            "Good observation unless the causal claim is actually correct. If part of the "
-            "answer is right and part is wrong, name both separately in one short reply and "
-            "do not move on. If context.identified_misconception is set, follow it.\n"
-            "If the learner asks you to explain, explain the current mechanism in the "
-            "smallest form, then ask one check question. Never reply that they failed "
-            "to provide an explanation. If they ask what is next, tell them the next "
-            "missing evidence or the graph's next concept — do not re-grade them.\n"
-            f"Forced action family: {action_hint}\n"
-            f"Context JSON: {json.dumps(context, default=str)}\n"
-            f"Learner message: {message}\n"
-        )
+        prompt = _dynamic_mentor_prompt(context, message, action_hint)
         try:
-            raw = self._invoke(prompt)
+            raw = self._invoke_with_tools(
+                prompt,
+                "Return ONLY the JSON object. You may call workspace tools first if you need to read or run the learner's file.",
+            )
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             payload = json.loads(match.group(0) if match else raw)
             gap = payload.get("identified_gap")
@@ -623,6 +699,13 @@ class LangChainCoachLLM:
                 hint_level = int(payload.get("hint_level") or 0)
             except (TypeError, ValueError):
                 hint_level = 0
+            assigned = str(payload.get("assigned_file") or "").strip() or None
+            task_id = str(payload.get("practice_task_id") or "").strip() or None
+            if not assigned:
+                task = _practice_task_from_context(context)
+                if task:
+                    assigned = str(task.get("filename") or "") or None
+                    task_id = str(task.get("id") or "") or task_id
             return {
                 "intent": str(payload.get("intent") or "MENTOR"),
                 "action": str(payload.get("action") or action_hint),
@@ -632,7 +715,11 @@ class LangChainCoachLLM:
                 "hint_level": hint_level,
                 "should_unlock": bool(payload.get("should_unlock")),
                 "next_state": str(payload.get("next_state") or ""),
+                "assigned_file": assigned,
+                "practice_task_id": task_id,
             }
+        except Exception:
+            return fallback_mentor_contract(context, message, action_hint)
         except Exception:
             return fallback_mentor_contract(context, message, action_hint)
 
@@ -653,8 +740,8 @@ class LangChainCoachLLM:
             "If the learner asked YOU a question, you are in the wrong mode — do not grade "
             "them for failing to explain. Never say 'no explanation was provided'. "
             "Grade whether they answered the current question, not every objective on the "
-            "concept. Do not fail a correct callback / pass-vs-invoke answer for omitting "
-            "closures. If they only traced execution after being asked to trace, that can "
+            "concept. Stay inside this concept — do not fail them for omitting a later idea. "
+            "If they only traced execution after being asked to trace, that can "
             "be a pass for that diagnostic. If any part of the causal model they offered "
             "is wrong, passed=false. Do not praise the wrong part.\n"
             f"Concept: {concept_title}\n{concept_description}\n"
@@ -676,3 +763,126 @@ class LangChainCoachLLM:
             }
         except Exception:
             return fallback_explanation(answer)
+
+    def evaluate_practice(
+        self,
+        *,
+        concept_title: str,
+        filename: str,
+        prompt: str,
+        rubric: str,
+        source: str,
+        run_result: dict[str, Any],
+        expect_check: dict[str, Any],
+        language: str = "",
+    ) -> dict[str, Any]:
+        system = (
+            "You evaluate a learner's practice snippet. They were told to write a named file. "
+            "Use the run result and rubric. Never paste a corrected full solution. "
+            "Return ONLY JSON: {\"passed\": true|false, \"feedback\": \"2-4 short sentences\"}. "
+            "If expect_check.passed is false, passed must be false unless the rubric is clearly "
+            "satisfied and the expect check is overly strict. If the file is empty, fail."
+        )
+        user = (
+            f"Language: {language or 'n/a'}\n"
+            f"Concept: {concept_title}\n"
+            f"File: {filename}\n"
+            f"Task: {prompt}\n"
+            f"Rubric: {rubric or 'Matches the task prompt.'}\n"
+            f"Expect check: {json.dumps(expect_check, default=str)}\n"
+            f"Run result: {json.dumps(run_result, default=str)}\n"
+            f"Source:\n{source or '(empty)'}\n"
+        )
+        try:
+            raw = self._invoke_with_tools(system, user)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            return {
+                "passed": bool(payload.get("passed")),
+                "feedback": str(payload.get("feedback") or "").strip()
+                or "Check the file against the task and run it again.",
+            }
+        except Exception:
+            ran = bool(source.strip())
+            expect_ok = bool(expect_check.get("passed"))
+            return {
+                "passed": ran and expect_ok,
+                "feedback": (
+                    f"`{filename}` ran and matches the practice check."
+                    if ran and expect_ok
+                    else f"`{filename}` does not yet satisfy the practice check."
+                ),
+            }
+
+
+def _practice_task_from_context(context: dict[str, Any]) -> dict[str, Any] | None:
+    tasks = list(context.get("practice_tasks") or [])
+    if not tasks:
+        return None
+    current_id = str(context.get("practice_task_id") or "")
+    for item in tasks:
+        if isinstance(item, dict) and (not current_id or str(item.get("id") or "") == current_id):
+            return item
+    first = tasks[0]
+    return first if isinstance(first, dict) else None
+
+
+def _dynamic_mentor_prompt(context: dict[str, Any], message: str, action_hint: str) -> str:
+    runtime = dict(context.get("runtime") or {})
+    language = str(runtime.get("language") or context.get("language") or "the project language")
+    title = str(context.get("project_title") or context.get("project") or "this project")
+    ledger = ""
+    if context.get("evidence_ledger_active"):
+        ledger = (
+            "## EVIDENCE LEDGER (this concept only)\n"
+            "Your job is evidence collection, not conversation length. Before asking, check "
+            "do_not_ask_purposes, subskills_verified, missing_required_evidence, and "
+            "learning_control. If a question produces no new evidence, do not ask it.\n"
+            "Never set action REVIEW unless evidence_ledger_active is true AND "
+            "missing_required_evidence is []. You do not choose the next concept.\n"
+        )
+    language_notes = ""
+    if language.lower() in {"javascript", "js"}:
+        language_notes = (
+            "JavaScript objects: do NOT teach 'passed by reference' as the complete model. "
+            "JS passes arguments by value. When the value is an object reference, the "
+            "parameter gets a copy of that reference, so both variables can mutate the "
+            "same object. Do not require memory addresses unless that is the concept.\n"
+        )
+    task = _practice_task_from_context(context)
+    task_block = ""
+    if task:
+        task_block = (
+            "When action is ASK_IMPLEMENTATION, name the exact filename and the task prompt. "
+            f"Preferred file: `{task.get('filename')}`. Task: {task.get('prompt')}. "
+            "Set assigned_file and practice_task_id in the JSON. Do not write the solution.\n"
+        )
+    return (
+        f"You are a senior engineer mentoring a learner working on: {title} ({language}). "
+        "Never write the learner's implementation or skip ahead to later concepts. "
+        "Return ONLY JSON with keys: intent, action, message, diagnostic_concept, "
+        "identified_gap, hint_level, should_unlock, next_state, assigned_file, practice_task_id.\n"
+        "intent is MENTOR or DIAGNOSE. action is ASK_QUESTION, ASK_RESEARCH, HINT, "
+        "REVIEW, ASK_DIAGNOSTIC_QUESTION, ASK_IMPLEMENTATION, ASK_REFLECTION, "
+        "ASK_DEFENSE, PRACTICE_EVAL, or HOLD.\n"
+        "message is what the learner sees. You may include a tiny fenced snippet "
+        "(a few lines) to illustrate a concept. Never paste a complete file or the code "
+        "they are supposed to write.\n"
+        f"{ledger}"
+        "One correct answer is not mastery. If the learner is wrong, name the known "
+        "misconception when context.identified_misconception is set and remediate with "
+        "one distinction, one tiny example, and one check question.\n"
+        "Never praise an incorrect causal model. Never say Good / Great / Exactly unless "
+        "the causal claim is actually correct.\n"
+        "If they ask you to explain, explain the current mechanism in the smallest form, "
+        "then ask one check question. If they ask what is next, tell them the next "
+        "missing evidence or the graph's next concept.\n"
+        f"{language_notes}"
+        f"{task_block}"
+        "You may call list_workspace_files, read_workspace_file, or run_workspace_command "
+        "if you need to see or run their code before writing the JSON.\n"
+        f"Forced action family: {action_hint}\n"
+        f"Context JSON: {json.dumps(context, default=str)}\n"
+        f"Learner message: {message}\n"
+    )
+

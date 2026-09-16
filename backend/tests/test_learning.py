@@ -43,9 +43,9 @@ def test_list_courses_and_nested_options(client: TestClient, seeded_db: Session)
     courses = client.get("/api/v1/courses")
     assert courses.status_code == 200
     body = courses.json()
-    assert {c["slug"] for c in body} == {"javascript"}
+    assert {c["slug"] for c in body} >= {"javascript", "python"}
 
-    js = body[0]
+    js = next(c for c in body if c["slug"] == "javascript")
     primary = client.get(f"/api/v1/courses/{js['id']}/options")
     assert primary.status_code == 200
     names = {o["name"] for o in primary.json()}
@@ -313,3 +313,68 @@ def test_seeded_js_framework_project_exists(client: TestClient, seeded_db: Sessi
     assert len(body["milestones"]) == 12
     assert body["milestones"][0]["instructions"]
     assert "What to do" in body["milestones"][0]["instructions"]
+    assert body["runtime"]["language"] == "javascript"
+
+
+def test_seeded_python_project_exists(client: TestClient, seeded_db: Session) -> None:
+    courses = client.get("/api/v1/courses").json()
+    py = next(c for c in courses if c["slug"] == "python")
+    primary = client.get(f"/api/v1/courses/{py['id']}/options").json()
+    lang = next(o for o in primary if o["slug"] == "python")
+    secondary = client.get(f"/api/v1/courses/{py['id']}/options/{lang['id']}/options").json()
+    stdlib = next(o for o in secondary if o["slug"] == "stdlib")
+
+    projects = client.get(
+        "/api/v1/projects",
+        params={
+            "course_id": py["id"],
+            "primary_option_id": lang["id"],
+            "secondary_option_id": stdlib["id"],
+        },
+    ).json()
+    assert {p["title"] for p in projects} >= {
+        "Learn Python: Language and a CLI Notebook",
+    }
+    project = projects[0]
+    detail = client.get(f"/api/v1/projects/{project['id']}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["difficulty"] == "beginner"
+    assert body["runtime"]["language"] == "python"
+    assert body["runtime"]["test_command"] == ["pytest", "-q"]
+    assert len(body["milestones"]) == 9
+    assert "python.scripts" in body["concepts"]
+
+
+def test_enroll_python_assigns_fundamentals_project(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    seeded_db: Session,
+) -> None:
+    courses = client.get("/api/v1/courses").json()
+    py = next(c for c in courses if c["slug"] == "python")
+    primary = client.get(f"/api/v1/courses/{py['id']}/options").json()
+    lang = next(o for o in primary if o["slug"] == "python")
+    secondary = client.get(f"/api/v1/courses/{py['id']}/options/{lang['id']}/options").json()
+    stdlib = next(o for o in secondary if o["slug"] == "stdlib")
+    response = client.post(
+        "/api/v1/enrollments",
+        headers=auth_headers,
+        json={
+            "course_id": py["id"],
+            "primary_option_id": lang["id"],
+            "secondary_option_id": stdlib["id"],
+            "learning_mode": "project",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["user_project"] is not None
+    assert data["assigned_project_id"] == data["user_project"]["project_id"]
+    title = (
+        (data.get("assigned_project") or {}).get("title")
+        or (data["user_project"].get("project") or {}).get("title")
+    )
+    assert title == "Learn Python: Language and a CLI Notebook"
+    assert len(data["user_milestones"]) == 9
+

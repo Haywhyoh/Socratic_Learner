@@ -28,6 +28,7 @@ interface CoachPanelProps {
   selectedAttempt?: number | null;
   onSelectAttempt?: (attempt: number) => void;
   onGraphChange?: (graph: GraphRead) => void;
+  onOpenFile?: (path: string) => Promise<void> | void;
 }
 
 function isCoachTurn(role: string): boolean {
@@ -40,22 +41,32 @@ export function CoachPanel({
   milestoneTitle,
   initialReply,
   initialTurns = [],
+  initialContract = null,
   readOnly = false,
   attempts = [],
   selectedAttempt = null,
   onSelectAttempt,
   onGraphChange,
+  onOpenFile,
 }: CoachPanelProps) {
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [hintLoading, setHintLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [turns, setTurns] = useState<MentorTurnRead[]>(initialTurns);
   const [hintMeta, setHintMeta] = useState<string | null>(null);
+  const [contract, setContract] = useState<MentorContractRead | null>(
+    initialContract,
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setTurns(initialTurns);
   }, [initialTurns]);
+
+  useEffect(() => {
+    setContract(initialContract);
+  }, [initialContract]);
 
   useEffect(() => {
     if (!initialReply || initialTurns.length > 0) return;
@@ -103,6 +114,7 @@ export function CoachPanel({
       ]);
       try {
         const res = await api.coachMessage(userProjectId, trimmed);
+        if (res.contract) setContract(res.contract);
         if (res.turns.length) {
           setTurns(res.turns);
         } else if (res.reply) {
@@ -123,6 +135,46 @@ export function CoachPanel({
     },
     [sending, userProjectId, refreshGraph],
   );
+
+  const applyCoachResult = useCallback(
+    async (res: {
+      reply?: string;
+      turns: MentorTurnRead[];
+      contract?: MentorContractRead | null;
+    }) => {
+      if (res.contract) setContract(res.contract);
+      if (res.turns.length) {
+        setTurns(res.turns);
+      } else if (res.reply) {
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: res.reply ?? "",
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      }
+      await refreshGraph();
+    },
+    [refreshGraph],
+  );
+
+  const checkWork = useCallback(async () => {
+    if (checking || sending) return;
+    setChecking(true);
+    setHintMeta(null);
+    try {
+      const res = await api.evaluatePractice(userProjectId, {
+        filename: contract?.assigned_file ?? undefined,
+        task_id: contract?.practice_task_id ?? undefined,
+      });
+      await applyCoachResult(res);
+    } finally {
+      setChecking(false);
+    }
+  }, [checking, sending, userProjectId, contract, applyCoachResult]);
 
   const requestHint = useCallback(async () => {
     if (!userMilestoneId || hintLoading) return;
@@ -214,6 +266,33 @@ export function CoachPanel({
         </p>
       ) : (
       <div className="shrink-0 border-t border-stone-800 p-3">
+        {contract?.assigned_file && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-stone-400">
+            <span>
+              Assigned file:{" "}
+              <code className="text-amber-200">{contract.assigned_file}</code>
+            </span>
+            {onOpenFile && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                onClick={() => void onOpenFile(contract.assigned_file!)}
+              >
+                Open file
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-7 px-2 text-xs"
+              disabled={checking || sending}
+              onClick={() => void checkWork()}
+            >
+              {checking ? "Checking…" : "Check my work"}
+            </Button>
+          </div>
+        )}
         <div className="flex gap-2">
           <Button
             type="button"

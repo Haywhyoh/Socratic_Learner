@@ -58,6 +58,8 @@ def test_validate_argv_allowlist() -> None:
     assert validate_argv(["node", "--test"]) == ["node", "--test"]
     assert validate_argv(["mkdir", "-p", "lib"]) == ["mkdir", "-p", "lib"]
     assert validate_argv(["npx", "--version"]) == ["npx", "--version"]
+    assert validate_argv(["python", "practice/hello.py"]) == ["python", "practice/hello.py"]
+    assert validate_argv(["pytest", "-q"]) == ["pytest", "-q"]
     with pytest.raises(ValueError, match="not allowed"):
         validate_argv(["bash", "-c", "ls"])
     with pytest.raises(ValueError, match="not allowed"):

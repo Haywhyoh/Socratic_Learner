@@ -10,13 +10,16 @@ from typing import Protocol
 
 from app.core.config import settings
 
-# Learner-facing tools available in the sandbox image (node:20-slim).
+# Learner-facing tools available in sandbox images (Node and Python).
 # Keep this tight — no bash/sh/curl/wget/sudo.
 ALLOWED_BINARIES = frozenset(
     {
         "node",
         "npm",
         "npx",
+        "python",
+        "python3",
+        "pytest",
         "ls",
         "mkdir",
         "touch",
@@ -54,6 +57,7 @@ class SandboxRunner(Protocol):
         argv: list[str],
         *,
         cwd: str | None = None,
+        image: str | None = None,
     ) -> RunResult: ...
 
 
@@ -169,20 +173,26 @@ class DockerSandboxRunner:
         argv: list[str],
         *,
         cwd: str | None = None,
+        image: str | None = None,
     ) -> RunResult:
         from docker.errors import DockerException, ImageNotFound
 
         safe_argv = validate_argv(argv)
         safe_cwd = validate_cwd(cwd)
         working_dir = f"/workspace/{safe_cwd}" if safe_cwd else "/workspace"
+        image_name = image or self.image
 
         client = self._client()
         try:
-            client.images.get(self.image)
+            client.images.get(image_name)
         except ImageNotFound as exc:
+            hint = (
+                "docker build -t socratic-sandbox-python:latest -f sandbox/Dockerfile.python sandbox"
+                if "python" in image_name
+                else "docker build -t socratic-sandbox-node:latest sandbox"
+            )
             raise RuntimeError(
-                f"Sandbox image '{self.image}' not found. "
-                "Build it with: docker build -t socratic-sandbox-node:latest sandbox"
+                f"Sandbox image '{image_name}' not found. Build it with: {hint}"
             ) from exc
         except DockerException as exc:
             raise RuntimeError(
@@ -198,7 +208,7 @@ class DockerSandboxRunner:
         stderr = ""
         try:
             container = client.containers.run(
-                self.image,
+                image_name,
                 command=safe_argv,
                 working_dir=working_dir,
                 volumes={str(workspace.resolve()): {"bind": "/workspace", "mode": "rw"}},
@@ -259,7 +269,7 @@ class FakeSandboxRunner:
 
     def __init__(self, result: RunResult | None = None) -> None:
         self.result = result or RunResult(exit_code=0, stdout="", stderr="")
-        self.calls: list[tuple[Path, list[str], str | None]] = []
+        self.calls: list[tuple[Path, list[str], str | None, str | None]] = []
         self.lock = threading.Lock()
 
     def run(
@@ -268,11 +278,12 @@ class FakeSandboxRunner:
         argv: list[str],
         *,
         cwd: str | None = None,
+        image: str | None = None,
     ) -> RunResult:
         safe_argv = validate_argv(argv)
         safe_cwd = validate_cwd(cwd)
         with self.lock:
-            self.calls.append((workspace, safe_argv, safe_cwd))
+            self.calls.append((workspace, safe_argv, safe_cwd, image))
         return self.result
 
 

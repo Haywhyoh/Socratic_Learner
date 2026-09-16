@@ -34,6 +34,7 @@ from app.agents.misconceptions import (
 from app.agents.policies import (
     asks_for_implementation,
     asks_for_mentor_explanation,
+    asks_for_practice_eval,
     asks_what_next,
     classify_intent,
     enforce_brevity,
@@ -62,6 +63,8 @@ def empty_contract(**overrides: object) -> MentorContract:
         "hint_level": 0,
         "should_unlock": False,
         "next_state": ConceptStatus.introduced.value,
+        "assigned_file": None,
+        "practice_task_id": None,
     }
     base.update(overrides)  # type: ignore[typeddict-item]
     return base
@@ -154,6 +157,10 @@ def _pick_branch(state: MentorState) -> str:
         return "closure_pass"
     if branch == "missing_evidence":
         return "missing_evidence"
+    if asks_for_practice_eval(message) and (
+        state.get("practice_tasks") or state.get("needs_build")
+    ):
+        return "practice_eval"
     if asks_what_next(message):
         return "next_step"
     if asks_for_mentor_explanation(message):
@@ -226,6 +233,16 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
         "needs_build": bool(state.get("needs_build")),
         "gap_reason": state.get("gap_reason") or "",
         "tests_summary": state.get("tests_summary") or "",
+        "language": state.get("language") or "",
+        "runtime": state.get("runtime") or {},
+        "practice_tasks": state.get("practice_tasks") or [],
+        "assigned_file": state.get("assigned_file"),
+        "practice_task_id": state.get("practice_task_id"),
+        "practice_source": state.get("practice_source") or "",
+        "practice_run": state.get("practice_run") or {},
+        "practice_expect": state.get("practice_expect") or {},
+        "mentor_scripts": state.get("mentor_scripts") or {},
+        "project_title": state.get("project_title") or "",
     }
     return llm.mentor_contract(context=context, message=state.get("learner_message") or "", action_hint=action_hint)
 
@@ -614,10 +631,10 @@ def change_representation_node(state: MentorState) -> MentorState:
 
 
 def application_check_node(state: MentorState) -> MentorState:
-    message = (
+    scripts = dict(state.get("mentor_scripts") or {})
+    message = str(scripts.get("application_prompt") or "").strip() or (
         "That explanation is enough to treat this as explained — not yet verified.\n\n"
-        "Use it: a router stores a function when you register a path and runs it later "
-        "when a request matches. Which moment is passing, and which is invoking?"
+        "Apply the current idea to one new example of your own, then tell me what happens."
     )
     contract = empty_contract(
         intent="MENTOR",
@@ -629,13 +646,11 @@ def application_check_node(state: MentorState) -> MentorState:
 
 
 def transfer_check_node(state: MentorState) -> MentorState:
-    message = (
-        "Same distinction, new names — don't reuse the previous wording.\n\n"
-        "```javascript\n"
-        "queue.push(job);\n"
-        "job();\n"
-        "```\n\n"
-        "Which line passes the function, and which line invokes it?"
+    scripts = dict(state.get("mentor_scripts") or {})
+    message = str(scripts.get("transfer_prompt") or "").strip() or (
+        "Same idea, new names — don't reuse the previous wording.\n\n"
+        "Give one tiny example in this language that uses the same distinction, "
+        "and name which line does each part."
     )
     contract = empty_contract(
         intent="DIAGNOSE",
@@ -848,6 +863,24 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
 def make_implementation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     def implementation_gate(state: MentorState) -> MentorState:
         contract = _invoke_contract(llm, state, "IMPLEMENTATION")
+        tasks = list(state.get("practice_tasks") or [])
+        task = None
+        for item in tasks:
+            if isinstance(item, dict):
+                task = item
+                break
+        assigned = str(contract.get("assigned_file") or "").strip()
+        task_id = str(contract.get("practice_task_id") or "").strip() or None
+        if task and not assigned:
+            assigned = str(task.get("filename") or "").strip()
+            task_id = str(task.get("id") or "") or task_id
+            prompt = str(task.get("prompt") or "").strip()
+            if not contract.get("message"):
+                contract["message"] = (
+                    f"Write this in `{assigned}`:\n\n{prompt}\n\n"
+                    "I will not edit your files. When it runs, click Check my work "
+                    "or tell me you're done."
+                )
         if not contract.get("message"):
             contract["message"] = (
                 "Build it in the editor. I will not modify your files. "
@@ -855,13 +888,95 @@ def make_implementation_node(llm: CoachLLM) -> Callable[[MentorState], MentorSta
             )
         contract["action"] = "ASK_IMPLEMENTATION"
         contract["next_state"] = ConceptStatus.attempted.value
+        if assigned:
+            contract["assigned_file"] = assigned
+            contract["practice_task_id"] = task_id
         return {
             "reply": str(contract["message"]),
             "contract": contract,
             "next_state": ConceptStatus.attempted.value,
+            "assigned_file": assigned or None,
+            "practice_task_id": task_id,
         }
 
     return implementation_gate
+
+
+def make_practice_eval_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
+    def practice_eval(state: MentorState) -> MentorState:
+        tasks = list(state.get("practice_tasks") or [])
+        task = next((item for item in tasks if isinstance(item, dict)), None)
+        filename = str(state.get("assigned_file") or (task or {}).get("filename") or "").strip()
+        source = str(state.get("practice_source") or "")
+        run_result = dict(state.get("practice_run") or {})
+        expect_check = dict(state.get("practice_expect") or {})
+        if not filename:
+            contract = _invoke_contract(llm, state, "IMPLEMENTATION")
+            contract["action"] = "ASK_IMPLEMENTATION"
+            return {
+                "reply": str(contract.get("message") or "Write the assigned file first."),
+                "contract": contract,
+                "next_state": ConceptStatus.attempted.value,
+            }
+        if not source.strip() and not run_result:
+            message = (
+                f"I don't have `{filename}` yet. Write it in the editor, save, "
+                "then click Check my work."
+            )
+            contract = empty_contract(
+                intent="MENTOR",
+                action="ASK_IMPLEMENTATION",
+                message=message,
+                next_state=ConceptStatus.attempted.value,
+                assigned_file=filename,
+                practice_task_id=str((task or {}).get("id") or "") or None,
+            )
+            return {
+                "reply": message,
+                "contract": contract,
+                "next_state": ConceptStatus.attempted.value,
+            }
+        result = llm.evaluate_practice(
+            concept_title=str(state.get("concept_title") or ""),
+            filename=filename,
+            prompt=str((task or {}).get("prompt") or ""),
+            rubric=str((task or {}).get("rubric") or ""),
+            source=source,
+            run_result=run_result,
+            expect_check=expect_check,
+            language=str(state.get("language") or ""),
+        )
+        passed = bool(result.get("passed"))
+        feedback = str(result.get("feedback") or "")
+        if passed:
+            message = feedback or f"`{filename}` looks right. In your own words, why did you write it this way?"
+            next_state = ConceptStatus.explained.value
+            action = "REVIEW"
+        else:
+            message = feedback or f"`{filename}` isn't there yet. What did you try, and what did you see?"
+            next_state = ConceptStatus.attempted.value
+            action = "ASK_IMPLEMENTATION"
+        contract = empty_contract(
+            intent="MENTOR",
+            action=action,
+            message=message,
+            next_state=next_state,
+            assigned_file=filename,
+            practice_task_id=str((task or {}).get("id") or "") or None,
+            should_unlock=passed,
+        )
+        extra = _invoke_contract(llm, state, "PRACTICE_EVAL")
+        if extra.get("message") and passed:
+            contract["message"] = str(extra["message"])
+            message = str(extra["message"])
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": next_state,
+            "should_unlock": passed,
+        }
+
+    return practice_eval
 
 
 def make_test_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
@@ -1025,9 +1140,10 @@ def milestone_gate_node(state: MentorState) -> MentorState:
         )
         return {"reply": message, "contract": contract, "should_unlock": False}
     if state.get("project_complete"):
+        title = str(state.get("project_title") or "the project").strip()
         message = (
-            "The framework is built. This is a technical defense, not a congratulations. "
-            "Why did you structure the router this way?"
+            f"{title} is built. This is a technical defense, not a congratulations. "
+            "Walk me through the design you chose, using your actual code."
         )
         contract = empty_contract(
             intent="MENTOR",
@@ -1103,6 +1219,7 @@ def build_mentor_graph(llm: CoachLLM | None = None):
     builder.add_node("transfer_check", transfer_check_node)
     builder.add_node("explanation_eval", make_explanation_node(llm))
     builder.add_node("implementation_gate", make_implementation_node(llm))
+    builder.add_node("practice_eval", make_practice_eval_node(llm))
     builder.add_node("test_feedback", make_test_node(llm))
     builder.add_node("hint_gate", hint_gate_node)
     builder.add_node("hint_ladder", make_hint_node(llm))
@@ -1132,6 +1249,7 @@ def build_mentor_graph(llm: CoachLLM | None = None):
             "transfer_check": "transfer_check",
             "explanation_eval": "explanation_eval",
             "implementation_gate": "implementation_gate",
+            "practice_eval": "practice_eval",
             "test_feedback": "test_feedback",
             "hint_gate": "hint_gate",
             "gap_diagnosis": "gap_diagnosis",
@@ -1161,6 +1279,7 @@ def build_mentor_graph(llm: CoachLLM | None = None):
         "transfer_check",
         "explanation_eval",
         "implementation_gate",
+        "practice_eval",
         "test_feedback",
         "hint_ladder",
         "gap_diagnosis",

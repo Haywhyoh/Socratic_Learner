@@ -22,6 +22,7 @@ export interface SandboxTerminalHandle {
 interface SandboxTerminalProps {
   userProjectId: number;
   onFsMutated?: () => void;
+  language?: string;
 }
 
 function promptLabel(cwd: string): string {
@@ -45,7 +46,7 @@ function normalizeCwd(parts: string[]): string {
 export const SandboxTerminal = forwardRef<
   SandboxTerminalHandle,
   SandboxTerminalProps
->(function SandboxTerminal({ userProjectId, onFsMutated }, ref) {
+>(function SandboxTerminal({ userProjectId, onFsMutated, language }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const lineRef = useRef("");
@@ -94,19 +95,28 @@ export const SandboxTerminal = forwardRef<
       }
 
       if (command === "help") {
+        const python = language === "python";
         term.writeln("");
         term.writeln("Sandbox terminal — one allowlisted command per line.");
         term.writeln("Examples:");
         term.writeln("  ls -la");
         term.writeln("  mkdir -p lib");
-        term.writeln("  touch server.js");
-        term.writeln("  node server.js");
-        term.writeln("  node --test");
+        if (python) {
+          term.writeln("  touch practice/hello.py");
+          term.writeln("  python practice/hello.py");
+          term.writeln("  pytest -q");
+        } else {
+          term.writeln("  touch server.js");
+          term.writeln("  node server.js");
+          term.writeln("  node --test");
+        }
         term.writeln("  cd lib   (client-side cwd)");
         term.writeln("  clear");
         term.writeln("");
         term.writeln(
-          "Note: no network in the sandbox. Node 20 is preinstalled. No Express.",
+          python
+            ? "Note: no network in the sandbox. Python 3.12 + pytest are preinstalled."
+            : "Note: no network in the sandbox. Node 20 is preinstalled. No Express.",
         );
         term.writeln(
           "Long-running servers stop after the sandbox timeout (smoke-test only).",
@@ -115,7 +125,9 @@ export const SandboxTerminal = forwardRef<
           "If you see a Docker error: start Colima/Docker on your Mac (host), not here.",
         );
         term.writeln(
-          "  colima start && cd backend && docker build -t socratic-sandbox-node:latest sandbox",
+          python
+            ? "  colima start && cd backend && docker build -t socratic-sandbox-python:latest -f sandbox/Dockerfile.python sandbox"
+            : "  colima start && cd backend && docker build -t socratic-sandbox-node:latest sandbox",
         );
         writePrompt();
         return;
@@ -177,7 +189,7 @@ export const SandboxTerminal = forwardRef<
         writePrompt();
       }
     },
-    [userProjectId, writePrompt],
+    [userProjectId, writePrompt, language],
   );
 
   useImperativeHandle(

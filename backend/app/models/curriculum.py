@@ -46,6 +46,10 @@ class Concept(Base):
     )
     """Which evidence types this concept needs before MASTERED, e.g.
     {"research": true, "implementation": true, "testing": true, "explanation": true}."""
+    practice_tasks: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """Named snippet/build tasks: filename, prompt, run argv, expect, rubric."""
+    mentor_scripts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    """Optional language-specific mentor copy (transfer_prompt, application_prompt)."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

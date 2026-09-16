@@ -3,6 +3,10 @@ from sqlalchemy.orm import Session
 
 from app.models.learning_state import ConceptStatus
 from app.seed_js_backend_framework import CONCEPTS, DEPENDENCIES
+from app.seed_python_fundamentals import (
+    CONCEPTS as PY_CONCEPTS,
+    DEPENDENCIES as PY_DEPENDENCIES,
+)
 from app.services import curriculum_graph
 from tests.conftest import make_course_path
 
@@ -17,6 +21,28 @@ def test_seed_graph_has_no_missing_or_cyclic_edges() -> None:
     # No cycles: Kahn topological sort must consume every node.
     remaining = {cid: set() for cid in ids}
     for concept_id, requires, _reason in DEPENDENCIES:
+        remaining[concept_id].add(requires)
+    ready = [cid for cid, deps in remaining.items() if not deps]
+    seen: set[str] = set()
+    while ready:
+        node = ready.pop()
+        seen.add(node)
+        for cid, deps in remaining.items():
+            if node in deps:
+                deps.remove(node)
+                if not deps and cid not in seen:
+                    ready.append(cid)
+    assert seen == ids
+
+
+def test_python_seed_graph_has_no_missing_or_cyclic_edges() -> None:
+    ids = {spec["id"] for spec in PY_CONCEPTS}
+    for concept_id, requires, _reason in PY_DEPENDENCIES:
+        assert concept_id in ids
+        assert requires in ids
+        assert concept_id != requires
+    remaining = {cid: set() for cid in ids}
+    for concept_id, requires, _reason in PY_DEPENDENCIES:
         remaining[concept_id].add(requires)
     ready = [cid for cid, deps in remaining.items() if not deps]
     seen: set[str] = set()

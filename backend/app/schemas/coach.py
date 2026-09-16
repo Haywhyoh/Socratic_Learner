@@ -15,6 +15,11 @@ class CoachMessageRequest(BaseModel):
     message: str = Field(min_length=1)
 
 
+class PracticeEvalRequest(BaseModel):
+    filename: str | None = None
+    task_id: str | None = None
+
+
 class ResearchRequest(BaseModel):
     question: str = ""
     sources: list[Any] = Field(default_factory=list)
@@ -100,6 +105,8 @@ class MentorContractRead(BaseModel):
     hint_level: int = 0
     should_unlock: bool = False
     next_state: str = ""
+    assigned_file: str | None = None
+    practice_task_id: str | None = None
 
     @field_validator("identified_gap", mode="before")
     @classmethod
@@ -124,6 +131,8 @@ class ConceptRead(BaseModel):
     resources: list[ResourceRead] = []
     hints: list[str] = []
     mastery_requirements: dict[str, Any] = {}
+    practice_tasks: list[Any] = []
+    mentor_scripts: dict[str, Any] = {}
 
 
 class LearnerStateRead(BaseModel):

@@ -217,6 +217,21 @@ CONCEPTS: list[ConceptSpec] = [
             "Run your snippet and add a `console.log` right before and after the callback call to see the order.",
         ],
         "mastery_requirements": {"explanation": True},
+        "mentor_scripts": {
+            "application_prompt": (
+                "That explanation is enough to treat this as explained — not yet verified.\n\n"
+                "Use it: a router stores a function when you register a path and runs it later "
+                "when a request matches. Which moment is passing, and which is invoking?"
+            ),
+            "transfer_prompt": (
+                "Same distinction, new names — don't reuse the previous wording.\n\n"
+                "```javascript\n"
+                "queue.push(job);\n"
+                "job();\n"
+                "```\n\n"
+                "Which line passes the function, and which line invokes it?"
+            ),
+        },
     },
     {
         "id": "programming.objects",
@@ -1383,4 +1398,11 @@ PROJECT_SPEC: dict[str, Any] = {
         {"title": "Node.js docs: Test runner", "url": "https://nodejs.org/api/test.html"},
         {"title": "MDN: HTTP overview", "url": f"{MDN}/en-US/docs/Web/HTTP/Overview"},
     ],
+    "runtime": {
+        "language": "javascript",
+        "sandbox_image": "socratic-sandbox-node:latest",
+        "run": ["node", "{file}"],
+        "test_command": ["node", "--test"],
+        "entry_globs": ["*.js", "*.mjs"],
+    },
 }

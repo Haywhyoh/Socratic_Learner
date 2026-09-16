@@ -44,6 +44,14 @@ export interface MilestoneRead {
   questions: string[];
 }
 
+export interface ProjectRuntime {
+  language?: string;
+  sandbox_image?: string;
+  run?: string[];
+  test_command?: string[];
+  entry_globs?: string[];
+}
+
 export interface ProjectRead {
   id: number;
   title: string;
@@ -53,6 +61,7 @@ export interface ProjectRead {
   primary_option_id: number;
   secondary_option_id: number;
   is_active: boolean;
+  runtime?: ProjectRuntime;
 }
 
 export interface ProjectDetail extends ProjectRead {
@@ -213,6 +222,8 @@ export interface MentorContractRead {
   hint_level: number;
   should_unlock: boolean;
   next_state: string;
+  assigned_file?: string | null;
+  practice_task_id?: string | null;
 }
 
 export interface GraphConceptRead {
@@ -270,6 +281,12 @@ export interface ConceptRead {
   resources: { title: string; url: string }[];
   hints: string[];
   mastery_requirements: Record<string, boolean>;
+  practice_tasks?: Array<{
+    id?: string;
+    filename?: string;
+    prompt?: string;
+    rubric?: string;
+  }>;
 }
 
 export interface CoachMessageResponse {

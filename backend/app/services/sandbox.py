@@ -15,6 +15,7 @@ from app.models.sandbox import SandboxWorkspace, SandboxWorkspaceStatus
 from app.models.user import User
 from app.services import coach as coach_service
 from app.services import learning as learning_service
+from app.services.runtime import project_runtime, sandbox_image, test_command
 from app.services.sandbox_runner import (
     FS_MUTATING_BINARIES,
     get_sandbox_runner,
@@ -74,27 +75,34 @@ def resolve_safe_path(workspace: Path, relative: str) -> Path:
     return target
 
 
-def _scaffold(workspace: Path, project_title: str) -> None:
+def _scaffold(workspace: Path, project_title: str, *, test_argv: list[str] | None = None) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     readme = workspace / "README.md"
+    command = " ".join(test_argv or ["node", "--test"])
     if not readme.exists():
         readme.write_text(
             f"# {project_title}\n\n"
             "Learner workspace. Write your code here — no starter files.\n"
             "When you have tests, run:\n\n"
             "```bash\n"
-            "node --test\n"
+            f"{command}\n"
             "```\n"
             "or: `socratic sandbox test`\n",
             encoding="utf-8",
         )
 
 
+def _runtime_for(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
+    user_project = learning_service.get_user_project(db, user, user_project_id)
+    return project_runtime(user_project.project)
+
+
 def ensure_workspace(db: Session, user: User, user_project_id: int) -> SandboxWorkspace:
     _require_enabled()
     user_project = learning_service.get_user_project(db, user, user_project_id)
     path = workspace_path_for(user_project.id)
-    _scaffold(path, user_project.project.title)
+    runtime = project_runtime(user_project.project)
+    _scaffold(path, user_project.project.title, test_argv=test_command(runtime))
 
     row = (
         db.query(SandboxWorkspace)
@@ -197,8 +205,14 @@ def run_command(
             )
 
     workspace = workspace_path_for(user_project_id)
+    runtime = _runtime_for(db, user, user_project_id)
     try:
-        result = get_sandbox_runner().run(workspace, safe_argv, cwd=safe_cwd)
+        result = get_sandbox_runner().run(
+            workspace,
+            safe_argv,
+            cwd=safe_cwd,
+            image=sandbox_image(runtime),
+        )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -257,7 +271,7 @@ def _uses_node_tests(workspace: Path) -> bool:
             name = path.name.lower()
             if ".test." in name or ".spec." in name or path.parent.name == "test":
                 return True
-    return True  # this project is JavaScript-first; default to node --test
+    return False
 
 
 def _failure_summary(output: str, *, max_lines: int = 12) -> str:
@@ -279,11 +293,14 @@ def _failure_summary(output: str, *, max_lines: int = 12) -> str:
 def run_tests(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
     _require_enabled()
     row = ensure_workspace(db, user, user_project_id)
-    argv = ["node", "--test"]
+    runtime = _runtime_for(db, user, user_project_id)
+    argv = test_command(runtime)
     workspace = workspace_path_for(user_project_id)
 
     try:
-        result = get_sandbox_runner().run(workspace, argv)
+        result = get_sandbox_runner().run(
+            workspace, argv, image=sandbox_image(runtime)
+        )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -291,9 +308,15 @@ def run_tests(db: Session, user: User, user_project_id: int) -> dict[str, Any]:
         ) from exc
 
     combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-    passed, failed, errors = _parse_node_test_counts(combined)
-    if passed == 0 and failed == 0 and errors == 0:
+    language = str(runtime.get("language") or "")
+    if language == "python":
         passed, failed, errors = _parse_pytest_counts(combined)
+        if passed == 0 and failed == 0 and errors == 0:
+            passed, failed, errors = _parse_node_test_counts(combined)
+    else:
+        passed, failed, errors = _parse_node_test_counts(combined)
+        if passed == 0 and failed == 0 and errors == 0:
+            passed, failed, errors = _parse_pytest_counts(combined)
 
     outcome = "passed" if result.exit_code == 0 and not result.timed_out else "failed"
     if result.timed_out:

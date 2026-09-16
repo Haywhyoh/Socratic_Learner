@@ -77,6 +77,8 @@ class Project(Base):
         default=ProjectCurriculumMode.ai_generated,
         nullable=False,
     )
+    runtime: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    """Sandbox/language metadata: language, sandbox_image, run, test_command, entry_globs."""
     course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
     primary_option_id: Mapped[int] = mapped_column(
         ForeignKey("course_options.id", ondelete="RESTRICT"), nullable=False

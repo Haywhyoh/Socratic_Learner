@@ -67,6 +67,24 @@ def asks_for_implementation(message: str) -> bool:
     )
 
 
+def asks_for_practice_eval(message: str) -> bool:
+    lower = (message or "").strip().lower()
+    return any(
+        phrase in lower
+        for phrase in (
+            "check my work",
+            "check this",
+            "evaluate my",
+            "grade my",
+            "i'm done",
+            "i am done",
+            "done with the file",
+            "please check",
+            "run my file",
+        )
+    ) or lower in {"done", "check", "evaluate"}
+
+
 def has_genuine_effort(effort: EffortSignals) -> bool:
     return bool(
         effort.get("learner_turns_since_hint", 0) >= 1
@@ -670,18 +688,47 @@ def fallback_mentor_contract(
             "next_state": "researching",
         }
     if action_hint == "IMPLEMENTATION":
+        tasks = list(context.get("practice_tasks") or [])
+        task = tasks[0] if tasks and isinstance(tasks[0], dict) else None
+        filename = str((task or {}).get("filename") or "").strip()
+        prompt = str((task or {}).get("prompt") or "").strip()
+        if filename:
+            body = (
+                f"Write this in `{filename}`:\n\n"
+                f"{prompt or 'The smallest version of this concept you can.'}\n\n"
+                "I will not edit your files. When it runs, click Check my work or tell me you're done."
+            )
+        else:
+            body = (
+                f"Build the smallest version of '{title}' you can. I will not edit your files. "
+                "When something runs, tell me what you tried."
+            )
         return {
             "intent": "MENTOR",
             "action": "ASK_IMPLEMENTATION",
+            "message": body,
+            "diagnostic_concept": None,
+            "identified_gap": None,
+            "hint_level": 0,
+            "should_unlock": False,
+            "next_state": "attempted",
+            "assigned_file": filename or None,
+            "practice_task_id": str((task or {}).get("id") or "") or None,
+        }
+    if action_hint == "PRACTICE_EVAL":
+        return {
+            "intent": "MENTOR",
+            "action": "PRACTICE_EVAL",
             "message": (
-                f"Build the smallest version of '{title}' you can. I will not edit your files. "
-                "When something runs, tell me what you tried."
+                "I looked at the file you were assigned. Tell me what you changed if this still fails."
             ),
             "diagnostic_concept": None,
             "identified_gap": None,
             "hint_level": 0,
             "should_unlock": False,
             "next_state": "attempted",
+            "assigned_file": context.get("assigned_file"),
+            "practice_task_id": context.get("practice_task_id"),
         }
     if action_hint == "DIAGNOSE":
         q = questions[0] if questions else f"What does '{title}' represent to you?"

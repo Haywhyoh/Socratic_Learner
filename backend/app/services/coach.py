@@ -19,8 +19,10 @@ from app.agents.mentor_graph import _behaviors_for, build_mentor_graph
 from app.agents.misconceptions import classify_learner_turn, is_boot_message
 from app.agents.policies import (
     MAX_REVIEW_ATTEMPTS,
+    asks_for_practice_eval,
     message_looks_like_attempt,
 )
+from app.agents.tools import bind_coach_sandbox_tools
 from app.models.coach import (
     HintReveal,
     MentorSession,
@@ -46,6 +48,8 @@ from app.models.sandbox import SandboxWorkspace
 from app.models.user import User
 from app.services import curriculum_graph
 from app.services import learning as learning_service
+from app.services import practice as practice_service
+from app.services.runtime import project_runtime, runtime_language
 
 
 def _looks_like_concept_id(value: str) -> bool:
@@ -228,6 +232,8 @@ def _concept_payload(concept: Concept | None) -> dict[str, Any]:
         "resources": list(concept.resources or []),
         "hints": list(concept.hints or []),
         "mastery_requirements": dict(concept.mastery_requirements or {}),
+        "practice_tasks": list(getattr(concept, "practice_tasks", None) or []),
+        "mentor_scripts": dict(getattr(concept, "mentor_scripts", None) or {}),
     }
 
 
@@ -311,13 +317,18 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
     later_titles = curriculum_graph.later_concept_titles(
         db, list(position.get("later_concepts") or [])
     )
+    project = user_project.project
+    runtime = project_runtime(project)
+    task = practice_service.next_practice_task(concept, state_row)
     return {
         "position": position,
         "concept": concept,
         "state_row": state_row,
         "graph_state": {
-            "project": "javascript-backend-framework",
-            "project_title": user_project.project.title if user_project.project else "",
+            "project": str(getattr(project, "title", "") or ""),
+            "project_title": project.title if project else "",
+            "language": runtime_language(project),
+            "runtime": runtime,
             "current_milestone": f"M{position.get('milestone_order') or 0:02d}",
             "current_milestone_title": position.get("milestone_title") or "",
             "current_concept": concept_id or "",
@@ -347,6 +358,10 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
             "hints": list((concept.hints if concept else None) or []),
             "learning_objectives": list((concept.learning_objectives if concept else None) or []),
             "needs_build": curriculum_graph.needs_build(concept) if concept else False,
+            "practice_tasks": practice_service.practice_tasks_for(concept),
+            "assigned_file": (task or {}).get("filename"),
+            "practice_task_id": (task or {}).get("id"),
+            "mentor_scripts": dict(getattr(concept, "mentor_scripts", None) or {}),
             "gap_reason": gap_reason,
             "awaiting_reflection": awaiting_reflection,
             "project_complete": bool(position.get("project_complete")),
@@ -381,6 +396,7 @@ def _run_mentor(
     message: str,
     *,
     effort: dict[str, Any] | None = None,
+    user: User | None = None,
 ) -> dict[str, Any]:
     session = _session(db, user_project)
     ctx = _mentor_context(db, user_project)
@@ -437,13 +453,26 @@ def _run_mentor(
     graph_state["identified_misconception"] = classified.get("misconception")
     graph_state["last_tutor_message"] = last_tutor
     graph_state["learner_message"] = message
+    actor = user or getattr(getattr(user_project, "enrollment", None), "user", None)
+    if actor is not None and asks_for_practice_eval(message):
+        task = practice_service.next_practice_task(
+            concept,
+            state_row,
+            task_id=str(graph_state.get("practice_task_id") or "") or None,
+            filename=str(graph_state.get("assigned_file") or "") or None,
+        )
+        if task:
+            _hydrate_practice_run(db, actor, user_project, graph_state, task)
     graph_state["effort"] = effort or {
         "learner_turns_since_hint": 1,
         "checkpoint_since_hint": False,
         "attempt_message": message_looks_like_attempt(message),
         "tested_attempt": False,
     }
-    compiled = build_mentor_graph(get_coach_llm())
+    llm = get_coach_llm()
+    if actor is not None and hasattr(llm, "bind_workspace_tools"):
+        llm.bind_workspace_tools(bind_coach_sandbox_tools(db, actor, user_project.id))
+    compiled = build_mentor_graph(llm)
     result = compiled.invoke(graph_state)
     contract = dict(result.get("contract") or {})
     reply = str(result.get("reply") or contract.get("message") or "")
@@ -467,6 +496,18 @@ def _run_mentor(
     if result.get("identified_gap") and concept_id:
         suspects = curriculum_graph.suspect_gaps(db, user_project, str(concept_id))
         curriculum_graph.persist_suspected_gaps(db, user_project, str(concept_id), suspects)
+    assigned = str(contract.get("assigned_file") or result.get("assigned_file") or "").strip()
+    if assigned and actor is not None:
+        _ensure_practice_file(db, actor, user_project.id, assigned)
+    task_id = str(contract.get("practice_task_id") or result.get("practice_task_id") or "").strip()
+    if (
+        concept_id
+        and task_id
+        and bool(contract.get("should_unlock") or result.get("should_unlock"))
+        and str(contract.get("action") or "") in {"REVIEW", "PRACTICE_EVAL"}
+    ):
+        curriculum_graph.record_practice_pass(db, user_project, str(concept_id), task_id)
+        curriculum_graph.try_master(db, user_project, str(concept_id))
     _append_turn(db, session, MentorTurnRole.tutor, reply)
     db.commit()
     db.refresh(session)
@@ -486,7 +527,7 @@ def _run_mentor(
         "turns": session.turns,
         "current_question": reply if contract.get("action") in {
             "ASK_QUESTION", "ASK_RESEARCH", "ASK_DIAGNOSTIC_QUESTION",
-            "ASK_REFLECTION", "ASK_DEFENSE",
+            "ASK_REFLECTION", "ASK_DEFENSE", "ASK_IMPLEMENTATION",
         } else None,
         "answer_status": contract.get("action"),
         "push_back": None,
@@ -502,10 +543,71 @@ def _run_mentor(
             "hint_level": contract.get("hint_level") or 0,
             "should_unlock": bool(contract.get("should_unlock") or result.get("should_unlock")),
             "next_state": next_state,
+            "assigned_file": contract.get("assigned_file") or result.get("assigned_file"),
+            "practice_task_id": contract.get("practice_task_id") or result.get("practice_task_id"),
         },
         "concept": _concept_payload(ctx["concept"]),
         "position": position,
     }
+
+
+def _ensure_practice_file(
+    db: Session, user: User, user_project_id: int, relative: str
+) -> None:
+    from app.services import sandbox as sandbox_service
+
+    try:
+        sandbox_service.read_file(db, user, user_project_id, relative)
+        return
+    except HTTPException:
+        pass
+    sandbox_service.write_file(db, user, user_project_id, relative, "")
+
+
+def _hydrate_practice_run(
+    db: Session,
+    user: User,
+    user_project: UserProject,
+    graph_state: dict[str, Any],
+    task: dict[str, Any],
+) -> None:
+    from app.services import sandbox as sandbox_service
+    filename = str(task.get("filename") or "")
+    graph_state["assigned_file"] = filename
+    graph_state["practice_task_id"] = task.get("id")
+    try:
+        payload = sandbox_service.read_file(db, user, user_project.id, filename)
+        source = str(payload.get("content") or "")
+    except HTTPException:
+        source = ""
+    graph_state["practice_source"] = source
+    if not source.strip():
+        graph_state["practice_run"] = {}
+        graph_state["practice_expect"] = {"passed": False, "missing_stdout": ["(empty file)"]}
+        return
+    argv = practice_service.run_argv_for_task(task, user_project.project)
+    try:
+        run = sandbox_service.run_command(db, user, user_project.id, argv=argv)
+    except HTTPException as exc:
+        run = {
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": str(exc.detail),
+            "timed_out": False,
+        }
+    graph_state["practice_run"] = {
+        "exit_code": run.get("exit_code"),
+        "stdout": run.get("stdout") or "",
+        "stderr": run.get("stderr") or "",
+        "timed_out": run.get("timed_out"),
+    }
+    exit_code = run.get("exit_code")
+    graph_state["practice_expect"] = practice_service.check_expect(
+        dict(task.get("expect") or {}),
+        exit_code=int(exit_code) if exit_code is not None else 1,
+        stdout=str(run.get("stdout") or ""),
+        stderr=str(run.get("stderr") or ""),
+    )
 
 
 def start_coach(
@@ -549,7 +651,7 @@ def start_coach(
             "position": position,
             "graph": curriculum_graph.graph_payload(db, user_project),
         }
-    result = _run_mentor(db, user_project, "What should I think about first?")
+    result = _run_mentor(db, user_project, "What should I think about first?", user=user)
     db.refresh(session)
     position = result["position"]
     return {
@@ -586,8 +688,34 @@ def post_message(
         # A substantial message during research is treated as notes + discussion.
         if len(message.strip()) >= 40:
             curriculum_graph.mark_discussing(db, user_project, state_row.concept_id)
-    result = _run_mentor(db, user_project, message)
+    result = _run_mentor(db, user_project, message, user=user)
     return result
+
+
+def evaluate_practice(
+    db: Session,
+    user: User,
+    user_project_id: int,
+    *,
+    filename: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    user_project = _user_project(db, user, user_project_id)
+    ctx = _mentor_context(db, user_project)
+    concept = ctx["concept"]
+    state_row = ctx["state_row"]
+    task = practice_service.next_practice_task(
+        concept, state_row, task_id=task_id, filename=filename
+    )
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No practice file is assigned for the current concept",
+        )
+    session = _session(db, user_project)
+    label = filename or task["filename"]
+    _append_turn(db, session, MentorTurnRole.learner, f"Check my work: {label}")
+    return _run_mentor(db, user_project, "check my work", user=user)
 
 
 def _milestone_title_for_session(db: Session, session: MentorSession) -> str:
@@ -718,6 +846,7 @@ def request_hint(db: Session, user: User, user_milestone_id: int) -> dict[str, A
         db,
         user_project,
         "hint",
+        user=user,
         effort={
             "learner_turns_since_hint": 1,
             "checkpoint_since_hint": False,

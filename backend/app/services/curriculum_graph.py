@@ -366,6 +366,24 @@ def record_evidence(
     return row
 
 
+def record_practice_pass(
+    db: Session,
+    user_project: UserProject,
+    concept_id: str,
+    task_id: str,
+) -> ConceptState:
+    row = record_evidence(db, user_project, concept_id, implementation=True)
+    evidence = dict(row.evidence or empty_evidence())
+    ids = [str(item) for item in list(evidence.get("practice_task_ids") or [])]
+    if task_id and task_id not in ids:
+        ids.append(task_id)
+    evidence["practice_task_ids"] = ids
+    row.evidence = evidence
+    flag_modified(row, "evidence")
+    db.flush()
+    return row
+
+
 def _requirements_met(concept: Concept, evidence: dict[str, Any]) -> bool:
     req = concept.mastery_requirements or {}
     for key, needed in req.items():

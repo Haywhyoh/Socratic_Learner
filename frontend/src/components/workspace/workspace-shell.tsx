@@ -29,6 +29,7 @@ import type {
   MentorSessionSummary,
   MentorTurnRead,
   ProjectDetail,
+  ProjectRuntime,
   SandboxFileEntry,
   UserMilestoneRead,
 } from "@/lib/types";
@@ -46,6 +47,52 @@ function milestoneReadyForReflection(
   return concepts.every(
     (concept) => concept.status === "mastered" || concept.status === "verified",
   );
+}
+
+function enrollmentRuntime(enrollment: EnrollmentDetail): ProjectRuntime {
+  return (
+    enrollment.assigned_project?.runtime ??
+    enrollment.user_project?.project?.runtime ??
+    {}
+  );
+}
+
+function isPythonRuntime(runtime: ProjectRuntime): boolean {
+  return (runtime.language ?? "").toLowerCase() === "python";
+}
+
+function runCommandForFile(runtime: ProjectRuntime, file: string | null): string {
+  if (isPythonRuntime(runtime)) {
+    if (file?.endsWith(".py")) return `python ${file}`;
+    return "python --version";
+  }
+  if (file?.endsWith(".js") || file?.endsWith(".mjs")) return `node ${file}`;
+  const template = runtime.run;
+  if (file && template?.length) {
+    return template.map((part) => part.replace("{file}", file)).join(" ");
+  }
+  return "node --version";
+}
+
+function testsCommand(runtime: ProjectRuntime): string {
+  const command = runtime.test_command;
+  if (command?.length) return command.join(" ");
+  return isPythonRuntime(runtime) ? "pytest -q" : "node --test";
+}
+
+function preferredSourceFile(
+  listed: SandboxFileEntry[] | undefined,
+  runtime: ProjectRuntime,
+): string | null {
+  const files = listed?.filter((entry) => !entry.is_dir) ?? [];
+  const python = isPythonRuntime(runtime);
+  const match = files.find((file) =>
+    python
+      ? file.path.endsWith(".py")
+      : file.path.endsWith(".js") || file.path.endsWith(".mjs"),
+  );
+  const readme = files.find((file) => file.path === "README.md");
+  return match?.path ?? readme?.path ?? files[0]?.path ?? null;
 }
 
 interface WorkspaceShellProps {
@@ -110,6 +157,11 @@ export function WorkspaceShell({
     enrollment.assigned_project?.title ??
     enrollment.user_project?.project?.title ??
     "Project";
+  const runtime = enrollmentRuntime(enrollment);
+  const lastMilestoneOrder = Math.max(
+    0,
+    ...userMilestones.map((item) => item.milestone?.order_index ?? 0),
+  );
 
   const refreshFiles = useCallback(async () => {
     if (!userProjectId) return;
@@ -201,11 +253,23 @@ export function WorkspaceShell({
           }
         }
         setCoachReady(true);
-        const js =
-          listed?.find((f) => f.path.endsWith(".js") && !f.is_dir) ??
-          listed?.find((f) => f.path === "README.md" && !f.is_dir);
-        const first = js?.path ?? listed?.find((f) => !f.is_dir)?.path ?? null;
-        if (first) await loadFile(first);
+        if (coach.contract?.assigned_file) {
+          const listedAfter = await refreshFiles();
+          const exists = listedAfter?.some(
+            (entry) => entry.path === coach.contract?.assigned_file,
+          );
+          if (!exists) {
+            await api.writeSandboxFile(
+              userProjectId!,
+              coach.contract.assigned_file,
+              "",
+            );
+          }
+          await loadFile(coach.contract.assigned_file);
+        } else {
+          const first = preferredSourceFile(listed, runtime);
+          if (first) await loadFile(first);
+        }
       } catch (e) {
         terminalRef.current?.echo(
           e instanceof ApiError ? e.message : "Failed to initialize workspace",
@@ -285,14 +349,12 @@ export function WorkspaceShell({
     }
   };
 
-  const runNode = async () => {
+  const runActiveFile = async () => {
     if (!userProjectId) return;
     if (dirty && activeFile) await saveFile();
     setBusy("run");
     try {
-      const cmd = activeFile?.endsWith(".js") || activeFile?.endsWith(".mjs")
-        ? `node ${activeFile}`
-        : "node --version";
+      const cmd = runCommandForFile(runtime, activeFile);
       await terminalRef.current?.runCommand(cmd);
     } finally {
       setBusy(null);
@@ -304,7 +366,10 @@ export function WorkspaceShell({
     if (dirty && activeFile) await saveFile();
     setBusy("test");
     try {
-      await terminalRef.current?.runCommand("node --test");
+      const result = await api.testSandbox(userProjectId);
+      terminalRef.current?.echo(
+        `${testsCommand(runtime)}\n${result.summary}\n${result.output ?? ""}`.trim(),
+      );
       if (userProjectId) {
         try {
           setGraph(await api.getGraph(userProjectId));
@@ -457,7 +522,7 @@ export function WorkspaceShell({
             variant="secondary"
             className="text-xs"
             disabled={busy !== null}
-            onClick={() => void runNode()}
+            onClick={() => void runActiveFile()}
           >
             <Play className="h-4 w-4" />
             Run
@@ -499,7 +564,7 @@ export function WorkspaceShell({
               >
                 Complete milestone
               </Button>
-              {displayUm?.milestone?.order_index === 12 && (
+              {displayUm?.milestone?.order_index === lastMilestoneOrder && (
                 <Button
                   variant="ghost"
                   className="text-xs"
@@ -599,6 +664,9 @@ export function WorkspaceShell({
                 entries={files}
                 activePath={activeFile}
                 busy={busy !== null}
+                filePlaceholder={
+                  isPythonRuntime(runtime) ? "practice/hello.py" : "src/index.js"
+                }
                 onSelectFile={(path) => void loadFile(path)}
                 onCreateFile={createFile}
                 onCreateFolder={createFolder}
@@ -627,6 +695,7 @@ export function WorkspaceShell({
                 <SandboxTerminal
                   ref={terminalRef}
                   userProjectId={userProjectId}
+                  language={runtime.language}
                   onFsMutated={() => void refreshFiles()}
                 />
               </div>
@@ -652,6 +721,11 @@ export function WorkspaceShell({
               readOnly={coachBoot.readOnly}
               attempts={coachBoot.attempts}
               selectedAttempt={coachBoot.attempt}
+              onOpenFile={async (path) => {
+                const exists = files.some((entry) => entry.path === path);
+                if (exists) await loadFile(path);
+                else await createFile(path);
+              }}
               onSelectAttempt={(attempt) => {
                 if (displayUm) void loadCoachForMilestone(displayUm, attempt);
               }}

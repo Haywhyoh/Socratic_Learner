@@ -59,6 +59,8 @@ class MentorContract(TypedDict, total=False):
     hint_level: int
     should_unlock: bool
     next_state: str
+    assigned_file: str | None
+    practice_task_id: str | None
 
 
 class MentorState(TypedDict, total=False):
@@ -106,6 +108,17 @@ class MentorState(TypedDict, total=False):
     tests_summary: str
     awaiting_reflection: bool
     project_complete: bool
+    language: NotRequired[str]
+    runtime: NotRequired[dict[str, Any]]
+    practice_tasks: NotRequired[list[Any]]
+    assigned_file: NotRequired[str | None]
+    practice_task_id: NotRequired[str | None]
+    practice_source: NotRequired[str]
+    practice_run: NotRequired[dict[str, Any]]
+    practice_expect: NotRequired[dict[str, Any]]
+    transfer_prompt: NotRequired[str]
+    application_prompt: NotRequired[str]
+    mentor_scripts: NotRequired[dict[str, Any]]
 
 
 class CoachState(TypedDict, total=False):
