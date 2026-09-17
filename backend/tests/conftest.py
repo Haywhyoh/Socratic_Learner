@@ -14,6 +14,7 @@ from app.models.course import Course, CourseOption
 from app.models.project import Milestone, Project, ProjectCurriculumMode, ProjectDifficulty
 from app.models.user import User
 from app.seed import seed
+from app.services.runtime import JS_RUNTIME
 from app.services.sandbox_runner import FakeSandboxRunner, RunResult, set_sandbox_runner
 
 engine = create_engine(settings.test_database_url, pool_pre_ping=True)
@@ -151,6 +152,7 @@ def make_course_path(db: Session, *, with_project: bool = True) -> dict[str, int
             extension_challenges=["Async middleware"],
             recommended_resources=[{"title": "Node http", "url": "https://nodejs.org/api/http.html"}],
             curriculum_mode=ProjectCurriculumMode.deterministic,
+            runtime=dict(JS_RUNTIME),
             course_id=course.id,
             primary_option_id=primary.id,
             secondary_option_id=secondary.id,
