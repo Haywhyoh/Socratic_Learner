@@ -14,9 +14,6 @@ export default function HomePage() {
       <header className="relative z-10 flex items-center justify-between px-6 py-5">
         <span className="font-serif text-xl text-stone-100">Socratic Learner</span>
         <div className="flex gap-3">
-          <Link href="/admin">
-            <Button variant="ghost">Admin</Button>
-          </Link>
           <Link href="/login">
             <Button variant="ghost">Sign in</Button>
           </Link>
