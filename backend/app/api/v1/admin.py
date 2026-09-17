@@ -7,16 +7,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.agents.graph_author import GraphAuthorError, generate_concept_draft, generate_graph_draft
-from app.agents.llm import LLMConfigurationError
+from app.agents.llm import LLMConfigurationError, get_coach_llm
 from app.db.session import get_db
 from app.schemas.admin import (
     CatalogGraphRead,
     ConceptGenerateRequest,
     ConceptGraphSpec,
+    GraphGenerateJob,
     GraphGenerateRequest,
     GraphPayload,
     GraphSummary,
 )
+from app.services import graph_jobs
 from app.services.curriculum_authoring import GraphValidationError, get_graph, list_graphs, publish_graph
 from app.services.runtime import supported_languages
 
@@ -69,6 +71,30 @@ def admin_generate_graph(body: GraphGenerateRequest) -> GraphPayload:
     except GraphAuthorError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return GraphPayload.model_validate(draft)
+
+
+@router.post(
+    "/graphs/generate/jobs",
+    response_model=GraphGenerateJob,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def admin_start_generate_graph(body: GraphGenerateRequest) -> GraphGenerateJob:
+    try:
+        get_coach_llm()
+    except LLMConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    job = graph_jobs.create_job(body.model_dump())
+    graph_jobs.start_job(job["job_id"])
+    return GraphGenerateJob.model_validate(job)
+
+
+@router.get("/graphs/generate/jobs/{job_id}", response_model=GraphGenerateJob)
+def admin_get_generate_graph(job_id: str) -> GraphGenerateJob:
+    try:
+        job = graph_jobs.get_job(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generate job not found") from exc
+    return GraphGenerateJob.model_validate(job)
 
 
 @router.post("/graphs/concepts/generate", response_model=ConceptGraphSpec)

@@ -251,9 +251,6 @@ def _invoke_contract(llm: CoachLLM, state: MentorState, action_hint: str) -> Men
 
 def make_question_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     def question_node(state: MentorState) -> MentorState:
-        skipped = _advance_or_missing_if_ready(state)
-        if skipped is not None:
-            return skipped
         status = state.get("concept_state") or ConceptStatus.available.value
         if asks_for_implementation(state.get("learner_message") or ""):
             contract = empty_contract(
@@ -265,16 +262,23 @@ def make_question_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
                 ),
                 next_state=status if status != ConceptStatus.available.value else ConceptStatus.introduced.value,
             )
+            return {
+                "reply": str(contract.get("message") or ""),
+                "contract": contract,
+                "next_state": str(contract.get("next_state") or ConceptStatus.introduced.value),
+            }
+        skipped = _advance_or_missing_if_ready(state)
+        if skipped is not None:
+            return skipped
+        contract = _invoke_contract(llm, state, "ASK_QUESTION")
+        if status == ConceptStatus.available.value:
+            next_state = ConceptStatus.introduced.value
         else:
-            contract = _invoke_contract(llm, state, "ASK_QUESTION")
-            if status == ConceptStatus.available.value:
-                next_state = ConceptStatus.introduced.value
-            else:
-                next_state = status
-            contract["next_state"] = next_state
-            if str(contract.get("action") or "") == "REVIEW" and not _ledger_satisfied(state):
-                contract["action"] = "ASK_QUESTION"
-                contract["should_unlock"] = False
+            next_state = status
+        contract["next_state"] = next_state
+        if str(contract.get("action") or "") == "REVIEW" and not _ledger_satisfied(state):
+            contract["action"] = "ASK_QUESTION"
+            contract["should_unlock"] = False
         return {
             "reply": str(contract.get("message") or ""),
             "contract": contract,

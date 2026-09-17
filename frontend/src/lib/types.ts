@@ -465,6 +465,13 @@ export interface AdminGenerateRequest {
   include_concepts?: string[];
 }
 
+export interface AdminGenerateJob {
+  job_id: string;
+  status: "queued" | "running" | "done" | "error";
+  error?: string | null;
+  graph?: AdminGraphPayload | null;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

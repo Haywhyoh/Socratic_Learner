@@ -238,6 +238,12 @@ export function GenerateForm({
       <Button type="submit" disabled={busy} className="px-6">
         {busy ? "Generating…" : "Generate draft"}
       </Button>
+      {busy ? (
+        <p className="text-sm text-stone-500">
+          Large syllabi can take a few minutes. Keep this tab open — the proxy will not
+          time out the draft.
+        </p>
+      ) : null}
       <p className="text-sm text-stone-500">
         <Link href="/admin" className="text-amber-500 hover:text-amber-400">
           Back to graphs

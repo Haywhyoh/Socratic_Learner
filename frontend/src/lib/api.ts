@@ -4,6 +4,7 @@ import type {
   AdminGenerateRequest,
   AdminGraphPayload,
   AdminGraphSummary,
+  AdminGenerateJob,
   CoachMessageResponse,
   CoachStartResponse,
   CourseOptionRead,
@@ -84,6 +85,36 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   return data as T;
+}
+
+async function pollAdminGenerateJob(
+  payload: AdminGenerateRequest,
+): Promise<AdminGraphPayload> {
+  const started = await request<AdminGenerateJob>("/api/v1/admin/graphs/generate/jobs", {
+    method: "POST",
+    auth: false,
+    body: payload,
+  });
+  const deadline = Date.now() + 10 * 60 * 1000;
+  let jobId = started.job_id;
+  while (Date.now() < deadline) {
+    const job = await request<AdminGenerateJob>(
+      `/api/v1/admin/graphs/generate/jobs/${jobId}`,
+      { auth: false },
+    );
+    jobId = job.job_id || jobId;
+    if (job.status === "done" && job.graph) {
+      return job.graph;
+    }
+    if (job.status === "error") {
+      throw new ApiError(job.error || "Could not generate a graph", 502, job.error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new ApiError(
+    "Graph generation is still running. Keep this tab open and try Generate again in a minute.",
+    504,
+  );
 }
 
 export const api = {
@@ -368,11 +399,7 @@ export const api = {
   },
 
   generateAdminGraph(payload: AdminGenerateRequest) {
-    return request<AdminGraphPayload>("/api/v1/admin/graphs/generate", {
-      method: "POST",
-      auth: false,
-      body: payload,
-    });
+    return pollAdminGenerateJob(payload);
   },
 
   generateAdminConcept(payload: {

@@ -96,6 +96,13 @@ class GraphPayload(BaseModel):
     milestones: list[MilestoneGraphSpec] = Field(default_factory=list)
 
 
+class GraphGenerateJob(BaseModel):
+    job_id: str
+    status: Literal["queued", "running", "done", "error"]
+    error: str | None = None
+    graph: GraphPayload | None = None
+
+
 class CatalogGraphRead(GraphPayload):
     project_id: int
 

@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 import json
+import time
 
 from app.agents.graph_author import normalize_graph_draft
 from app.agents.llm import knowledge_graph_author_prompt
@@ -490,3 +491,54 @@ def test_validate_rejects_self_edge() -> None:
         assert any("itself" in err for err in exc.errors)
     else:
         raise AssertionError("expected GraphValidationError")
+
+
+def test_long_include_list_uses_compact_prompt() -> None:
+    syllabus = [f"C# topic {index}" for index in range(12)]
+    text = knowledge_graph_author_prompt(
+        topic="c# from scratch",
+        language="csharp",
+        slug="csharp",
+        track_kind="language",
+        include_concepts=syllabus,
+        capstone="Business Loan Banking System",
+    )
+    assert "compact concept" in text.lower()
+    assert "C# topic 0" in text
+    assert "8-16" not in text
+
+
+def test_generate_job_returns_accepted_then_graph(
+    client: TestClient, workspace_tmp
+) -> None:
+    started = client.post(
+        "/api/v1/admin/graphs/generate/jobs",
+        json={
+            "topic": "c# from scratch",
+            "language": "csharp",
+            "slug": "csharp-beginner",
+            "track_kind": "language",
+            "include_concepts": ["C# Syntax", "C# Variables"],
+        },
+    )
+    assert started.status_code == 202, started.text
+    job_id = started.json()["job_id"]
+    job = None
+    for _ in range(50):
+        fetched = client.get(f"/api/v1/admin/graphs/generate/jobs/{job_id}")
+        assert fetched.status_code == 200, fetched.text
+        job = fetched.json()
+        if job["status"] in {"done", "error"}:
+            break
+        time.sleep(0.02)
+    assert job is not None
+    if job["status"] != "done":
+        from app.services import graph_jobs
+
+        graph_jobs.run_job(job_id)
+        job = client.get(f"/api/v1/admin/graphs/generate/jobs/{job_id}").json()
+    assert job["status"] == "done", job
+    assert job["graph"]["project"]["runtime"]["language"] == "csharp"
+    titles = " ".join(item["title"].lower() for item in job["graph"]["concepts"])
+    assert "syntax" in titles
+    assert "variables" in titles

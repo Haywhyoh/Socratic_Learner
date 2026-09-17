@@ -670,8 +670,27 @@ def knowledge_graph_author_prompt(
         )
         count = "8-16"
         milestone_count = "5-8"
+    compact = len(must) >= 10
     include_block = ""
-    if must:
+    if must and compact:
+        count = str(len(must))
+        milestone_count = "6-10"
+        include_block = (
+            f"The listed syllabus IS the graph. Emit {len(must)} compact concept nodes "
+            "covering EVERY listed idea in teaching order. You may add at most 3 extra "
+            "prerequisite nodes. Keep each concept short: 1-2 sentence description, "
+            "2 learning_objectives, 2 diagnostic_questions, 1 research_question, "
+            "5 short hints, mastery_requirements, and 1 practice_task "
+            "(id, filename, prompt, run, expect, rubric). Skip long misconception scripts. "
+            "No essays. No full solutions. Do not drop any of these ideas:\n"
+            f"{json.dumps(must)}\n"
+        )
+        if kind == "language":
+            shape = (
+                "This is LANGUAGE/FRAMEWORK learning from an author-supplied syllabus.\n"
+                "Group the listed concepts into milestones, then a capstone that uses them.\n"
+            )
+    elif must:
         include_block = (
             "MUST include these concepts as full nodes (correct titles, ids, teaching content). "
             "Add any missing prerequisites even if they were not listed. Do not drop any of these ideas:\n"
