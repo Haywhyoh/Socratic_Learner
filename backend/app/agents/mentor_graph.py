@@ -65,6 +65,7 @@ def empty_contract(**overrides: object) -> MentorContract:
         "next_state": ConceptStatus.introduced.value,
         "assigned_file": None,
         "practice_task_id": None,
+        "practice_passed": False,
     }
     base.update(overrides)  # type: ignore[typeddict-item]
     return base
@@ -396,18 +397,22 @@ def _completed_practice_ids(state: MentorState) -> set[str]:
     return set()
 
 
-def _unfinished_practice_task(state: MentorState) -> dict[str, Any] | None:
+def _unfinished_practice_task(
+    state: MentorState, extra_done: set[str] | None = None
+) -> dict[str, Any] | None:
     done = _completed_practice_ids(state)
+    if extra_done:
+        done |= {str(item) for item in extra_done if str(item)}
     wanted = str(state.get("practice_task_id") or "").strip()
     filename = str(state.get("assigned_file") or "").strip()
     tasks = [item for item in (state.get("practice_tasks") or []) if isinstance(item, dict)]
-    if wanted:
+    if wanted and wanted not in done:
         for item in tasks:
             if str(item.get("id") or "") == wanted:
                 return item
     if filename:
         for item in tasks:
-            if str(item.get("filename") or "") == filename:
+            if str(item.get("filename") or "") == filename and str(item.get("id") or "") not in done:
                 return item
     for item in tasks:
         if str(item.get("id") or "") not in done:
@@ -415,32 +420,132 @@ def _unfinished_practice_task(state: MentorState) -> dict[str, Any] | None:
     return None
 
 
-def _implementation_complete(state: MentorState) -> bool:
-    if _evidence(state).get("implementation"):
-        tasks = [item for item in (state.get("practice_tasks") or []) if isinstance(item, dict)]
-        if not tasks:
-            return True
-        done = _completed_practice_ids(state)
-        return all(str(item.get("id") or "") in done for item in tasks)
+def _norm_question(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _required_questions(state: MentorState) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(state.get("diagnostic_questions") or []) + list(state.get("research_questions") or []):
+        text = str(raw or "").strip()
+        key = _norm_question(text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _answered_question_keys(state: MentorState) -> set[str]:
+    keys: set[str] = set()
+    for item in _evidence(state).get("answered_questions") or []:
+        key = _norm_question(str(item))
+        if key:
+            keys.add(key)
+    for item in state.get("diagnostic_answers") or []:
+        if not isinstance(item, dict):
+            continue
+        if len(str(item.get("answer") or "").strip()) < 25:
+            continue
+        question = str(item.get("question") or "").strip()
+        if question:
+            keys.add(_norm_question(question))
+    return keys
+
+
+def _unanswered_questions(state: MentorState) -> list[str]:
+    answered = _answered_question_keys(state)
+    return [question for question in _required_questions(state) if _norm_question(question) not in answered]
+
+
+def _implementation_complete(state: MentorState, extra_done: set[str] | None = None) -> bool:
     tasks = [item for item in (state.get("practice_tasks") or []) if isinstance(item, dict)]
+    done = _completed_practice_ids(state)
+    if extra_done:
+        done |= {str(item) for item in extra_done if str(item)}
+    if _evidence(state).get("implementation") and not tasks:
+        return True
     if not tasks:
         return not bool(state.get("needs_build"))
-    return False
+    return all(str(item.get("id") or "") in done for item in tasks)
 
 
-def _next_unasked_diagnostic(state: MentorState) -> str | None:
-    questions = [
-        str(item).strip()
-        for item in (state.get("diagnostic_questions") or [])
-        if str(item).strip()
-    ]
-    if not questions:
+def _next_unasked_question(state: MentorState) -> str | None:
+    remaining = _unanswered_questions(state)
+    if not remaining:
         return None
     last = str(state.get("last_tutor_message") or "")
-    for question in questions:
+    for question in remaining:
         if question and question in last:
             continue
         return question
+    return remaining[0]
+
+
+def _next_unasked_diagnostic(state: MentorState) -> str | None:
+    return _next_unasked_question(state)
+
+
+def _concept_work_complete(state: MentorState, extra_done: set[str] | None = None) -> bool:
+    return not _unanswered_questions(state) and _implementation_complete(state, extra_done)
+
+
+def _ask_remaining_question(state: MentorState, question: str) -> MentorState:
+    title = state.get("concept_title") or "this concept"
+    message = f"We're still on '{title}'. Answer this before we move on:\n\n{question}"
+    contract = empty_contract(
+        intent="MENTOR",
+        action="ASK_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+        "should_unlock": False,
+    }
+
+
+def _assign_practice(state: MentorState, task: dict[str, Any]) -> MentorState:
+    filename = str(task.get("filename") or "").strip()
+    prompt = str(task.get("prompt") or "").strip()
+    title = state.get("concept_title") or "this concept"
+    message = (
+        f"We're still on '{title}'. There is another practice file to finish.\n\n"
+        f"Write this in `{filename}`:\n\n{prompt}\n\n"
+        "I will not edit your files. When it runs, click **Check my work** "
+        "or tell me you're done."
+    )
+    contract = empty_contract(
+        intent="MENTOR",
+        action="ASK_IMPLEMENTATION",
+        message=message,
+        next_state=ConceptStatus.attempted.value,
+        assigned_file=filename or None,
+        practice_task_id=str(task.get("id") or "") or None,
+    )
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.attempted.value,
+        "assigned_file": filename or None,
+        "practice_task_id": str(task.get("id") or "") or None,
+        "should_unlock": False,
+    }
+
+
+def _hold_for_remaining_work(
+    state: MentorState, extra_done: set[str] | None = None
+) -> MentorState | None:
+    ask = _next_unasked_question(state)
+    if ask:
+        return _ask_remaining_question(state, ask)
+    if not _implementation_complete(state, extra_done):
+        task = _unfinished_practice_task(state, extra_done)
+        if task:
+            return _assign_practice(state, task)
     return None
 
 
@@ -460,6 +565,9 @@ def _has_substantive_explanation(state: MentorState) -> bool:
 
 
 def _advance_or_missing_if_ready(state: MentorState) -> MentorState | None:
+    held = _hold_for_remaining_work(state)
+    if held is not None:
+        return held
     if _ledger_satisfied(state):
         return proved_this_node(state)
     missing = _control_missing(state)
@@ -469,6 +577,9 @@ def _advance_or_missing_if_ready(state: MentorState) -> MentorState | None:
 
 
 def _advance_payload(state: MentorState) -> MentorState:
+    held = _hold_for_remaining_work(state)
+    if held is not None:
+        return held
     title = state.get("concept_title") or "this concept"
     nxt = (state.get("next_concept_title") or "").strip()
     follow = f" The curriculum graph's next concept is {nxt}." if nxt else ""
@@ -919,6 +1030,9 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
                     "assigned_file": filename or None,
                     "practice_task_id": str(task.get("id") or "") or None,
                 }
+            held = _hold_for_remaining_work(state)
+            if held is not None:
+                return held
             nxt = (state.get("next_concept_title") or "").strip()
             follow = f" Next: {nxt}." if nxt else ""
             message = f"{feedback} I'm marking this concept verified.{follow}"
@@ -1041,21 +1155,23 @@ def make_practice_eval_node(llm: CoachLLM) -> Callable[[MentorState], MentorStat
         passed = bool(result.get("passed"))
         feedback = str(result.get("feedback") or "")
         task_id = str((task or {}).get("id") or "") or None
+        extra_done = {task_id} if passed and task_id else set()
         if passed:
-            if _has_substantive_explanation(state) or _evidence(state).get("explanation"):
-                nxt = (state.get("next_concept_title") or "").strip()
-                follow = f" Next: {nxt}." if nxt else ""
-                message = feedback or f"`{filename}` looks right."
-                extra = _invoke_contract(llm, state, "PRACTICE_EVAL")
-                if extra.get("message"):
-                    message = str(extra["message"])
-                if follow and nxt.lower() not in message.lower():
-                    message = message.rstrip() + follow
-                next_state = ConceptStatus.verification.value
-                action = "REVIEW"
-                assigned = None
-            else:
-                ask = _next_unasked_diagnostic(state)
+            held = _hold_for_remaining_work(state, extra_done)
+            if held is not None:
+                held_contract = dict(held.get("contract") or {})
+                prefix = (feedback or f"`{filename}` looks right.").rstrip()
+                held["reply"] = prefix + "\n\n" + str(held.get("reply") or "")
+                held_contract["message"] = held["reply"]
+                held_contract["practice_task_id"] = task_id
+                held_contract["practice_passed"] = True
+                held["contract"] = held_contract
+                held["practice_passed"] = True
+                held["practice_task_id"] = task_id
+                held["should_unlock"] = False
+                return held
+            if not (_has_substantive_explanation(state) or _evidence(state).get("explanation")):
+                ask = _next_unasked_question(state)
                 message = feedback or f"`{filename}` ran and matches the practice check."
                 if ask:
                     message = f"{message}\n\n{ask}"
@@ -1064,14 +1180,40 @@ def make_practice_eval_node(llm: CoachLLM) -> Callable[[MentorState], MentorStat
                         f"{message}\n\nIn your own words, why did running that file "
                         "do what it did?"
                     )
-                next_state = ConceptStatus.explained.value
-                action = "ASK_QUESTION"
-                assigned = None
+                contract = empty_contract(
+                    intent="MENTOR",
+                    action="ASK_QUESTION",
+                    message=message,
+                    next_state=ConceptStatus.explained.value,
+                    practice_task_id=task_id,
+                    practice_passed=True,
+                )
+                return {
+                    "reply": message,
+                    "contract": contract,
+                    "next_state": ConceptStatus.explained.value,
+                    "should_unlock": False,
+                    "practice_passed": True,
+                    "practice_task_id": task_id,
+                }
+            nxt = (state.get("next_concept_title") or "").strip()
+            follow = f" Next: {nxt}." if nxt else ""
+            message = feedback or f"`{filename}` looks right."
+            extra = _invoke_contract(llm, state, "PRACTICE_EVAL")
+            if extra.get("message"):
+                message = str(extra["message"])
+            if follow and nxt.lower() not in message.lower():
+                message = message.rstrip() + follow
+            next_state = ConceptStatus.verification.value
+            action = "REVIEW"
+            assigned = None
+            unlock = True
         else:
             message = feedback or f"`{filename}` isn't there yet. What did you try, and what did you see?"
             next_state = ConceptStatus.attempted.value
             action = "ASK_IMPLEMENTATION"
             assigned = filename
+            unlock = False
         contract = empty_contract(
             intent="MENTOR",
             action=action,
@@ -1079,15 +1221,17 @@ def make_practice_eval_node(llm: CoachLLM) -> Callable[[MentorState], MentorStat
             next_state=next_state,
             assigned_file=assigned,
             practice_task_id=task_id,
-            should_unlock=passed,
+            should_unlock=unlock,
+            practice_passed=passed,
         )
         return {
             "reply": message,
             "contract": contract,
             "next_state": next_state,
-            "should_unlock": passed,
+            "should_unlock": unlock,
             "assigned_file": assigned,
             "practice_task_id": task_id,
+            "practice_passed": passed,
         }
 
     return practice_eval

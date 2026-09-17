@@ -3,7 +3,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.agents.llm import LLMConfigurationError, _dynamic_mentor_prompt, get_coach_llm
-from app.models.learning_state import ConceptState
+from app.models.curriculum import Concept
+from app.models.learning_state import ConceptState, ConceptStatus
+from app.models.project import UserProject
+from app.services import curriculum_graph
 from app.services.sandbox_runner import FakeSandboxRunner, RunResult, set_sandbox_runner
 
 
@@ -26,6 +29,19 @@ def _enroll_python(client: TestClient, auth_headers: dict[str, str]) -> dict:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _answer_required_questions(db: Session, user_project_id: int, concept_id: str) -> None:
+    user_project = db.get(UserProject, user_project_id)
+    assert user_project is not None
+    concept = db.get(Concept, concept_id)
+    row = curriculum_graph.get_or_create_state(db, user_project, concept_id)
+    curriculum_graph.mark_required_questions_answered(
+        row,
+        concept,
+        answer="A sufficiently detailed answer that shows I understand this idea in my own words.",
+    )
+    db.commit()
 
 
 def test_python_mentor_prompt_is_not_js_framework() -> None:
@@ -115,6 +131,7 @@ def test_python_practice_eval_advances_after_explanation(
     try:
         enrolled = _enroll_python(client, auth_headers)
         user_project_id = enrolled["user_project"]["id"]
+        _answer_required_questions(db, user_project_id, "python.scripts")
         assert client.post(
             f"/api/v1/me/projects/{user_project_id}/coach/start",
             headers=auth_headers,
@@ -181,6 +198,7 @@ def test_python_explanation_after_practice_does_not_repeat_diagnostic(
     try:
         enrolled = _enroll_python(client, auth_headers)
         user_project_id = enrolled["user_project"]["id"]
+        _answer_required_questions(db, user_project_id, "python.scripts")
         client.post(
             f"/api/v1/me/projects/{user_project_id}/coach/start",
             headers=auth_headers,
@@ -255,3 +273,26 @@ def test_python_sandbox_test_uses_pytest(
         assert test.json()["outcome"] == "passed"
     finally:
         set_sandbox_runner(None)
+
+
+def test_cannot_master_until_questions_and_practice_are_done(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    seeded_db: Session,
+    db: Session,
+) -> None:
+    enrolled = _enroll_python(client, auth_headers)
+    user_project = db.get(UserProject, enrolled["user_project"]["id"])
+    assert user_project is not None
+    curriculum_graph.record_evidence(db, user_project, "python.scripts", explanation=True)
+    curriculum_graph.record_practice_pass(db, user_project, "python.scripts", "hello")
+    row = curriculum_graph.try_master(db, user_project, "python.scripts")
+    assert row.status != ConceptStatus.mastered
+    concept = db.get(Concept, "python.scripts")
+    curriculum_graph.mark_required_questions_answered(
+        row,
+        concept,
+        answer="A script is statements in a file. print sends text to stdout, the terminal.",
+    )
+    row = curriculum_graph.try_master(db, user_project, "python.scripts")
+    assert row.status == ConceptStatus.mastered

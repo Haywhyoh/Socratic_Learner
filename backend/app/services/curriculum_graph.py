@@ -77,7 +77,128 @@ def prereq_satisfied(status: ConceptStatus | str) -> bool:
 
 def needs_build(concept: Concept) -> bool:
     req = concept.mastery_requirements or {}
-    return bool(req.get("implementation") or req.get("testing"))
+    if req.get("implementation") or req.get("testing"):
+        return True
+    from app.services.practice import practice_tasks_for
+
+    return bool(practice_tasks_for(concept))
+
+
+def _norm_question(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def required_questions(concept: Concept | None) -> list[str]:
+    if concept is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(concept.diagnostic_questions or []) + list(concept.research_questions or []):
+        text = str(raw or "").strip()
+        key = _norm_question(text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _answered_question_keys(row: ConceptState | None, evidence: dict[str, Any] | None = None) -> set[str]:
+    keys: set[str] = set()
+    blob = dict(evidence if evidence is not None else ((row.evidence if row else None) or {}))
+    for item in list(blob.get("answered_questions") or []):
+        key = _norm_question(str(item))
+        if key:
+            keys.add(key)
+    if row is None:
+        return keys
+    for item in list(row.diagnostic_answers or []):
+        if not isinstance(item, dict):
+            continue
+        answer = str(item.get("answer") or "").strip()
+        if len(answer) < 25:
+            continue
+        question = str(item.get("question") or "").strip()
+        if question:
+            keys.add(_norm_question(question))
+    return keys
+
+
+def questions_work_complete(
+    concept: Concept | None,
+    row: ConceptState | None,
+    evidence: dict[str, Any] | None = None,
+) -> bool:
+    required = required_questions(concept)
+    if not required:
+        return True
+    if row is not None and bool(getattr(row, "verified_via_skip", False)):
+        return True
+    answered = _answered_question_keys(row, evidence)
+    return all(_norm_question(question) in answered for question in required)
+
+
+def practice_work_complete(
+    concept: Concept | None,
+    evidence: dict[str, Any] | None = None,
+    *,
+    language: str | None = None,
+    extra_done: set[str] | None = None,
+) -> bool:
+    from app.services.practice import practice_tasks_for
+
+    tasks = practice_tasks_for(concept, language=language)
+    if not tasks:
+        return True
+    done = {str(item) for item in list((evidence or {}).get("practice_task_ids") or [])}
+    if extra_done:
+        done |= {str(item) for item in extra_done if str(item)}
+    return all(str(task.get("id") or "") in done for task in tasks)
+
+
+def concept_work_complete(
+    concept: Concept | None,
+    row: ConceptState | None,
+    evidence: dict[str, Any] | None = None,
+    *,
+    language: str | None = None,
+) -> bool:
+    blob = dict(evidence if evidence is not None else ((row.evidence if row else None) or {}))
+    return questions_work_complete(concept, row, blob) and practice_work_complete(
+        concept, blob, language=language
+    )
+
+
+def mark_required_questions_answered(
+    row: ConceptState, concept: Concept | None, *, answer: str = ""
+) -> None:
+    questions = required_questions(concept)
+    if not questions:
+        return
+    evidence = dict(row.evidence or empty_evidence())
+    recorded = [str(item) for item in list(evidence.get("answered_questions") or [])]
+    known = {_norm_question(item) for item in recorded}
+    for question in questions:
+        if _norm_question(question) in known:
+            continue
+        recorded.append(question)
+        known.add(_norm_question(question))
+    evidence["answered_questions"] = recorded
+    row.evidence = evidence
+    flag_modified(row, "evidence")
+    if answer.strip():
+        answers = list(row.diagnostic_answers or [])
+        have = {
+            _norm_question(str(item.get("question") or ""))
+            for item in answers
+            if isinstance(item, dict)
+        }
+        for question in questions:
+            if _norm_question(question) in have:
+                continue
+            answers.append({"question": question, "answer": answer.strip()[:2000]})
+        row.diagnostic_answers = answers[-40:]
+        flag_modified(row, "diagnostic_answers")
 
 
 # ---------------------------------------------------------------------------
@@ -373,23 +494,34 @@ def record_practice_pass(
     concept_id: str,
     task_id: str,
 ) -> ConceptState:
-    row = record_evidence(db, user_project, concept_id, implementation=True)
+    row = get_or_create_state(db, user_project, concept_id)
     evidence = dict(row.evidence or empty_evidence())
     ids = [str(item) for item in list(evidence.get("practice_task_ids") or [])]
     if task_id and task_id not in ids:
-        ids.append(task_id)
+        ids.append(str(task_id))
     evidence["practice_task_ids"] = ids
     row.evidence = evidence
     flag_modified(row, "evidence")
     db.flush()
+    concept = db.get(Concept, concept_id)
+    if practice_work_complete(concept, evidence):
+        row = record_evidence(db, user_project, concept_id, implementation=True)
     return row
 
 
-def _requirements_met(concept: Concept, evidence: dict[str, Any]) -> bool:
+def _requirements_met(
+    concept: Concept,
+    evidence: dict[str, Any],
+    row: ConceptState | None = None,
+) -> bool:
     req = concept.mastery_requirements or {}
     for key, needed in req.items():
         if needed and not evidence.get(key):
             return False
+    if not practice_work_complete(concept, evidence):
+        return False
+    if not questions_work_complete(concept, row, evidence):
+        return False
     return True
 
 
@@ -399,7 +531,7 @@ def try_master(db: Session, user_project: UserProject, concept_id: str) -> Conce
     concept = db.get(Concept, concept_id)
     if concept is None:
         return row
-    if _requirements_met(concept, row.evidence or {}):
+    if _requirements_met(concept, row.evidence or {}, row):
         row.status = ConceptStatus.mastered
         schedule_retrieval_checks(db, user_project, concept)
         apply_unlocks(db, user_project)
@@ -485,21 +617,39 @@ def record_learner_answer(
     *,
     misconception_id: str | None = None,
     phase: str | None = None,
+    question: str | None = None,
 ) -> ConceptState:
     """Count a chat answer and keep a short history for misconception routing."""
     row = get_or_create_state(db, user_project, concept_id)
     row.attempt_count = int(row.attempt_count or 0) + 1
     row.last_explanation = message.strip()[:4000]
+    concept = db.get(Concept, concept_id)
+    blob = str(question or "").strip()
+    matched = ""
+    if concept is not None:
+        for item in required_questions(concept):
+            if item and item in blob:
+                matched = item
+                break
     answers = list(row.diagnostic_answers or [])
     answers.append(
         {
             "answer": message.strip()[:2000],
+            "question": matched,
             "misconception_id": misconception_id,
             "phase": phase,
         }
     )
     row.diagnostic_answers = answers[-20:]
     flag_modified(row, "diagnostic_answers")
+    if matched and len(message.strip()) >= 25:
+        evidence = dict(row.evidence or empty_evidence())
+        recorded = [str(item) for item in list(evidence.get("answered_questions") or [])]
+        if _norm_question(matched) not in {_norm_question(item) for item in recorded}:
+            recorded.append(matched)
+            evidence["answered_questions"] = recorded
+            row.evidence = evidence
+            flag_modified(row, "evidence")
     db.flush()
     return row
 
@@ -599,9 +749,16 @@ def evaluate_skip_diagnostic(
         {"question": q, "answer": a, "passed": passed_all} for q, a in paired[: len(questions)]
     ]
     if passed_all:
-        row.status = ConceptStatus.verified
-        row.verified_via_skip = True
-        apply_unlocks(db, user_project)
+        mark_required_questions_answered(row, concept, answer=(answers[0] if answers else ""))
+        if concept is not None:
+            record_evidence(db, user_project, concept_id, explanation=True)
+        if practice_work_complete(concept, dict(row.evidence or {})):
+            row.status = ConceptStatus.verified
+            row.verified_via_skip = True
+            apply_unlocks(db, user_project)
+        else:
+            row.status = ConceptStatus.attempted
+            row.verified_via_skip = False
     else:
         row.status = ConceptStatus.needs_review
     db.flush()
@@ -792,8 +949,16 @@ def milestone_concepts_complete(
         return True
     states = states_by_concept(db, user_project.id)
     return all(
-        (states.get(cid) is not None and prereq_satisfied(states[cid].status)) for cid in ids
+        concept_ready_for_milestone(db.get(Concept, cid), states.get(cid)) for cid in ids
     )
+
+
+def concept_ready_for_milestone(concept: Concept | None, row: ConceptState | None) -> bool:
+    if concept is None or row is None:
+        return False
+    if not prereq_satisfied(row.status):
+        return False
+    return concept_work_complete(concept, row)
 
 
 def reflection_complete(db: Session, user_milestone_id: int) -> bool:
@@ -816,7 +981,7 @@ def can_complete_milestone(
     if milestone is None:
         return False, "Milestone not found"
     if not milestone_concepts_complete(db, user_project, milestone):
-        return False, "Every concept in this milestone must be mastered or verified first"
+        return False, "Every concept in this milestone needs all questions answered and all practice tasks done"
     if not reflection_complete(db, user_milestone.id):
         return False, "Submit a milestone reflection before completing"
     # Final milestone also needs the project defense.

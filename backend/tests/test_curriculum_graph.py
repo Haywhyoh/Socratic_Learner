@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.models.curriculum import Concept
 from app.models.learning_state import ConceptStatus
 from app.seed_js_backend_framework import CONCEPTS, DEPENDENCIES
 from app.seed_python_fundamentals import (
@@ -111,6 +112,13 @@ def test_cannot_master_without_evidence(
     row = curriculum_graph.try_master(db, user_project, "programming.functions")
     assert row.status != ConceptStatus.mastered
     curriculum_graph.record_evidence(db, user_project, "programming.functions", explanation=True)
+    concept = db.get(Concept, "programming.functions")
+    row = curriculum_graph.get_or_create_state(db, user_project, "programming.functions")
+    curriculum_graph.mark_required_questions_answered(
+        row,
+        concept,
+        answer="A callback is a function passed as data so another function can invoke it later.",
+    )
     row = curriculum_graph.try_master(db, user_project, "programming.functions")
     assert row.status == ConceptStatus.mastered
     assert "programming.objects" in curriculum_graph.apply_unlocks(db, user_project) or (

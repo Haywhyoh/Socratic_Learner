@@ -61,6 +61,7 @@ class MentorContract(TypedDict, total=False):
     next_state: str
     assigned_file: str | None
     practice_task_id: str | None
+    practice_passed: bool
 
 
 class MentorState(TypedDict, total=False):

@@ -518,11 +518,18 @@ def _run_mentor(
             message,
             misconception_id=misc.get("id") if isinstance(misc, dict) else None,
             phase=classified.get("phase"),
+            question=last_tutor,
         )
         graph_state["attempt_count"] = int(state_row.attempt_count or 0)
         graph_state["learner_last_explanation"] = message
+        graph_state["diagnostic_answers"] = list(state_row.diagnostic_answers or [])
+        graph_state["evidence"] = dict(state_row.evidence or {})
     graph_state["learning_control"] = control
-    graph_state["diagnostic_answers"] = prior_answers
+    if state_row is not None:
+        graph_state["diagnostic_answers"] = list(state_row.diagnostic_answers or [])
+        graph_state["evidence"] = dict(state_row.evidence or {})
+    else:
+        graph_state["diagnostic_answers"] = prior_answers
     graph_state["misconception_branch"] = classified.get("branch")
     graph_state["identified_misconception"] = classified.get("misconception")
     graph_state["last_tutor_message"] = last_tutor
@@ -563,7 +570,8 @@ def _run_mentor(
     started_concept_id = str(concept_id) if concept_id else None
     unlocked = bool(contract.get("should_unlock") or result.get("should_unlock"))
     task_id = str(contract.get("practice_task_id") or result.get("practice_task_id") or "").strip()
-    if started_concept_id and task_id and unlocked:
+    practice_passed = bool(result.get("practice_passed") or contract.get("practice_passed"))
+    if started_concept_id and task_id and (unlocked or practice_passed):
         curriculum_graph.record_practice_pass(
             db, user_project, started_concept_id, task_id
         )
@@ -1008,6 +1016,8 @@ def submit_explanation(
         answer=answer,
     )
     if result.get("passed"):
+        row = curriculum_graph.get_or_create_state(db, user_project, concept_id)
+        curriculum_graph.mark_required_questions_answered(row, concept, answer=answer)
         curriculum_graph.explanation_passed(db, user_project, concept_id, answer)
     else:
         curriculum_graph.explanation_failed(db, user_project, concept_id, answer)
