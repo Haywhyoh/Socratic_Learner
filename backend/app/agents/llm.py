@@ -132,6 +132,227 @@ class CoachLLM(Protocol):
         language: str = "",
     ) -> dict[str, Any]: ...
 
+    def generate_knowledge_graph(
+        self,
+        *,
+        topic: str,
+        language: str,
+        slug: str,
+        audience: str = "",
+        constraints: list[str] | None = None,
+        capstone: str = "",
+        difficulty: str = "beginner",
+        course_name: str = "",
+    ) -> dict[str, Any]: ...
+
+    def generate_concept_content(
+        self,
+        *,
+        concept: dict[str, Any],
+        language: str,
+        project_title: str,
+    ) -> dict[str, Any]: ...
+
+
+def stub_knowledge_graph(
+    *,
+    topic: str,
+    language: str,
+    slug: str,
+    audience: str = "",
+    constraints: list[str] | None = None,
+    capstone: str = "",
+    difficulty: str = "beginner",
+    course_name: str = "",
+) -> dict[str, Any]:
+    """Tiny deterministic graph used in tests and when LLM_MODEL=stub."""
+    from app.services.runtime import (
+        language_display_name,
+        language_extension,
+        normalize_language,
+        run_argv_for_file,
+        runtime_for_language,
+    )
+
+    ns = re.sub(r"[^a-z0-9]+", "-", (slug or "track").strip().lower()).strip("-") or "track"
+    language = normalize_language(language)
+    ext = language_extension(language)
+    name = course_name or topic or ns
+    start_id = f"{ns}.start"
+    core_id = f"{ns}.core"
+    cap_id = f"{ns}.capstone"
+    lang_name = language_display_name(language)
+
+    def _concept(concept_id: str, title: str, category: str, description: str, filename: str) -> dict[str, Any]:
+        path = f"practice/{filename}"
+        return {
+            "id": concept_id,
+            "title": title,
+            "category": category,
+            "description": description,
+            "learning_objectives": [
+                f"Explain {title.lower()} in your own words",
+                f"Write a small {language} file that uses {title.lower()}",
+            ],
+            "misconceptions": [
+                {
+                    "id": f"{concept_id}-mixup",
+                    "description": f"The learner mixes up {title.lower()} with a nearby idea.",
+                    "signals": ["confused", "mixed up"],
+                    "diagnostic_questions": [f"What is {title.lower()} for?"],
+                    "remediation": {
+                        "type": "targeted_question",
+                        "script": f"Separate {title.lower()} from lookalikes, then try a tiny example.",
+                    },
+                }
+            ],
+            "diagnostic_questions": [f"What does {title.lower()} let you do?"],
+            "research_questions": [f"Where is {title.lower()} used in {language}?"],
+            "resources": [],
+            "hints": [
+                f"What is the smallest example of {title.lower()}?",
+                "Write the smallest file that proves the idea.",
+                "Name the mechanism in one sentence.",
+                f"Structure: a file named `practice/{filename}` with one clear example.",
+                "Run it and point at the output that proves it.",
+            ],
+            "mastery_requirements": {"explanation": True, "implementation": True},
+            "practice_tasks": [
+                {
+                    "id": filename.replace(f".{ext}", ""),
+                    "filename": f"practice/{filename}",
+                    "prompt": f"Write a tiny example of {title.lower()} for: {topic or name}.",
+                    "run": run_argv_for_file(runtime_for_language(language), path),
+                    "expect": {"exit_code": 0, "stdout_contains": []},
+                    "rubric": "The file runs. Do not require extra features.",
+                }
+            ],
+            "mentor_scripts": {},
+        }
+
+    return {
+        "course": {
+            "slug": ns,
+            "name": name,
+            "description": topic or f"Learn {name}.",
+            "primary_label": "Language",
+            "secondary_label": "Track",
+            "primary_slug": language,
+            "primary_name": lang_name,
+            "secondary_slug": "fundamentals",
+            "secondary_name": topic or "Fundamentals",
+        },
+        "project": {
+            "title": f"Learn {name}",
+            "description": topic or f"A short {language} track generated for testing.",
+            "objective": f"Learn {name} through three concepts, then a tiny capstone.",
+            "difficulty": difficulty or "beginner",
+            "expected_outcome": capstone or f"A small {language} program you can defend.",
+            "prerequisites": [audience] if audience else ["Comfort with a terminal"],
+            "skills": ["Reading errors", "Running a file"],
+            "constraints": list(constraints or []),
+            "tests": ["Each practice file runs"],
+            "evaluation_criteria": ["Explanation and implementation evidence on every concept"],
+            "extension_challenges": [],
+            "recommended_resources": [],
+            "runtime": {"language": language},
+        },
+        "concepts": [
+            _concept(start_id, "First programs", "foundation", f"Run a {language} file for {name}.", f"hello.{ext}"),
+            _concept(core_id, "Core idea", "core", f"The central idea of {name}.", f"core.{ext}"),
+            _concept(cap_id, "Capstone", "capstone", capstone or f"A tiny {name} program.", f"capstone.{ext}"),
+        ],
+        "dependencies": [
+            {
+                "concept_id": core_id,
+                "requires_concept_id": start_id,
+                "reason": "You need a running file before the core idea.",
+            },
+            {
+                "concept_id": cap_id,
+                "requires_concept_id": core_id,
+                "reason": "The capstone applies the core idea.",
+            },
+        ],
+        "milestones": [
+            {
+                "title": "Start",
+                "description": "Get a file running.",
+                "instructions": "Write and run the first practice file.",
+                "success_criteria": "The hello file runs.",
+                "concepts": [start_id],
+                "questions": [],
+            },
+            {
+                "title": "Core",
+                "description": "Learn the central idea.",
+                "instructions": "Explain the core idea, then implement the practice file.",
+                "success_criteria": "Core practice file runs.",
+                "concepts": [core_id],
+                "questions": [],
+            },
+            {
+                "title": "Capstone",
+                "description": "Ship a tiny program.",
+                "instructions": "Combine the earlier ideas into one small program.",
+                "success_criteria": "The capstone file runs.",
+                "concepts": [cap_id],
+                "questions": [],
+            },
+        ],
+    }
+
+
+def stub_concept_content(
+    concept: dict[str, Any],
+    *,
+    language: str,
+    project_title: str,
+) -> dict[str, Any]:
+    title = str(concept.get("title") or concept.get("id") or "Concept")
+    concept_id = str(concept.get("id") or "concept")
+    from app.services.runtime import (
+        language_extension,
+        normalize_language,
+        run_argv_for_file,
+        runtime_for_language,
+    )
+    language = normalize_language(language)
+    ext = language_extension(language)
+    leaf = concept_id.rsplit(".", 1)[-1].replace("-", "_") or "practice"
+    filename = f"practice/{leaf}.{ext}"
+    return {
+        **concept,
+        "description": str(concept.get("description") or f"{title} for {project_title}."),
+        "learning_objectives": list(concept.get("learning_objectives") or [f"Explain {title}", f"Use {title} in a small file"]),
+        "diagnostic_questions": list(concept.get("diagnostic_questions") or [f"What is {title}?"]),
+        "research_questions": list(concept.get("research_questions") or [f"Where is {title} used?"]),
+        "hints": list(
+            concept.get("hints")
+            or [
+                f"What is the smallest example of {title}?",
+                "Write the smallest file that proves the idea.",
+                "Name the mechanism in one sentence.",
+                f"Structure: `practice/{leaf}.{ext}` with one clear example.",
+                "Run it and point at the output that proves it.",
+            ]
+        ),
+        "mastery_requirements": dict(concept.get("mastery_requirements") or {"explanation": True, "implementation": True}),
+        "practice_tasks": list(
+            concept.get("practice_tasks")
+            or [
+                {
+                    "id": leaf,
+                    "filename": filename,
+                    "prompt": f"Write a tiny example of {title} for {project_title}.",
+                    "run": run_argv_for_file(runtime_for_language(language), filename),
+                    "expect": {"exit_code": 0, "stdout_contains": []},
+                    "rubric": "The file runs.",
+                }
+            ]
+        ),
+    }
+
 
 class StubCoachLLM:
     """Deterministic specialist used in tests and when no model key is configured."""
@@ -286,6 +507,38 @@ class StubCoachLLM:
         else:
             feedback = f"`{filename}` ran and matches the practice check."
         return {"passed": passed, "feedback": feedback}
+
+    def generate_knowledge_graph(
+        self,
+        *,
+        topic: str,
+        language: str,
+        slug: str,
+        audience: str = "",
+        constraints: list[str] | None = None,
+        capstone: str = "",
+        difficulty: str = "beginner",
+        course_name: str = "",
+    ) -> dict[str, Any]:
+        return stub_knowledge_graph(
+            topic=topic,
+            language=language,
+            slug=slug,
+            audience=audience,
+            constraints=list(constraints or []),
+            capstone=capstone,
+            difficulty=difficulty,
+            course_name=course_name,
+        )
+
+    def generate_concept_content(
+        self,
+        *,
+        concept: dict[str, Any],
+        language: str,
+        project_title: str,
+    ) -> dict[str, Any]:
+        return stub_concept_content(concept, language=language, project_title=project_title)
 
     def bind_workspace_tools(self, tools: list[Any] | None) -> None:
         return None
@@ -813,6 +1066,91 @@ class LangChainCoachLLM:
                     else f"`{filename}` does not yet satisfy the practice check."
                 ),
             }
+
+    def generate_knowledge_graph(
+        self,
+        *,
+        topic: str,
+        language: str,
+        slug: str,
+        audience: str = "",
+        constraints: list[str] | None = None,
+        capstone: str = "",
+        difficulty: str = "beginner",
+        course_name: str = "",
+    ) -> dict[str, Any]:
+        prompt = (
+            "You author deterministic curriculum knowledge graphs for Socratic Learner. "
+            "The AI mentor never invents this graph; it only teaches inside it. "
+            "Return ONLY JSON with keys: course, project, concepts, dependencies, milestones.\n"
+            "course: {slug, name, description, primary_slug, primary_name, secondary_slug, secondary_name}.\n"
+            "project: {title, description, objective, difficulty, expected_outcome, prerequisites, "
+            "skills, constraints, tests, evaluation_criteria, extension_challenges, "
+            "recommended_resources (array of {title,url})}.\n"
+            "concepts: 6-10 objects with id, title, category, description, learning_objectives "
+            "(2+ strings), misconceptions (objects with id, description, signals, "
+            "diagnostic_questions, remediation.script), diagnostic_questions, research_questions, "
+            "resources ({title,url}), hints (exactly 5 strings: question, direction, concept, "
+            "structure, targeted), mastery_requirements (object of booleans), practice_tasks "
+            "(objects with id, filename, prompt, run, expect, rubric). Never include full solutions.\n"
+            "dependencies: array of {concept_id, requires_concept_id, reason}. No cycles. "
+            "Every edge must reference concept ids in this graph.\n"
+            "milestones: 4-8 objects with title, description, instructions (no code dumps), "
+            "success_criteria, concepts (array of concept ids). Cover every concept at least once.\n"
+            f"Namespace every concept id with `{slug}.` "
+            "Quality bar: the Python fundamentals graph (scripts → types → functions → capstone CLI).\n"
+            f"Topic: {topic}\n"
+            f"Course name: {course_name or topic}\n"
+            f"Language/runtime: {language}\n"
+            f"Slug: {slug}\n"
+            f"Audience: {audience or 'beginner'}\n"
+            f"Difficulty: {difficulty}\n"
+            f"Constraints: {json.dumps(list(constraints or []))}\n"
+            f"Capstone idea: {capstone or 'a small stdlib/cli or node core program'}\n"
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            if isinstance(payload, dict) and payload.get("concepts"):
+                return payload
+        except Exception:
+            pass
+        return stub_knowledge_graph(
+            topic=topic,
+            language=language,
+            slug=slug,
+            audience=audience,
+            constraints=list(constraints or []),
+            capstone=capstone,
+            difficulty=difficulty,
+            course_name=course_name,
+        )
+
+    def generate_concept_content(
+        self,
+        *,
+        concept: dict[str, Any],
+        language: str,
+        project_title: str,
+    ) -> dict[str, Any]:
+        prompt = (
+            "Rewrite teaching content for one knowledge-graph concept. Return ONLY JSON with "
+            "keys: description, learning_objectives, misconceptions, diagnostic_questions, "
+            "research_questions, resources, hints (exactly 5), mastery_requirements, practice_tasks. "
+            "Keep the same id and title. No full solutions.\n"
+            f"Language: {language}\nProject: {project_title}\n"
+            f"Concept JSON: {json.dumps(concept, default=str)}\n"
+        )
+        try:
+            raw = self._invoke(prompt)
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw)
+            if isinstance(payload, dict):
+                return {**concept, **payload, "id": concept.get("id"), "title": concept.get("title")}
+        except Exception:
+            pass
+        return stub_concept_content(concept, language=language, project_title=project_title)
 
 
 def _practice_task_from_context(context: dict[str, Any]) -> dict[str, Any] | None:

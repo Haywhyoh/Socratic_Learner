@@ -1,5 +1,9 @@
 import { clearToken, getToken } from "./auth-token";
 import type {
+  AdminConceptSpec,
+  AdminGenerateRequest,
+  AdminGraphPayload,
+  AdminGraphSummary,
   CoachMessageResponse,
   CoachStartResponse,
   CourseOptionRead,
@@ -351,5 +355,52 @@ export const api = {
       `/api/v1/me/milestones/${userMilestoneId}/restart`,
       { method: "POST" },
     );
+  },
+
+  listAdminGraphs() {
+    return request<AdminGraphSummary[]>("/api/v1/admin/graphs", { auth: false });
+  },
+
+  getAdminGraph(projectId: number) {
+    return request<AdminGraphPayload>(`/api/v1/admin/graphs/${projectId}`, {
+      auth: false,
+    });
+  },
+
+  generateAdminGraph(payload: AdminGenerateRequest) {
+    return request<AdminGraphPayload>("/api/v1/admin/graphs/generate", {
+      method: "POST",
+      auth: false,
+      body: payload,
+    });
+  },
+
+  generateAdminConcept(payload: {
+    concept: Partial<AdminConceptSpec> & { id: string; title: string };
+    language: string;
+    project_title: string;
+    slug: string;
+  }) {
+    return request<AdminConceptSpec>("/api/v1/admin/graphs/concepts/generate", {
+      method: "POST",
+      auth: false,
+      body: payload,
+    });
+  },
+
+  publishAdminGraph(payload: AdminGraphPayload) {
+    return request<AdminGraphPayload>("/api/v1/admin/graphs", {
+      method: "POST",
+      auth: false,
+      body: payload,
+    });
+  },
+
+  updateAdminGraph(projectId: number, payload: AdminGraphPayload) {
+    return request<AdminGraphPayload>(`/api/v1/admin/graphs/${projectId}`, {
+      method: "PUT",
+      auth: false,
+      body: payload,
+    });
   },
 };

@@ -24,3 +24,8 @@ body {
 .font-serif {
   font-family: var(--font-fraunces), Georgia, serif;
 }
+
+.react-flow {
+  height: 100%;
+  background: transparent;
+}

@@ -1,3 +1,4 @@
+from app.schemas.admin import CatalogGraphRead, GraphPayload, GraphSummary
 from app.schemas.auth import Token, UserCreate, UserLogin, UserRead
 from app.schemas.concept import ConceptSessionRead, ConceptTurnRead
 from app.schemas.course import CourseOptionRead, CourseRead
@@ -27,4 +28,7 @@ __all__ = [
     "UserMilestoneRead",
     "ConceptSessionRead",
     "ConceptTurnRead",
+    "CatalogGraphRead",
+    "GraphPayload",
+    "GraphSummary",
 ]

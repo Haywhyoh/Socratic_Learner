@@ -354,6 +354,111 @@ export interface ProjectDefenseRead {
   attempts: number;
 }
 
+export interface AdminCoursePath {
+  id?: number;
+  slug: string;
+  name: string;
+  description: string;
+  primary_label: string;
+  secondary_label: string;
+  primary_slug: string;
+  primary_name: string;
+  secondary_slug: string;
+  secondary_name: string;
+}
+
+export interface AdminProjectSpec {
+  title: string;
+  description: string;
+  objective: string;
+  difficulty: ProjectDifficulty | string;
+  expected_outcome: string;
+  prerequisites: string[];
+  skills: string[];
+  constraints: string[];
+  tests: string[];
+  evaluation_criteria: string[];
+  extension_challenges: string[];
+  recommended_resources: { title: string; url: string }[];
+  runtime: ProjectRuntime;
+}
+
+export interface AdminPracticeTask {
+  id?: string;
+  filename?: string;
+  prompt?: string;
+  run?: string[];
+  expect?: { exit_code?: number; stdout_contains?: string[] };
+  rubric?: string;
+}
+
+export interface AdminConceptSpec {
+  id: string;
+  title: string;
+  category: string;
+  description: string;
+  learning_objectives: string[];
+  misconceptions: Array<string | Record<string, unknown>>;
+  diagnostic_questions: string[];
+  research_questions: string[];
+  resources: { title: string; url: string }[];
+  hints: string[];
+  mastery_requirements: Record<string, boolean>;
+  practice_tasks: AdminPracticeTask[];
+  mentor_scripts?: Record<string, unknown>;
+}
+
+export interface AdminDependencySpec {
+  concept_id: string;
+  requires_concept_id: string;
+  reason: string;
+}
+
+export interface AdminMilestoneSpec {
+  id?: number;
+  title: string;
+  description: string;
+  instructions: string;
+  success_criteria: string;
+  order_index?: number;
+  concepts: string[];
+  questions: string[];
+}
+
+export interface AdminGraphPayload {
+  project_id?: number;
+  course: AdminCoursePath;
+  project: AdminProjectSpec;
+  concepts: AdminConceptSpec[];
+  dependencies: AdminDependencySpec[];
+  milestones: AdminMilestoneSpec[];
+}
+
+export interface AdminGraphSummary {
+  project_id: number;
+  title: string;
+  description: string;
+  difficulty: string;
+  course_id: number;
+  course_slug: string;
+  course_name: string;
+  language: string;
+  concept_count: number;
+  edge_count: number;
+  milestone_count: number;
+}
+
+export interface AdminGenerateRequest {
+  topic: string;
+  language: string;
+  slug: string;
+  audience?: string;
+  constraints?: string[];
+  capstone?: string;
+  difficulty?: string;
+  course_name?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
