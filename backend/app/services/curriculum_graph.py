@@ -192,6 +192,43 @@ def concept_work_complete(
     )
 
 
+def concept_progress(
+    concept: Concept | None,
+    row: ConceptState | None,
+    *,
+    language: str | None = None,
+) -> dict[str, int]:
+    """Share of required questions + practice tasks the learner has finished."""
+    from app.services.practice import practice_tasks_for
+
+    blob = dict((row.evidence if row else None) or empty_evidence())
+    questions = required_questions(concept)
+    answered = _answered_question_keys(row, blob)
+    if row is not None and bool(getattr(row, "verified_via_skip", False)):
+        questions_done = len(questions)
+    else:
+        questions_done = sum(1 for item in questions if _norm_question(item) in answered)
+    tasks = practice_tasks_for(concept, language=language)
+    done_ids = {str(item) for item in list(blob.get("practice_task_ids") or [])}
+    practice_done = sum(1 for task in tasks if str(task.get("id") or "") in done_ids)
+    if concept_work_complete(concept, row, blob, language=language):
+        questions_done = len(questions)
+        practice_done = len(tasks)
+    questions_done = min(questions_done, len(questions))
+    practice_done = min(practice_done, len(tasks))
+    total = len(questions) + len(tasks)
+    done = questions_done + practice_done
+    return {
+        "questions_done": questions_done,
+        "questions_total": len(questions),
+        "practice_done": practice_done,
+        "practice_total": len(tasks),
+        "done": done,
+        "total": total,
+        "percent": int(round(100 * done / total)) if total else 100,
+    }
+
+
 def mark_required_questions_answered(
     row: ConceptState, concept: Concept | None, *, answer: str = ""
 ) -> None:
@@ -1044,8 +1081,11 @@ def can_complete_milestone(
 
 
 def graph_payload(db: Session, user_project: UserProject) -> dict[str, Any]:
+    from app.services.runtime import runtime_language
+
     position = resolve_current_position(db, user_project)
     states = states_by_concept(db, user_project.id)
+    language = runtime_language(user_project.project)
     milestones_out: list[dict[str, Any]] = []
     for um in sorted(
         user_project.user_milestones,
@@ -1058,6 +1098,7 @@ def graph_payload(db: Session, user_project: UserProject) -> dict[str, Any]:
         for concept_id in concept_ids_for_milestone(db, milestone.id):
             concept = db.get(Concept, concept_id)
             state = states.get(concept_id)
+            progress = concept_progress(concept, state, language=language)
             concepts_out.append(
                 {
                     "id": concept_id,
@@ -1065,6 +1106,7 @@ def graph_payload(db: Session, user_project: UserProject) -> dict[str, Any]:
                     "category": concept.category if concept else "",
                     "status": state.status.value if state else ConceptStatus.locked.value,
                     "evidence": dict(state.evidence or empty_evidence()) if state else empty_evidence(),
+                    "progress": progress,
                 }
             )
         milestones_out.append(
@@ -1100,6 +1142,14 @@ def graph_payload(db: Session, user_project: UserProject) -> dict[str, Any]:
         }
         for row in due_retrieval_checks(db, user_project.id)
     ]
+    concepts = [item for row in milestones_out for item in list(row.get("concepts") or [])]
+    current_id = position.get("current_concept_id")
+    current_progress = next(
+        (item.get("progress") for item in concepts if item.get("id") == current_id),
+        {"questions_done": 0, "questions_total": 0, "practice_done": 0, "practice_total": 0, "done": 0, "total": 0, "percent": 0},
+    )
+    track_done = sum(int((item.get("progress") or {}).get("done") or 0) for item in concepts)
+    track_total = sum(int((item.get("progress") or {}).get("total") or 0) for item in concepts)
     return {
         "user_project_id": user_project.id,
         "project_id": user_project.project_id,
@@ -1111,6 +1161,12 @@ def graph_payload(db: Session, user_project: UserProject) -> dict[str, Any]:
         "milestones": milestones_out,
         "known_gaps": gaps,
         "due_retrieval_checks": retrieval,
+        "current_progress": current_progress,
+        "track_progress": {
+            "done": track_done,
+            "total": track_total,
+            "percent": int(round(100 * track_done / track_total)) if track_total else 0,
+        },
     }
 
 

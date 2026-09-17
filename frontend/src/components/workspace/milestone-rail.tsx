@@ -3,6 +3,7 @@
 import { Check, Lock } from "lucide-react";
 import clsx from "clsx";
 import type { GraphMilestoneRead, GraphRead, UserMilestoneRead } from "@/lib/types";
+import { ConceptProgressBar } from "@/components/workspace/concept-progress-bar";
 import {
   getActiveUserMilestone,
   milestonePhase,
@@ -47,6 +48,10 @@ export function MilestoneRail({
         <p className="text-xs text-stone-500">
           Concepts unlock in order. Mastery needs evidence, not a click.
         </p>
+        <ConceptProgressBar
+          progress={graph?.track_progress}
+          label="Track"
+        />
       </div>
       <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
         {sorted.map((um, index) => {
@@ -117,7 +122,9 @@ export function MilestoneRail({
                         />
                         <span className="min-w-0 flex-1 truncate">{concept.title}</span>
                         <span className="shrink-0 text-[10px] uppercase text-stone-600">
-                          {concept.status}
+                          {concept.progress?.percent != null
+                            ? `${concept.progress.percent}%`
+                            : concept.status}
                         </span>
                       </button>
                     </li>

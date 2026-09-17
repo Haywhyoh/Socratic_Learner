@@ -154,6 +154,7 @@ class GraphConceptRead(BaseModel):
     category: str = ""
     status: str
     evidence: dict[str, Any] = {}
+    progress: dict[str, int] = {}
 
 
 class GraphMilestoneRead(BaseModel):
@@ -183,6 +184,16 @@ class RetrievalCheckRead(BaseModel):
     learner_response: str = ""
 
 
+class GraphProgressRead(BaseModel):
+    questions_done: int = 0
+    questions_total: int = 0
+    practice_done: int = 0
+    practice_total: int = 0
+    done: int = 0
+    total: int = 0
+    percent: int = 0
+
+
 class GraphRead(BaseModel):
     user_project_id: int
     project_id: int
@@ -194,6 +205,8 @@ class GraphRead(BaseModel):
     milestones: list[GraphMilestoneRead] = []
     known_gaps: list[KnowledgeGapRead] = []
     due_retrieval_checks: list[RetrievalCheckRead] = []
+    current_progress: GraphProgressRead | None = None
+    track_progress: GraphProgressRead | None = None
 
 
 class CoachMessageResponse(BaseModel):

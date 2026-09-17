@@ -96,6 +96,18 @@ def test_deterministic_start_unlocks_only_root_concepts(
     states = curriculum_graph.states_by_concept(db, user_project.id)
     assert states["programming.functions"].status == ConceptStatus.available
     assert states["middleware.pipeline"].status == ConceptStatus.locked
+    graph = client.get(
+        f"/api/v1/me/projects/{user_project_id}/graph",
+        headers=auth_headers,
+    )
+    assert graph.status_code == 200, graph.text
+    body = graph.json()
+    assert body["current_progress"]["total"] >= 1
+    assert 0 <= body["current_progress"]["percent"] <= 100
+    assert body["track_progress"]["total"] >= body["current_progress"]["total"]
+    first = body["milestones"][0]["concepts"][0]
+    assert "progress" in first
+    assert "percent" in first["progress"]
 
 
 def test_cannot_master_without_evidence(
@@ -207,3 +219,26 @@ def test_match_required_question_ignores_backticks() -> None:
         )
         == question
     )
+
+
+def test_concept_progress_counts_questions_and_practice() -> None:
+    from types import SimpleNamespace
+
+    concept = SimpleNamespace(
+        diagnostic_questions=["Q1", "Q2"],
+        research_questions=["R1"],
+        practice_tasks=[{"id": "t1", "filename": "practice/t1.py", "prompt": "Write t1"}],
+    )
+    row = SimpleNamespace(
+        evidence={"answered_questions": ["Q1"], "practice_task_ids": []},
+        verified_via_skip=False,
+        diagnostic_answers=[],
+    )
+    progress = curriculum_graph.concept_progress(concept, row, language="python")
+    assert progress["questions_total"] == 3
+    assert progress["questions_done"] == 1
+    assert progress["practice_total"] == 1
+    assert progress["practice_done"] == 0
+    assert progress["done"] == 1
+    assert progress["total"] == 4
+    assert progress["percent"] == 25

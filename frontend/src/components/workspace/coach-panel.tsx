@@ -12,6 +12,7 @@ import type {
   MentorTurnRead,
 } from "@/lib/types";
 import { CoachMessageContent } from "@/components/workspace/coach-message";
+import { ConceptProgressBar } from "@/components/workspace/concept-progress-bar";
 
 interface CoachPanelProps {
   userProjectId: number;
@@ -39,6 +40,7 @@ export function CoachPanel({
   userProjectId,
   userMilestoneId,
   milestoneTitle,
+  graph,
   initialReply,
   initialTurns = [],
   initialContract = null,
@@ -222,6 +224,12 @@ export function CoachPanel({
               ? `Working through ${milestoneTitle}. Ask, answer, or say what you tried.`
               : "Ask, answer, or say what you tried."}
         </p>
+        {!readOnly && (
+          <ConceptProgressBar
+            progress={graph?.current_progress}
+            label="Questions and practice"
+          />
+        )}
         {attempts.length > 1 && (
           <label className="mt-2 block text-[11px] text-stone-500">
             Attempt

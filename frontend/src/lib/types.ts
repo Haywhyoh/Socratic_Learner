@@ -226,12 +226,23 @@ export interface MentorContractRead {
   practice_task_id?: string | null;
 }
 
+export interface GraphProgressRead {
+  questions_done?: number;
+  questions_total?: number;
+  practice_done?: number;
+  practice_total?: number;
+  done: number;
+  total: number;
+  percent: number;
+}
+
 export interface GraphConceptRead {
   id: string;
   title: string;
   category: string;
   status: string;
   evidence: Record<string, boolean>;
+  progress?: GraphProgressRead;
 }
 
 export interface GraphMilestoneRead {
@@ -267,6 +278,8 @@ export interface GraphRead {
     prompt: string;
     status: string;
   }[];
+  current_progress?: GraphProgressRead | null;
+  track_progress?: GraphProgressRead | null;
 }
 
 export interface ConceptRead {
