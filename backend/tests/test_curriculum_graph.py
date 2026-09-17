@@ -190,3 +190,20 @@ def test_explanation_walks_a_concept_to_mastered(
     assert body["passed"] is True
     assert body["status"] == "mastered"
     assert body["evidence"]["explanation"] is True
+
+
+def test_match_required_question_ignores_backticks() -> None:
+    question = "What does the caller get if there is no `return`?"
+    blob = (
+        "We're still on 'Functions'. Next question:\n\n"
+        "What does the caller get if there is no return?"
+    )
+    assert curriculum_graph.match_required_question([question], blob) == question
+    assert (
+        curriculum_graph.resolve_open_question(
+            [question],
+            last_tutor="The caller actually receives None, not nothing.",
+            evidence={"open_question": question},
+        )
+        == question
+    )

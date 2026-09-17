@@ -690,3 +690,103 @@ def test_number_two_is_not_closure_proof_off_a_find_question() -> None:
         ],
         concept_title="Arrays, iteration, searching, collections",
     ) != "proved_this"
+
+
+def _python_functions_state(**overrides):
+    state = {
+        "learner_message": "",
+        "concept_state": "discussing",
+        "current_concept": "python.functions",
+        "concept_title": "Functions, arguments, return, and scope",
+        "concept_description": "return sends a value back to the caller.",
+        "learning_objectives": [
+            "Write a function that takes a parameter and returns a value",
+            "Explain the difference between returning and printing",
+        ],
+        "diagnostic_questions": [
+            "When does the body of a function run — at `def` or at the call?",
+            "What does the caller get if there is no `return`?",
+        ],
+        "research_questions": [
+            "What does 'scope' mean for a name assigned inside a function?",
+        ],
+        "practice_tasks": [
+            {
+                "id": "greet",
+                "filename": "practice/greet.py",
+                "prompt": "Write greet(name).",
+            }
+        ],
+        "needs_build": True,
+        "hints": [],
+        "allowed_ai_behavior": ["question"],
+        "hint_level": -1,
+        "effort": {},
+        "evidence": {},
+    }
+    state.update(overrides)
+    return state
+
+
+class _RejectingAnswerLLM(StubCoachLLM):
+    def evaluate_answer(self, *, question: str, answer: str, milestone_title: str):
+        return {
+            "passed": False,
+            "push_back": "The caller actually receives None, not nothing.",
+        }
+
+
+def test_correct_catalog_answer_asks_the_next_question_not_the_same_one() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    asked = "What does the caller get if there is no `return`?"
+    result = graph.invoke(
+        _python_functions_state(
+            learner_message="None",
+            last_tutor_message=(
+                "We're still on 'Functions, arguments, return, and scope'. "
+                f"Next question:\n\n{asked}"
+            ),
+            evidence={"open_question": asked},
+        )
+    )
+    reply = result["reply"]
+    assert "None" not in reply or "try again" not in reply.lower()
+    assert asked.lower().replace("`", "") not in reply.lower().replace("`", "")
+    assert "def" in reply.lower() or "scope" in reply.lower()
+    answered = (result.get("evidence") or {}).get("answered_questions") or []
+    assert any("no" in str(item).lower() and "return" in str(item).lower() for item in answered)
+
+
+def test_wrong_catalog_answer_tells_the_learner_to_try_again() -> None:
+    graph = build_mentor_graph(_RejectingAnswerLLM())
+    asked = "What does the caller get if there is no `return`?"
+    result = graph.invoke(
+        _python_functions_state(
+            learner_message="nothing",
+            last_tutor_message="The caller actually receives None, not nothing.",
+            evidence={"open_question": asked},
+        )
+    )
+    reply = result["reply"].lower()
+    assert "try again" in reply
+    assert "none" in reply
+    assert "what does the caller get" in reply
+    assert result["contract"]["should_unlock"] is False
+
+
+def test_correction_followup_does_not_repeat_an_already_answered_question() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    asked = "What does the caller get if there is no `return`?"
+    result = graph.invoke(
+        _python_functions_state(
+            learner_message="the caller gets None",
+            last_tutor_message="The caller actually receives None, not nothing.",
+            evidence={
+                "open_question": asked,
+                "answered_questions": [asked],
+            },
+        )
+    )
+    reply = result["reply"].lower().replace("`", "")
+    assert "what does the caller get if there is no return" not in reply
+    assert "try again" not in reply
