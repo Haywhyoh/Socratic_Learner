@@ -460,6 +460,9 @@ export interface AdminGenerateRequest {
   capstone?: string;
   difficulty?: string;
   course_name?: string;
+  track_kind?: "language" | "project";
+  project_brief?: string;
+  include_concepts?: string[];
 }
 
 export class ApiError extends Error {

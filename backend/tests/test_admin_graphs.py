@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+import json
 
 from app.agents.graph_author import normalize_graph_draft
+from app.agents.llm import knowledge_graph_author_prompt
 from app.models.course import Course
 from app.models.curriculum import Concept
 from app.seed import seed
@@ -190,6 +192,92 @@ def test_generate_returns_namespaced_acyclic_draft(client: TestClient) -> None:
         for d in body["dependencies"]
     ]
     validate_graph_payload(body["concepts"], deps, body["milestones"])
+
+
+def test_generate_includes_requested_concepts(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/admin/graphs/generate",
+        json={
+            "topic": "Go CLI notes",
+            "language": "go",
+            "slug": "go-cli-includes",
+            "track_kind": "language",
+            "include_concepts": ["error wrapping", "flags"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    titles = " ".join(c["title"].lower() for c in body["concepts"])
+    assert "error wrapping" in titles
+    assert "flags" in titles
+    ids = [c["id"] for c in body["concepts"]]
+    assert "go-cli-includes.start" in ids
+    assert any("error" in cid for cid in ids)
+    deps = [
+        (d["concept_id"], d["requires_concept_id"], d["reason"])
+        for d in body["dependencies"]
+    ]
+    validate_graph_payload(body["concepts"], deps, body["milestones"])
+
+
+def test_generate_project_track_uses_brief(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/admin/graphs/generate",
+        json={
+            "topic": "Simple backend",
+            "language": "javascript",
+            "slug": "simple-backend-gen",
+            "track_kind": "project",
+            "project_brief": "tiny HTTP framework with routing and middleware",
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    blob = json.dumps(body)
+    assert "tiny HTTP framework" in blob
+    assert body["course"]["secondary_slug"] == "project"
+
+
+def test_normalize_injects_missing_include_concepts() -> None:
+    draft = normalize_graph_draft(
+        {
+            "course": {"name": "HTTP"},
+            "project": {"title": "Tiny server"},
+            "concepts": [
+                {
+                    "id": "http.start",
+                    "title": "Listen",
+                    "description": "Accept connections.",
+                }
+            ],
+            "dependencies": [],
+            "milestones": [{"title": "Start", "concepts": ["http.start"]}],
+        },
+        slug="http-lab",
+        language="javascript",
+        track_kind="project",
+        project_brief="tiny HTTP server",
+        include_concepts=["middleware", "routing"],
+    )
+    titles = [c["title"].lower() for c in draft["concepts"]]
+    assert "middleware" in titles
+    assert "routing" in titles
+    covered = {cid for row in draft["milestones"] for cid in row["concepts"]}
+    assert {c["id"] for c in draft["concepts"]} <= covered
+
+
+def test_project_prompt_covers_js_framework_shape() -> None:
+    text = knowledge_graph_author_prompt(
+        topic="Simple backend",
+        language="javascript",
+        slug="js-backend",
+        track_kind="project",
+        project_brief="tiny HTTP framework",
+        include_concepts=["middleware", "routing"],
+    )
+    assert "PROJECT-BASED" in text
+    assert "middleware" in text
+    assert "12-22" in text
 
 
 def test_publish_list_get_and_enroll(

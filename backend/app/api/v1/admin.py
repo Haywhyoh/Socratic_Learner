@@ -58,6 +58,9 @@ def admin_generate_graph(body: GraphGenerateRequest) -> GraphPayload:
             capstone=body.capstone,
             difficulty=body.difficulty,
             course_name=body.course_name,
+            track_kind=body.track_kind,
+            project_brief=body.project_brief,
+            include_concepts=list(body.include_concepts or []),
         )
     except LLMConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc

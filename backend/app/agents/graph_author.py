@@ -35,6 +35,29 @@ DEFAULT_MASTERY = {"explanation": True, "implementation": True}
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+def normalize_track_kind(value: str | None) -> str:
+    raw = str(value or "language").strip().lower().replace("_", "-")
+    if raw in {"project", "project-based", "build"}:
+        return "project"
+    return "language"
+
+
+def coerce_include_concepts(values: list[Any] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in list(values or []):
+        if isinstance(item, dict):
+            text = str(item.get("title") or item.get("id") or item.get("name") or "").strip()
+        else:
+            text = str(item or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
 class GraphAuthorError(RuntimeError):
     """Raised when the model cannot produce a usable graph draft."""
 
@@ -130,8 +153,58 @@ def _normalize_concept(spec: dict[str, Any], slug: str, language: str) -> dict[s
     }
 
 
-def _language_name(language: str) -> str:
-    return language_display_name(language)
+def _concept_mentions(concept: dict[str, Any], needle: str) -> bool:
+    blob = " ".join(
+        [
+            str(concept.get("id") or ""),
+            str(concept.get("title") or ""),
+            str(concept.get("description") or ""),
+        ]
+    ).lower()
+    token = needle.strip().lower()
+    if not token:
+        return False
+    if token in blob:
+        return True
+    return slugify(token) in slugify(blob.replace(".", "-"))
+
+
+def _inject_include_concepts(
+    concepts: list[dict[str, Any]],
+    include_concepts: list[str],
+    *,
+    slug: str,
+    language: str,
+    used: set[str],
+    id_map: dict[str, str],
+) -> list[str]:
+    added_ids: list[str] = []
+    for idea in include_concepts:
+        if any(_concept_mentions(spec, idea) for spec in concepts):
+            continue
+        spec = _normalize_concept(
+            {
+                "id": slugify(idea),
+                "title": idea,
+                "category": "foundation",
+                "description": f"Author-requested concept: {idea}. Teach it because this track needs it.",
+            },
+            slug,
+            language,
+        )
+        concept_id = spec["id"]
+        suffix = 2
+        while concept_id in used:
+            concept_id = f"{spec['id']}-{suffix}"
+            suffix += 1
+        spec["id"] = concept_id
+        used.add(concept_id)
+        id_map[idea] = concept_id
+        id_map[idea.lower()] = concept_id
+        id_map[concept_id] = concept_id
+        concepts.append(spec)
+        added_ids.append(concept_id)
+    return added_ids
 
 
 def normalize_graph_draft(
@@ -144,9 +217,15 @@ def normalize_graph_draft(
     audience: str = "",
     constraints: list[str] | None = None,
     capstone: str = "",
+    track_kind: str = "language",
+    project_brief: str = "",
+    include_concepts: list[str] | None = None,
 ) -> dict[str, Any]:
     slug = slugify(slug)
     language = normalize_language(language)
+    track_kind = normalize_track_kind(track_kind)
+    include = coerce_include_concepts(include_concepts)
+    brief = str(project_brief or capstone or "").strip()
     course_in = dict(payload.get("course") or {})
     project_in = dict(payload.get("project") or {})
     raw_concepts = [dict(item) for item in list(payload.get("concepts") or [])]
@@ -168,6 +247,15 @@ def normalize_graph_draft(
             id_map[original.lower()] = concept_id
         id_map[concept_id] = concept_id
         concepts.append(normalized)
+
+    added_ids = _inject_include_concepts(
+        concepts,
+        include,
+        slug=slug,
+        language=language,
+        used=used,
+        id_map=id_map,
+    )
 
     def remap(raw: str) -> str:
         key = str(raw or "").strip()
@@ -201,6 +289,22 @@ def normalize_graph_draft(
             }
         )
 
+    original_ids = [spec["id"] for spec in concepts if spec["id"] not in set(added_ids)]
+    if added_ids and original_ids:
+        anchor = original_ids[0]
+        for required_id in added_ids:
+            key = (anchor, required_id)
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            dependencies.append(
+                {
+                    "concept_id": anchor,
+                    "requires_concept_id": required_id,
+                    "reason": f"{anchor} needs {required_id} first.",
+                }
+            )
+
     milestones: list[dict[str, Any]] = []
     for index, spec in enumerate(list(payload.get("milestones") or []), start=1):
         milestone = dict(spec)
@@ -217,6 +321,25 @@ def normalize_graph_draft(
         milestone["questions"] = [str(q) for q in list(milestone.get("questions") or [])]
         milestones.append(milestone)
 
+    if added_ids:
+        covered = {cid for row in milestones for cid in list(row.get("concepts") or [])}
+        missing = [cid for cid in added_ids if cid not in covered]
+        if missing:
+            if milestones:
+                first = list(milestones[0].get("concepts") or [])
+                milestones[0]["concepts"] = missing + [cid for cid in first if cid not in missing]
+            else:
+                milestones.append(
+                    {
+                        "title": "Foundations",
+                        "description": "Author-requested concepts the rest of the track needs.",
+                        "instructions": "Master these ideas before the project work.",
+                        "success_criteria": "Each requested concept has explanation and implementation evidence.",
+                        "concepts": missing,
+                        "questions": [],
+                    }
+                )
+
     if not milestones and concepts:
         milestones = [
             {
@@ -231,11 +354,19 @@ def normalize_graph_draft(
 
     validate_graph_payload(concepts, dependencies, milestones)
 
-    lang_name = _language_name(language)
+    lang_name = language_display_name(language)
     course_name = str(course_in.get("name") or topic or slug).strip() or lang_name
     primary_slug = str(course_in.get("primary_slug") or language)
-    secondary_slug = slugify(str(course_in.get("secondary_slug") or "fundamentals"), fallback="fundamentals")
-    title = str(project_in.get("title") or f"Learn {course_name}").strip()
+    default_secondary = "project" if track_kind == "project" else "fundamentals"
+    secondary_slug = slugify(
+        str(course_in.get("secondary_slug") or default_secondary), fallback=default_secondary
+    )
+    default_title = (
+        (brief or topic or f"Build {course_name}")
+        if track_kind == "project"
+        else f"Learn {course_name}"
+    )
+    title = str(project_in.get("title") or default_title).strip()
     runtime = {**runtime_for_language(language), **dict(project_in.get("runtime") or {})}
     runtime["language"] = language
     difficulty_value = str(project_in.get("difficulty") or difficulty or "beginner").lower()
@@ -244,6 +375,16 @@ def normalize_graph_draft(
     constraint_list = list(project_in.get("constraints") or constraints or [])
     if capstone and capstone not in constraint_list:
         constraint_list = list(constraint_list)
+    default_objective = (
+        f"Build {brief or topic or course_name} by mastering each concept in graph order."
+        if track_kind == "project"
+        else f"Learn {course_name} through a deterministic knowledge graph."
+    )
+    default_outcome = brief or capstone or (
+        f"A working {lang_name} project you can defend."
+        if track_kind == "project"
+        else f"A small {lang_name} project you can defend."
+    )
 
     return {
         "course": {
@@ -260,9 +401,9 @@ def normalize_graph_draft(
         "project": {
             "title": title,
             "description": str(project_in.get("description") or topic or title),
-            "objective": str(project_in.get("objective") or f"Learn {course_name} through a deterministic knowledge graph."),
+            "objective": str(project_in.get("objective") or default_objective),
             "difficulty": difficulty_value,
-            "expected_outcome": str(project_in.get("expected_outcome") or capstone or f"A small {lang_name} project you can defend."),
+            "expected_outcome": str(project_in.get("expected_outcome") or default_outcome),
             "prerequisites": list(project_in.get("prerequisites") or ([audience] if audience else [])),
             "skills": list(project_in.get("skills") or []),
             "constraints": constraint_list,
@@ -288,7 +429,13 @@ def generate_graph_draft(
     capstone: str = "",
     difficulty: str = "beginner",
     course_name: str = "",
+    track_kind: str = "language",
+    project_brief: str = "",
+    include_concepts: list[str] | None = None,
 ) -> dict[str, Any]:
+    track_kind = normalize_track_kind(track_kind)
+    include = coerce_include_concepts(include_concepts)
+    brief = str(project_brief or capstone or "").strip()
     llm = get_coach_llm()
     try:
         raw = llm.generate_knowledge_graph(
@@ -300,6 +447,9 @@ def generate_graph_draft(
             capstone=capstone,
             difficulty=difficulty,
             course_name=course_name or topic,
+            track_kind=track_kind,
+            project_brief=brief,
+            include_concepts=include,
         )
     except LLMConfigurationError:
         raise
@@ -317,6 +467,9 @@ def generate_graph_draft(
             audience=audience,
             constraints=list(constraints or []),
             capstone=capstone,
+            track_kind=track_kind,
+            project_brief=brief,
+            include_concepts=include,
         )
     except GraphValidationError:
         raise

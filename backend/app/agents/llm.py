@@ -143,6 +143,9 @@ class CoachLLM(Protocol):
         capstone: str = "",
         difficulty: str = "beginner",
         course_name: str = "",
+        track_kind: str = "language",
+        project_brief: str = "",
+        include_concepts: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
     def generate_concept_content(
@@ -164,6 +167,9 @@ def stub_knowledge_graph(
     capstone: str = "",
     difficulty: str = "beginner",
     course_name: str = "",
+    track_kind: str = "language",
+    project_brief: str = "",
+    include_concepts: list[str] | None = None,
 ) -> dict[str, Any]:
     """Tiny deterministic graph used in tests and when LLM_MODEL=stub."""
     from app.services.runtime import (
@@ -182,6 +188,9 @@ def stub_knowledge_graph(
     core_id = f"{ns}.core"
     cap_id = f"{ns}.capstone"
     lang_name = language_display_name(language)
+    brief = str(project_brief or capstone or "").strip()
+    extras = [str(item).strip() for item in list(include_concepts or []) if str(item).strip()]
+    kind = str(track_kind or "language").strip().lower()
 
     def _concept(concept_id: str, title: str, category: str, description: str, filename: str) -> dict[str, Any]:
         path = f"practice/{filename}"
@@ -230,59 +239,59 @@ def stub_knowledge_graph(
             "mentor_scripts": {},
         }
 
-    return {
-        "course": {
-            "slug": ns,
-            "name": name,
-            "description": topic or f"Learn {name}.",
-            "primary_label": "Language",
-            "secondary_label": "Track",
-            "primary_slug": language,
-            "primary_name": lang_name,
-            "secondary_slug": "fundamentals",
-            "secondary_name": topic or "Fundamentals",
+    extra_concepts: list[dict[str, Any]] = []
+    extra_ids: list[str] = []
+    seen_leaves: set[str] = {"start", "core", "capstone"}
+    for idea in extras:
+        leaf = re.sub(r"[^a-z0-9]+", "-", idea.lower()).strip("-") or "idea"
+        if leaf in seen_leaves:
+            leaf = f"{leaf}-req"
+        seen_leaves.add(leaf)
+        cid = f"{ns}.{leaf}"
+        extra_ids.append(cid)
+        extra_concepts.append(
+            _concept(cid, idea, "foundation", f"Required concept: {idea}.", f"{leaf}.{ext}")
+        )
+
+    project_title = brief or (f"Build {name}" if kind == "project" else f"Learn {name}")
+    concepts = [
+        _concept(start_id, "First programs", "foundation", f"Run a {language} file for {name}.", f"hello.{ext}"),
+        *extra_concepts,
+        _concept(core_id, "Core idea", "core", f"The central idea of {name}.", f"core.{ext}"),
+        _concept(cap_id, "Capstone", "capstone", brief or capstone or f"A tiny {name} program.", f"capstone.{ext}"),
+    ]
+    chain = [start_id, *extra_ids, core_id, cap_id]
+    dependencies = [
+        {
+            "concept_id": later,
+            "requires_concept_id": earlier,
+            "reason": f"{later} builds on {earlier}.",
+        }
+        for earlier, later in zip(chain, chain[1:])
+    ]
+    milestones = [
+        {
+            "title": "Start",
+            "description": "Get a file running.",
+            "instructions": "Write and run the first practice file.",
+            "success_criteria": "The hello file runs.",
+            "concepts": [start_id],
+            "questions": [],
         },
-        "project": {
-            "title": f"Learn {name}",
-            "description": topic or f"A short {language} track generated for testing.",
-            "objective": f"Learn {name} through three concepts, then a tiny capstone.",
-            "difficulty": difficulty or "beginner",
-            "expected_outcome": capstone or f"A small {language} program you can defend.",
-            "prerequisites": [audience] if audience else ["Comfort with a terminal"],
-            "skills": ["Reading errors", "Running a file"],
-            "constraints": list(constraints or []),
-            "tests": ["Each practice file runs"],
-            "evaluation_criteria": ["Explanation and implementation evidence on every concept"],
-            "extension_challenges": [],
-            "recommended_resources": [],
-            "runtime": {"language": language},
-        },
-        "concepts": [
-            _concept(start_id, "First programs", "foundation", f"Run a {language} file for {name}.", f"hello.{ext}"),
-            _concept(core_id, "Core idea", "core", f"The central idea of {name}.", f"core.{ext}"),
-            _concept(cap_id, "Capstone", "capstone", capstone or f"A tiny {name} program.", f"capstone.{ext}"),
-        ],
-        "dependencies": [
+    ]
+    if extra_ids:
+        milestones.append(
             {
-                "concept_id": core_id,
-                "requires_concept_id": start_id,
-                "reason": "You need a running file before the core idea.",
-            },
-            {
-                "concept_id": cap_id,
-                "requires_concept_id": core_id,
-                "reason": "The capstone applies the core idea.",
-            },
-        ],
-        "milestones": [
-            {
-                "title": "Start",
-                "description": "Get a file running.",
-                "instructions": "Write and run the first practice file.",
-                "success_criteria": "The hello file runs.",
-                "concepts": [start_id],
+                "title": "Requested foundations",
+                "description": "Author-requested concepts the rest of the track needs.",
+                "instructions": "Explain and implement each requested idea.",
+                "success_criteria": "Each requested concept has a running practice file.",
+                "concepts": extra_ids,
                 "questions": [],
-            },
+            }
+        )
+    milestones.extend(
+        [
             {
                 "title": "Core",
                 "description": "Learn the central idea.",
@@ -299,7 +308,43 @@ def stub_knowledge_graph(
                 "concepts": [cap_id],
                 "questions": [],
             },
-        ],
+        ]
+    )
+
+    return {
+        "course": {
+            "slug": ns,
+            "name": name,
+            "description": topic or f"Learn {name}.",
+            "primary_label": "Language",
+            "secondary_label": "Track",
+            "primary_slug": language,
+            "primary_name": lang_name,
+            "secondary_slug": "project" if kind == "project" else "fundamentals",
+            "secondary_name": topic or ("Project" if kind == "project" else "Fundamentals"),
+        },
+        "project": {
+            "title": project_title,
+            "description": brief or topic or f"A short {language} track generated for testing.",
+            "objective": (
+                f"Build {brief or name} by mastering each concept in order."
+                if kind == "project"
+                else f"Learn {name} through three concepts, then a tiny capstone."
+            ),
+            "difficulty": difficulty or "beginner",
+            "expected_outcome": brief or capstone or f"A small {language} program you can defend.",
+            "prerequisites": [audience] if audience else ["Comfort with a terminal"],
+            "skills": ["Reading errors", "Running a file"],
+            "constraints": list(constraints or []),
+            "tests": ["Each practice file runs"],
+            "evaluation_criteria": ["Explanation and implementation evidence on every concept"],
+            "extension_challenges": [],
+            "recommended_resources": [],
+            "runtime": {"language": language},
+        },
+        "concepts": concepts,
+        "dependencies": dependencies,
+        "milestones": milestones,
     }
 
 
@@ -519,6 +564,9 @@ class StubCoachLLM:
         capstone: str = "",
         difficulty: str = "beginner",
         course_name: str = "",
+        track_kind: str = "language",
+        project_brief: str = "",
+        include_concepts: list[str] | None = None,
     ) -> dict[str, Any]:
         return stub_knowledge_graph(
             topic=topic,
@@ -529,6 +577,9 @@ class StubCoachLLM:
             capstone=capstone,
             difficulty=difficulty,
             course_name=course_name,
+            track_kind=track_kind,
+            project_brief=project_brief,
+            include_concepts=list(include_concepts or []),
         )
 
     def generate_concept_content(
@@ -571,6 +622,96 @@ def get_coach_llm() -> CoachLLM:
         raise
     except Exception as exc:
         raise LLMConfigurationError(f"Failed to initialize LLM {model_name}: {exc}") from exc
+
+
+def knowledge_graph_author_prompt(
+    *,
+    topic: str,
+    language: str,
+    slug: str,
+    audience: str = "",
+    constraints: list[str] | None = None,
+    capstone: str = "",
+    difficulty: str = "beginner",
+    course_name: str = "",
+    track_kind: str = "language",
+    project_brief: str = "",
+    include_concepts: list[str] | None = None,
+) -> str:
+    kind = "project" if str(track_kind or "").strip().lower() in {"project", "project-based", "build"} else "language"
+    brief = str(project_brief or capstone or "").strip()
+    must = [str(item).strip() for item in list(include_concepts or []) if str(item).strip()]
+    if kind == "project":
+        shape = (
+            "This is PROJECT-BASED learning, modeled on 'Build a Simple Backend Framework in JavaScript'.\n"
+            "The project is the spine. Reverse-engineer every concept a beginner needs to BUILD it:\n"
+            "1) language foundations the project actually uses (not a full language survey)\n"
+            "2) domain, protocol, or tooling layers the project sits on\n"
+            "3) each subsystem of the project as its own concept (the parts they will implement)\n"
+            "4) errors and tests at the end\n"
+            "Aim for 12-22 concepts and 6-10 milestones. Every concept must earn its place in the project.\n"
+            "Practice tasks should look like pieces of the project (practice/ files that grow into the build).\n"
+        )
+        quality = (
+            "Quality bar: JS backend framework — functions/objects/arrays → TCP/HTTP → "
+            "raw server → parse → routing → request/response → middleware → errors → tests.\n"
+        )
+        count = "12-22"
+        milestone_count = "6-10"
+    else:
+        shape = (
+            "This is LANGUAGE/FRAMEWORK learning, modeled on Python fundamentals → capstone CLI.\n"
+            "Cover the language or framework surface in small teachable concepts, then a capstone that uses them.\n"
+            "Aim for 8-16 concepts and 5-8 milestones.\n"
+        )
+        quality = (
+            "Quality bar: Python fundamentals (scripts → types → functions → collections → "
+            "files → classes → exceptions → capstone CLI).\n"
+        )
+        count = "8-16"
+        milestone_count = "5-8"
+    include_block = ""
+    if must:
+        include_block = (
+            "MUST include these concepts as full nodes (correct titles, ids, teaching content). "
+            "Add any missing prerequisites even if they were not listed. Do not drop any of these ideas:\n"
+            f"{json.dumps(must)}\n"
+        )
+    return (
+        "You author deterministic curriculum knowledge graphs for Socratic Learner. "
+        "The AI mentor never invents this graph; it only teaches inside it. "
+        "Return ONLY JSON with keys: course, project, concepts, dependencies, milestones.\n"
+        "course: {slug, name, description, primary_slug, primary_name, secondary_slug, secondary_name}.\n"
+        "project: {title, description, objective, difficulty, expected_outcome, prerequisites, "
+        "skills, constraints, tests, evaluation_criteria, extension_challenges, "
+        "recommended_resources (array of {title,url})}.\n"
+        f"concepts: {count} objects with id, title, category, description, learning_objectives "
+        "(2+ strings), misconceptions (objects with id, description, signals, "
+        "diagnostic_questions, remediation.script), diagnostic_questions, research_questions, "
+        "resources ({title,url}), hints (exactly 5 strings: question, direction, concept, "
+        "structure, targeted), mastery_requirements (object of booleans for explanation, "
+        "implementation, testing, research), practice_tasks "
+        "(objects with id, filename under practice/ plus the language extension, prompt, "
+        "run, expect {exit_code, stdout_contains}, rubric). "
+        "Do not use title/description/acceptance_criteria on practice_tasks — put the "
+        "assignment in prompt and the checks in rubric. Never include full solutions.\n"
+        "dependencies: array of {concept_id, requires_concept_id, reason}. No cycles. "
+        "Every edge must reference concept ids in this graph.\n"
+        f"milestones: {milestone_count} objects with title, description, instructions (no code dumps), "
+        "success_criteria, concepts (array of concept ids). Cover every concept at least once.\n"
+        f"Namespace every concept id with `{slug}.`\n"
+        f"{shape}{quality}{include_block}"
+        f"Topic: {topic}\n"
+        f"Course name: {course_name or topic}\n"
+        f"Language/runtime: {language}\n"
+        f"Track kind: {kind}\n"
+        f"Slug: {slug}\n"
+        f"Audience: {audience or 'beginner'}\n"
+        f"Difficulty: {difficulty}\n"
+        f"Constraints: {json.dumps(list(constraints or []))}\n"
+        f"Project learners will build: {brief or capstone or 'a small stdlib/cli or node core program'}\n"
+        f"Capstone idea: {capstone or brief or 'a small stdlib/cli or node core program'}\n"
+    )
 
 
 class LangChainCoachLLM:
@@ -1078,39 +1219,22 @@ class LangChainCoachLLM:
         capstone: str = "",
         difficulty: str = "beginner",
         course_name: str = "",
+        track_kind: str = "language",
+        project_brief: str = "",
+        include_concepts: list[str] | None = None,
     ) -> dict[str, Any]:
-        prompt = (
-            "You author deterministic curriculum knowledge graphs for Socratic Learner. "
-            "The AI mentor never invents this graph; it only teaches inside it. "
-            "Return ONLY JSON with keys: course, project, concepts, dependencies, milestones.\n"
-            "course: {slug, name, description, primary_slug, primary_name, secondary_slug, secondary_name}.\n"
-            "project: {title, description, objective, difficulty, expected_outcome, prerequisites, "
-            "skills, constraints, tests, evaluation_criteria, extension_challenges, "
-            "recommended_resources (array of {title,url})}.\n"
-            "concepts: 6-10 objects with id, title, category, description, learning_objectives "
-            "(2+ strings), misconceptions (objects with id, description, signals, "
-            "diagnostic_questions, remediation.script), diagnostic_questions, research_questions, "
-            "resources ({title,url}), hints (exactly 5 strings: question, direction, concept, "
-            "structure, targeted), mastery_requirements (object of booleans for explanation, "
-            "implementation, testing, research), practice_tasks "
-            "(objects with id, filename under practice/ plus the language extension, prompt, "
-            "run, expect {exit_code, stdout_contains}, rubric). "
-            "Do not use title/description/acceptance_criteria on practice_tasks — put the "
-            "assignment in prompt and the checks in rubric. Never include full solutions.\n"
-            "dependencies: array of {concept_id, requires_concept_id, reason}. No cycles. "
-            "Every edge must reference concept ids in this graph.\n"
-            "milestones: 4-8 objects with title, description, instructions (no code dumps), "
-            "success_criteria, concepts (array of concept ids). Cover every concept at least once.\n"
-            f"Namespace every concept id with `{slug}.` "
-            "Quality bar: the Python fundamentals graph (scripts → types → functions → capstone CLI).\n"
-            f"Topic: {topic}\n"
-            f"Course name: {course_name or topic}\n"
-            f"Language/runtime: {language}\n"
-            f"Slug: {slug}\n"
-            f"Audience: {audience or 'beginner'}\n"
-            f"Difficulty: {difficulty}\n"
-            f"Constraints: {json.dumps(list(constraints or []))}\n"
-            f"Capstone idea: {capstone or 'a small stdlib/cli or node core program'}\n"
+        prompt = knowledge_graph_author_prompt(
+            topic=topic,
+            language=language,
+            slug=slug,
+            audience=audience,
+            constraints=list(constraints or []),
+            capstone=capstone,
+            difficulty=difficulty,
+            course_name=course_name,
+            track_kind=track_kind,
+            project_brief=project_brief,
+            include_concepts=list(include_concepts or []),
         )
         try:
             raw = self._invoke(prompt)
@@ -1129,6 +1253,9 @@ class LangChainCoachLLM:
             capstone=capstone,
             difficulty=difficulty,
             course_name=course_name,
+            track_kind=track_kind,
+            project_brief=project_brief,
+            include_concepts=list(include_concepts or []),
         )
 
     def generate_concept_content(

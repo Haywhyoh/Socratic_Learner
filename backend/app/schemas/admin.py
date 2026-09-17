@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +12,9 @@ class GraphGenerateRequest(BaseModel):
     capstone: str = ""
     difficulty: str = "beginner"
     course_name: str = ""
+    track_kind: Literal["language", "project"] = "language"
+    project_brief: str = ""
+    include_concepts: list[str] = Field(default_factory=list)
 
 
 class ConceptGenerateRequest(BaseModel):
