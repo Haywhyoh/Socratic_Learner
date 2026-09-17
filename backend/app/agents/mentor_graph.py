@@ -1050,6 +1050,9 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
             state = {**state, "evidence": _with_answered(state, open_q)}
             result = {"passed": True, "feedback": feedback or "That's right."}
         else:
+            held = _hold_for_remaining_work(state)
+            if held is not None:
+                return held
             objectives = list(state.get("learning_objectives") or [])
             recent = _recent_misconception(state)
             if recent and recent.get("id") == "callback-caller-confusion":
