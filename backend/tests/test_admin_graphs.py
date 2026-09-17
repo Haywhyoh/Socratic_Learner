@@ -1,9 +1,147 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.agents.graph_author import normalize_graph_draft
 from app.models.course import Course
+from app.models.curriculum import Concept
 from app.seed import seed
 from app.services.curriculum_authoring import GraphValidationError, publish_graph, validate_graph_payload
+from app.services.practice import normalize_practice_task
+
+
+def test_normalize_maps_title_description_practice_tasks() -> None:
+    task = normalize_practice_task(
+        {
+            "id": "callback-basic",
+            "title": "Write a function that takes a callback and invokes it",
+            "description": "Write a function `process` that takes a callback `cb` as a parameter.",
+            "acceptance_criteria": [
+                "Function accepts a callback parameter",
+                "Callback is invoked (not just passed)",
+            ],
+        },
+        "javascript",
+    )
+    assert task["filename"] == "practice/callback-basic.js"
+    assert "process" in task["prompt"]
+    assert "callback" in task["rubric"].lower()
+    assert task["run"] == ["node", "practice/callback-basic.js"]
+
+    draft = normalize_graph_draft(
+        {
+            "course": {"name": "Simple backend"},
+            "project": {"title": "Simple backend framework"},
+            "concepts": [
+                {
+                    "id": "javascript.functions",
+                    "title": "Functions, parameters, callbacks, closures",
+                    "practice_tasks": [
+                        {
+                            "id": "callback-basic",
+                            "title": "Write a function that takes a callback and invokes it",
+                            "description": "Write a function `process` that takes a callback `cb`.",
+                            "acceptance_criteria": ["Function accepts a callback parameter"],
+                        }
+                    ],
+                }
+            ],
+            "dependencies": [],
+            "milestones": [],
+        },
+        slug="js-backend",
+        language="javascript",
+        topic="Simple backend framework",
+    )
+    saved = draft["concepts"][0]["practice_tasks"][0]
+    assert saved["filename"] == "practice/callback-basic.js"
+    assert saved["prompt"]
+    assert saved["rubric"]
+
+
+def test_generate_concept_fills_filename_and_prompt(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/admin/graphs/concepts/generate",
+        json={
+            "slug": "js-backend",
+            "language": "javascript",
+            "project_title": "Simple backend framework",
+            "concept": {
+                "id": "js-backend.functions",
+                "title": "Functions, parameters, callbacks, closures",
+                "practice_tasks": [
+                    {
+                        "id": "callback-basic",
+                        "title": "Write a function that takes a callback and invokes it",
+                        "description": "Write a function `process` that takes a callback `cb`.",
+                        "acceptance_criteria": ["Callback is invoked"],
+                    }
+                ],
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    task = response.json()["practice_tasks"][0]
+    assert task["filename"] == "practice/callback-basic.js"
+    assert "process" in task["prompt"]
+    assert "invoked" in task["rubric"].lower()
+
+
+def test_publish_persists_mapped_practice_tasks(db: Session) -> None:
+    payload = {
+        "course": {
+            "slug": "js-mapped-tasks",
+            "name": "Mapped tasks",
+            "description": "LLM-shaped tasks",
+            "primary_slug": "javascript",
+            "primary_name": "JavaScript",
+            "secondary_slug": "fundamentals",
+            "secondary_name": "Fundamentals",
+        },
+        "project": {
+            "title": "Mapped tasks",
+            "description": "Admin graph",
+            "objective": "Store files",
+            "difficulty": "beginner",
+            "expected_outcome": "Tasks have files",
+            "runtime": {"language": "javascript"},
+        },
+        "concepts": [
+            {
+                "id": "js-mapped-tasks.functions",
+                "title": "Functions",
+                "category": "foundation",
+                "description": "Callbacks",
+                "hints": ["a", "b", "c", "d", "e"],
+                "mastery_requirements": {"explanation": True, "implementation": True},
+                "practice_tasks": [
+                    {
+                        "id": "callback-basic",
+                        "title": "Write a function that takes a callback and invokes it",
+                        "description": "Write a function `process` that takes a callback `cb`.",
+                        "acceptance_criteria": ["Function accepts a callback parameter"],
+                    }
+                ],
+            }
+        ],
+        "dependencies": [],
+        "milestones": [
+            {
+                "title": "Only",
+                "description": "One",
+                "instructions": "Do it",
+                "success_criteria": "Done",
+                "concepts": ["js-mapped-tasks.functions"],
+            }
+        ],
+    }
+    graph = publish_graph(db, payload)
+    db.commit()
+    task = graph["concepts"][0]["practice_tasks"][0]
+    assert task["filename"] == "practice/callback-basic.js"
+    stored = db.get(Concept, "js-mapped-tasks.functions")
+    assert stored is not None
+    assert stored.practice_tasks[0]["filename"] == "practice/callback-basic.js"
+    assert "process" in stored.practice_tasks[0]["prompt"]
 
 
 def test_generate_preserves_go_language(client: TestClient) -> None:

@@ -16,6 +16,7 @@ from app.models.course import Course, CourseOption
 from app.models.curriculum import Concept, ConceptDependency, MilestoneConcept
 from app.models.enrollment import Enrollment
 from app.models.project import Milestone, Project, ProjectCurriculumMode, ProjectDifficulty
+from app.services.practice import normalize_practice_tasks
 from app.services.runtime import runtime_for_language
 
 DEFINITION_LIST_KEYS = (
@@ -62,7 +63,7 @@ class GraphValidationError(ValueError):
         super().__init__("; ".join(self.errors) or "Invalid knowledge graph")
 
 
-def concept_fields_from_spec(spec: dict[str, Any]) -> dict[str, Any]:
+def concept_fields_from_spec(spec: dict[str, Any], *, language: str | None = None) -> dict[str, Any]:
     return {
         "title": str(spec.get("title") or spec.get("id") or "Untitled"),
         "category": str(spec.get("category") or "foundation"),
@@ -74,12 +75,12 @@ def concept_fields_from_spec(spec: dict[str, Any]) -> dict[str, Any]:
         "resources": list(spec.get("resources") or []),
         "hints": list(spec.get("hints") or []),
         "mastery_requirements": dict(spec.get("mastery_requirements") or {}),
-        "practice_tasks": list(spec.get("practice_tasks") or []),
+        "practice_tasks": normalize_practice_tasks(list(spec.get("practice_tasks") or []), language),
         "mentor_scripts": dict(spec.get("mentor_scripts") or {}),
     }
 
 
-def concept_to_spec(concept: Concept) -> dict[str, Any]:
+def concept_to_spec(concept: Concept, *, language: str | None = None) -> dict[str, Any]:
     return {
         "id": concept.id,
         "title": concept.title,
@@ -92,7 +93,7 @@ def concept_to_spec(concept: Concept) -> dict[str, Any]:
         "resources": list(concept.resources or []),
         "hints": list(concept.hints or []),
         "mastery_requirements": dict(concept.mastery_requirements or {}),
-        "practice_tasks": list(concept.practice_tasks or []),
+        "practice_tasks": normalize_practice_tasks(list(concept.practice_tasks or []), language),
         "mentor_scripts": dict(concept.mentor_scripts or {}),
     }
 
@@ -301,14 +302,16 @@ def ensure_course_path(
     return course, primary, secondary
 
 
-def upsert_concepts(db: Session, concepts: list[dict[str, Any]]) -> None:
+def upsert_concepts(
+    db: Session, concepts: list[dict[str, Any]], *, language: str | None = None
+) -> None:
     ids = [str(spec["id"]) for spec in concepts]
     existing = {
         c.id: c for c in db.query(Concept).filter(Concept.id.in_(ids)).all()
     } if ids else {}
     for spec in concepts:
         concept_id = str(spec["id"])
-        fields = concept_fields_from_spec(spec)
+        fields = concept_fields_from_spec(spec, language=language)
         concept = existing.get(concept_id)
         if concept is None:
             db.add(Concept(id=concept_id, **fields))
@@ -577,8 +580,11 @@ def get_graph(db: Session, project_id: int) -> dict[str, Any]:
         db.query(Concept).filter(Concept.id.in_(concept_ids)).all() if concept_ids else []
     )
     concept_map = {row.id: row for row in concepts}
+    language = str((project.runtime or {}).get("language") or "") or None
     ordered_concepts = [
-        concept_to_spec(concept_map[cid]) for cid in concept_ids if cid in concept_map
+        concept_to_spec(concept_map[cid], language=language)
+        for cid in concept_ids
+        if cid in concept_map
     ]
     deps: list[dict[str, str]] = []
     if concept_ids:
@@ -689,7 +695,7 @@ def publish_graph(
         primary_label=str(course_spec.get("primary_label") or "Language"),
         secondary_label=str(course_spec.get("secondary_label") or "Track"),
     )
-    upsert_concepts(db, concepts)
+    upsert_concepts(db, concepts, language=language or None)
     upsert_dependencies(db, {str(spec["id"]) for spec in concepts}, normalized_deps)
     match: Literal["title", "path", "id"] = "id" if project_id is not None else "path"
     project = ensure_project(

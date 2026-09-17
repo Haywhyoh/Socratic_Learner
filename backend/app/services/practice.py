@@ -2,29 +2,117 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.models.curriculum import Concept
 from app.models.learning_state import ConceptState
 from app.models.project import Project
-from app.services.runtime import project_runtime, run_argv_for_file
+from app.services.runtime import (
+    language_extension,
+    project_runtime,
+    run_argv_for_file,
+    runtime_for_language,
+)
+
+_LEAF_RE = re.compile(r"[^a-z0-9]+")
 
 
-def practice_tasks_for(concept: Concept | None) -> list[dict[str, Any]]:
+def practice_task_leaf(value: str) -> str:
+    leaf = _LEAF_RE.sub("-", str(value or "").strip().lower()).strip("-")
+    return leaf or "practice"
+
+
+def _task_prompt(item: dict[str, Any]) -> str:
+    prompt = str(item.get("prompt") or "").strip()
+    if prompt:
+        return prompt
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if title and description and title not in description:
+        return f"{title}\n\n{description}"
+    return description or title
+
+
+def _task_rubric(item: dict[str, Any]) -> str:
+    rubric = str(item.get("rubric") or "").strip()
+    if rubric:
+        return rubric
+    criteria = item.get("acceptance_criteria")
+    if isinstance(criteria, list):
+        return "\n".join(str(part).strip() for part in criteria if str(part).strip())
+    return str(criteria or "").strip()
+
+
+def _task_filename(item: dict[str, Any], leaf: str, language: str | None) -> str:
+    ext = language_extension(language) if language else "txt"
+    raw = str(item.get("filename") or "").strip().lstrip("/")
+    if not raw:
+        return f"practice/{leaf}.{ext}"
+    stem = raw.rsplit("/", 1)[-1]
+    if "." not in stem:
+        raw = f"{raw}.{ext}"
+    if "/" not in raw:
+        raw = f"practice/{raw}"
+    return raw
+
+
+def _task_run(item: dict[str, Any], filename: str, language: str | None) -> list[str]:
+    raw = item.get("run") or []
+    if isinstance(raw, str):
+        parts = [part for part in raw.split() if part]
+    else:
+        parts = [str(part) for part in raw if str(part)]
+    if parts:
+        return parts
+    return run_argv_for_file(runtime_for_language(language), filename)
+
+
+def normalize_practice_task(item: dict[str, Any], language: str | None = None) -> dict[str, Any]:
+    """Map LLM title/description tasks onto the filename/prompt contract."""
+    leaf = practice_task_leaf(str(item.get("id") or item.get("title") or item.get("filename") or "practice"))
+    filename = _task_filename(item, leaf, language)
+    task_id = str(item.get("id") or leaf).strip() or leaf
+    raw_expect = item.get("expect") or {}
+    expect = dict(raw_expect) if isinstance(raw_expect, dict) else {}
+    if "exit_code" not in expect:
+        expect["exit_code"] = 0
+    if "stdout_contains" not in expect:
+        expect["stdout_contains"] = list(expect.get("stdout_contains") or [])
+    task: dict[str, Any] = {
+        "id": task_id,
+        "filename": filename,
+        "prompt": _task_prompt(item),
+        "run": _task_run(item, filename, language),
+        "expect": expect,
+        "rubric": _task_rubric(item),
+    }
+    title = str(item.get("title") or "").strip()
+    if title:
+        task["title"] = title
+    return task
+
+
+def normalize_practice_tasks(items: list[Any], language: str | None = None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            out.append(normalize_practice_task(item, language))
+    return out
+
+
+def practice_tasks_for(concept: Concept | None, *, language: str | None = None) -> list[dict[str, Any]]:
     if concept is None:
         return []
-    raw = list(getattr(concept, "practice_tasks", None) or [])
+    raw = normalize_practice_tasks(list(getattr(concept, "practice_tasks", None) or []), language)
     out: list[dict[str, Any]] = []
     for item in raw:
-        if not isinstance(item, dict):
-            continue
         filename = str(item.get("filename") or "").strip().lstrip("/")
         if not filename:
             continue
-        task_id = str(item.get("id") or filename)
         out.append(
             {
-                "id": task_id,
+                "id": str(item.get("id") or filename),
                 "filename": filename,
                 "prompt": str(item.get("prompt") or "").strip(),
                 "run": list(item.get("run") or []),
@@ -49,8 +137,9 @@ def next_practice_task(
     *,
     task_id: str | None = None,
     filename: str | None = None,
+    language: str | None = None,
 ) -> dict[str, Any] | None:
-    tasks = practice_tasks_for(concept)
+    tasks = practice_tasks_for(concept, language=language)
     if not tasks:
         return None
     if task_id:

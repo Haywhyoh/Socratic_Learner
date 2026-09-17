@@ -385,8 +385,11 @@ export interface AdminProjectSpec {
 
 export interface AdminPracticeTask {
   id?: string;
+  title?: string;
   filename?: string;
   prompt?: string;
+  description?: string;
+  acceptance_criteria?: string[];
   run?: string[];
   expect?: { exit_code?: number; stdout_contains?: string[] };
   rubric?: string;

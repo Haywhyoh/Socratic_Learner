@@ -3,18 +3,71 @@ import type {
   AdminDependencySpec,
   AdminGraphPayload,
   AdminMilestoneSpec,
+  AdminPracticeTask,
 } from "./types";
 
 export const ADMIN_DRAFT_KEY = "socratic_admin_graph_draft";
 
 export const TRACK_LANGUAGES = [
-  { slug: "python", name: "Python" },
-  { slug: "javascript", name: "JavaScript" },
-  { slug: "typescript", name: "TypeScript" },
-  { slug: "go", name: "Go" },
-  { slug: "csharp", name: "C#" },
-  { slug: "c", name: "C" },
+  { slug: "python", name: "Python", extension: "py" },
+  { slug: "javascript", name: "JavaScript", extension: "js" },
+  { slug: "typescript", name: "TypeScript", extension: "ts" },
+  { slug: "go", name: "Go", extension: "go" },
+  { slug: "csharp", name: "C#", extension: "cs" },
+  { slug: "c", name: "C", extension: "c" },
 ] as const;
+
+export function languageExtension(language: string): string {
+  return TRACK_LANGUAGES.find((item) => item.slug === language)?.extension ?? "txt";
+}
+
+function taskLeaf(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "practice";
+}
+
+export function normalizePracticeTask(
+  task: AdminPracticeTask,
+  language: string,
+): AdminPracticeTask {
+  const ext = languageExtension(language);
+  const leaf = taskLeaf(task.id || task.title || task.filename || "practice");
+  let filename = (task.filename || "").replace(/^\/+/, "");
+  if (!filename) {
+    filename = `practice/${leaf}.${ext}`;
+  } else {
+    const stem = filename.split("/").pop() || filename;
+    if (!stem.includes(".")) filename = `${filename}.${ext}`;
+    if (!filename.includes("/")) filename = `practice/${filename}`;
+  }
+  const prompt =
+    (task.prompt || "").trim() ||
+    [task.title, task.description].filter(Boolean).join("\n\n");
+  const rubric =
+    (task.rubric || "").trim() ||
+    (task.acceptance_criteria || []).map((item) => String(item).trim()).filter(Boolean).join("\n");
+  return {
+    ...task,
+    id: task.id || leaf,
+    filename,
+    prompt,
+    rubric,
+    run: task.run?.length ? task.run : undefined,
+    expect: task.expect ?? { exit_code: 0, stdout_contains: [] },
+  };
+}
+
+export function normalizeGraphPracticeTasks(graph: AdminGraphPayload): AdminGraphPayload {
+  const language = String(graph.project?.runtime?.language || graph.course?.primary_slug || "python");
+  return {
+    ...graph,
+    concepts: (graph.concepts || []).map((concept) => ({
+      ...concept,
+      practice_tasks: (concept.practice_tasks || []).map((task) =>
+        normalizePracticeTask(task, language),
+      ),
+    })),
+  };
+}
 
 export function emptyConcept(slug: string, index = 1): AdminConceptSpec {
   const leaf = `concept-${index}`;

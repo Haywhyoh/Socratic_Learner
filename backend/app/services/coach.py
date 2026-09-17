@@ -319,7 +319,9 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
     )
     project = user_project.project
     runtime = project_runtime(project)
-    task = practice_service.next_practice_task(concept, state_row)
+    task = practice_service.next_practice_task(
+        concept, state_row, language=runtime_language(project)
+    )
     return {
         "position": position,
         "concept": concept,
@@ -358,7 +360,9 @@ def _mentor_context(db: Session, user_project: UserProject) -> dict[str, Any]:
             "hints": list((concept.hints if concept else None) or []),
             "learning_objectives": list((concept.learning_objectives if concept else None) or []),
             "needs_build": curriculum_graph.needs_build(concept) if concept else False,
-            "practice_tasks": practice_service.practice_tasks_for(concept),
+            "practice_tasks": practice_service.practice_tasks_for(
+                concept, language=runtime_language(project)
+            ),
             "assigned_file": (task or {}).get("filename"),
             "practice_task_id": (task or {}).get("id"),
             "evidence": dict((state_row.evidence if state_row else None) or {}),
@@ -408,7 +412,9 @@ def _attach_follow_on_assignment(
     if new_id and new_id != started_concept_id and state_row is not None:
         if state_row.status == ConceptStatus.available:
             state_row = curriculum_graph.introduce_concept(db, user_project, new_id)
-        task = practice_service.next_practice_task(concept, state_row)
+        task = practice_service.next_practice_task(
+            concept, state_row, language=runtime_language(user_project.project)
+        )
         if task:
             if actor is not None:
                 _ensure_practice_file(db, actor, user_project.id, task["filename"])
@@ -528,6 +534,7 @@ def _run_mentor(
             state_row,
             task_id=str(graph_state.get("practice_task_id") or "") or None,
             filename=str(graph_state.get("assigned_file") or "") or None,
+            language=runtime_language(user_project.project),
         )
         if task:
             _hydrate_practice_run(db, actor, user_project, graph_state, task)
@@ -786,7 +793,11 @@ def evaluate_practice(
     concept = ctx["concept"]
     state_row = ctx["state_row"]
     task = practice_service.next_practice_task(
-        concept, state_row, task_id=task_id, filename=filename
+        concept,
+        state_row,
+        task_id=task_id,
+        filename=filename,
+        language=runtime_language(user_project.project),
     )
     if task is None:
         raise HTTPException(

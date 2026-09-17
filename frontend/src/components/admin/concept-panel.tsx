@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { languageExtension } from "@/lib/admin-graph";
 import type { AdminConceptSpec, AdminPracticeTask } from "@/lib/types";
 
 function asLines(values: string[]) {
@@ -20,6 +21,24 @@ function misconceptionText(item: string | Record<string, unknown>) {
   return String(item.description ?? item.id ?? "");
 }
 
+function masteryChecked(value: unknown) {
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    return Boolean(text) && text !== "false" && text !== "0" && text !== "no";
+  }
+  return Boolean(value);
+}
+
+function taskPrompt(task: AdminPracticeTask) {
+  if (task.prompt?.trim()) return task.prompt;
+  return [task.title, task.description].filter(Boolean).join("\n\n");
+}
+
+function taskRubric(task: AdminPracticeTask) {
+  if (task.rubric?.trim()) return task.rubric;
+  return (task.acceptance_criteria || []).map((item) => String(item).trim()).filter(Boolean).join("\n");
+}
+
 export function ConceptPanel({
   concept,
   language,
@@ -35,9 +54,10 @@ export function ConceptPanel({
   onChange: (next: AdminConceptSpec) => void;
   onDelete: () => void;
 }) {
-  const [advanced, setAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const tasks = concept.practice_tasks || [];
 
   async function regenerate() {
     setBusy(true);
@@ -59,9 +79,26 @@ export function ConceptPanel({
   }
 
   function updateTask(index: number, patch: Partial<AdminPracticeTask>) {
-    const tasks = [...(concept.practice_tasks || [])];
-    tasks[index] = { ...tasks[index], ...patch };
-    onChange({ ...concept, practice_tasks: tasks });
+    const nextTasks = [...tasks];
+    nextTasks[index] = { ...nextTasks[index], ...patch };
+    onChange({ ...concept, practice_tasks: nextTasks });
+  }
+
+  function addTask() {
+    const leaf = `task-${tasks.length + 1}`;
+    const ext = languageExtension(language);
+    onChange({
+      ...concept,
+      practice_tasks: [
+        ...tasks,
+        {
+          id: leaf,
+          filename: `practice/${leaf}.${ext}`,
+          prompt: "",
+          rubric: "",
+        },
+      ],
+    });
   }
 
   return (
@@ -141,7 +178,7 @@ export function ConceptPanel({
           <label key={key} className="flex items-center gap-2">
             <input
               type="checkbox"
-              checked={Boolean(concept.mastery_requirements?.[key])}
+              checked={masteryChecked(concept.mastery_requirements?.[key])}
               onChange={(event) =>
                 onChange({
                   ...concept,
@@ -157,12 +194,61 @@ export function ConceptPanel({
         ))}
       </div>
 
+      <div className="mt-5">
+        <p className="text-xs uppercase tracking-wide text-stone-400">Practice tasks</p>
+        {tasks.length === 0 && (
+          <p className="mt-2 text-xs text-stone-500">No practice files yet. Add a task or regenerate.</p>
+        )}
+        {tasks.map((task, index) => (
+          <div key={`${task.id || "task"}-${index}`} className="mt-2 rounded-lg border border-stone-800 p-2">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="truncate text-xs text-stone-300">{task.title || task.id || `Task ${index + 1}`}</p>
+              <button
+                type="button"
+                className="text-[11px] text-stone-500 hover:text-red-300"
+                onClick={() =>
+                  onChange({
+                    ...concept,
+                    practice_tasks: tasks.filter((_, itemIndex) => itemIndex !== index),
+                  })
+                }
+              >
+                Remove
+              </button>
+            </div>
+            <input
+              className="mb-2 w-full rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-100"
+              placeholder="filename, e.g. practice/callback-basic.js"
+              value={task.filename || ""}
+              onChange={(event) => updateTask(index, { filename: event.target.value })}
+            />
+            <textarea
+              className="mb-2 min-h-20 w-full rounded border border-stone-700 bg-stone-900 px-2 py-1 text-xs text-stone-100"
+              placeholder="prompt — what the learner should write in that file"
+              value={taskPrompt(task)}
+              onChange={(event) => updateTask(index, { prompt: event.target.value, description: undefined })}
+            />
+            <textarea
+              className="min-h-16 w-full rounded border border-stone-700 bg-stone-900 px-2 py-1 text-xs text-stone-100"
+              placeholder="rubric / acceptance checks"
+              value={taskRubric(task)}
+              onChange={(event) =>
+                updateTask(index, { rubric: event.target.value, acceptance_criteria: undefined })
+              }
+            />
+          </div>
+        ))}
+        <Button variant="ghost" className="mt-2" onClick={addTask}>
+          Add task
+        </Button>
+      </div>
+
       <button
         type="button"
         className="mt-4 text-left text-xs text-amber-500 hover:text-amber-400"
         onClick={() => setAdvanced((value) => !value)}
       >
-        {advanced ? "Hide" : "Show"} questions, misconceptions, practice
+        {advanced ? "Hide" : "Show"} questions and misconceptions
       </button>
 
       {advanced && (
@@ -206,40 +292,6 @@ export function ConceptPanel({
               }
             />
           </label>
-          <div>
-            <p className="text-xs text-stone-400">Practice tasks</p>
-            {(concept.practice_tasks || []).map((task, index) => (
-              <div key={index} className="mt-2 rounded-lg border border-stone-800 p-2">
-                <input
-                  className="mb-2 w-full rounded border border-stone-700 bg-stone-900 px-2 py-1 text-xs"
-                  placeholder="filename"
-                  value={task.filename || ""}
-                  onChange={(event) => updateTask(index, { filename: event.target.value })}
-                />
-                <textarea
-                  className="w-full rounded border border-stone-700 bg-stone-900 px-2 py-1 text-xs"
-                  placeholder="prompt"
-                  value={task.prompt || ""}
-                  onChange={(event) => updateTask(index, { prompt: event.target.value })}
-                />
-              </div>
-            ))}
-            <Button
-              variant="ghost"
-              className="mt-2"
-              onClick={() =>
-                onChange({
-                  ...concept,
-                  practice_tasks: [
-                    ...(concept.practice_tasks || []),
-                    { id: `task-${(concept.practice_tasks || []).length + 1}`, filename: "", prompt: "" },
-                  ],
-                })
-              }
-            >
-              Add task
-            </Button>
-          </div>
         </div>
       )}
     </div>

@@ -11,6 +11,7 @@ from app.services.curriculum_authoring import (
     normalize_dependency,
     validate_graph_payload,
 )
+from app.services.practice import normalize_practice_tasks
 from app.services.runtime import (
     language_display_name,
     language_extension,
@@ -18,6 +19,8 @@ from app.services.runtime import (
     run_argv_for_file,
     runtime_for_language,
 )
+
+MASTERY_KEYS = ("explanation", "implementation", "testing", "research")
 
 HINT_DEFAULTS = (
     "What is the smallest example of this idea?",
@@ -77,15 +80,28 @@ def _default_practice_task(concept_id: str, language: str, title: str) -> dict[s
     }
 
 
+def _coerce_mastery_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return bool(text) and text not in {"false", "0", "no"}
+    return bool(value)
+
+
+def _normalize_mastery(raw: dict[str, Any] | None) -> dict[str, bool]:
+    source = dict(raw or {})
+    mastery = {key: _coerce_mastery_flag(source.get(key)) for key in MASTERY_KEYS}
+    if not any(mastery.values()):
+        return dict(DEFAULT_MASTERY)
+    return {key: value for key, value in mastery.items() if value}
+
+
 def _normalize_concept(spec: dict[str, Any], slug: str, language: str) -> dict[str, Any]:
     concept_id = namespaced_id(str(spec.get("id") or spec.get("title") or "concept"), slug)
     title = str(spec.get("title") or concept_id)
-    tasks = list(spec.get("practice_tasks") or [])
+    tasks = normalize_practice_tasks(list(spec.get("practice_tasks") or []), language)
     if not tasks:
         tasks = [_default_practice_task(concept_id, language, title)]
-    mastery = dict(spec.get("mastery_requirements") or {})
-    if not mastery:
-        mastery = dict(DEFAULT_MASTERY)
+    mastery = _normalize_mastery(dict(spec.get("mastery_requirements") or {}))
     resources = []
     for item in list(spec.get("resources") or []):
         if isinstance(item, dict):

@@ -19,7 +19,7 @@ import { ConceptNode, type ConceptNodeType } from "@/components/admin/concept-no
 import { ConceptPanel } from "@/components/admin/concept-panel";
 import { MilestonePanel } from "@/components/admin/milestone-panel";
 import { Button } from "@/components/ui/button";
-import { emptyConcept, formatApiDetail, layoutConceptNodes, saveDraft, TRACK_LANGUAGES } from "@/lib/admin-graph";
+import { emptyConcept, formatApiDetail, layoutConceptNodes, normalizeGraphPracticeTasks, saveDraft, TRACK_LANGUAGES } from "@/lib/admin-graph";
 import { api } from "@/lib/api";
 import { ApiError, type AdminConceptSpec, type AdminGraphPayload } from "@/lib/types";
 
@@ -42,7 +42,7 @@ export function GraphEditor({
   persistDraft?: boolean;
 }) {
   const router = useRouter();
-  const [graph, setGraph] = useState<AdminGraphPayload>(initial);
+  const [graph, setGraph] = useState<AdminGraphPayload>(() => normalizeGraphPracticeTasks(initial));
   const [selectedId, setSelectedId] = useState<string | null>(graph.concepts[0]?.id ?? null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -204,7 +204,7 @@ export function GraphEditor({
       const saved = graph.project_id
         ? await api.updateAdminGraph(graph.project_id, payload)
         : await api.publishAdminGraph(payload);
-      setGraph(saved);
+      setGraph(normalizeGraphPracticeTasks(saved));
       setMessage(
         graph.project_id
           ? "Saved. Existing enrollments keep their cloned milestones."
