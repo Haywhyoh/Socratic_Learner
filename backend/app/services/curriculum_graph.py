@@ -85,7 +85,41 @@ def needs_build(concept: Concept) -> bool:
 
 
 def _norm_question(text: str) -> str:
-    return " ".join(str(text or "").strip().lower().split())
+    cleaned = str(text or "").replace("`", "")
+    return " ".join(cleaned.strip().lower().split())
+
+
+def match_required_question(questions: list[str], blob: str) -> str:
+    blob_key = _norm_question(blob)
+    if not blob_key:
+        return ""
+    best = ""
+    best_len = 0
+    for item in questions:
+        text = str(item or "").strip()
+        key = _norm_question(text)
+        if not key:
+            continue
+        if key in blob_key or blob_key in key:
+            if len(key) > best_len:
+                best = text
+                best_len = len(key)
+    return best
+
+
+def resolve_open_question(
+    questions: list[str],
+    *,
+    last_tutor: str = "",
+    evidence: dict[str, Any] | None = None,
+) -> str:
+    matched = match_required_question(questions, last_tutor)
+    if matched:
+        return matched
+    open_q = str((evidence or {}).get("open_question") or "").strip()
+    if not open_q:
+        return ""
+    return match_required_question(questions, open_q)
 
 
 def required_questions(concept: Concept | None) -> list[str]:
@@ -110,17 +144,6 @@ def _answered_question_keys(row: ConceptState | None, evidence: dict[str, Any] |
         key = _norm_question(str(item))
         if key:
             keys.add(key)
-    if row is None:
-        return keys
-    for item in list(row.diagnostic_answers or []):
-        if not isinstance(item, dict):
-            continue
-        answer = str(item.get("answer") or "").strip()
-        if len(answer) < 25:
-            continue
-        question = str(item.get("question") or "").strip()
-        if question:
-            keys.add(_norm_question(question))
     return keys
 
 
@@ -199,6 +222,31 @@ def mark_required_questions_answered(
             answers.append({"question": question, "answer": answer.strip()[:2000]})
         row.diagnostic_answers = answers[-40:]
         flag_modified(row, "diagnostic_answers")
+    evidence["open_question"] = ""
+    row.evidence = evidence
+    flag_modified(row, "evidence")
+
+
+def apply_question_progress(
+    row: ConceptState,
+    *,
+    answered: list[str] | None = None,
+    open_question: str | None = None,
+) -> None:
+    evidence = dict(row.evidence or empty_evidence())
+    recorded = [str(item) for item in list(evidence.get("answered_questions") or [])]
+    known = {_norm_question(item) for item in recorded}
+    for question in answered or []:
+        text = str(question or "").strip()
+        key = _norm_question(text)
+        if text and key not in known:
+            recorded.append(text)
+            known.add(key)
+    evidence["answered_questions"] = recorded
+    if open_question is not None:
+        evidence["open_question"] = str(open_question).strip()
+    row.evidence = evidence
+    flag_modified(row, "evidence")
 
 
 # ---------------------------------------------------------------------------
@@ -624,13 +672,13 @@ def record_learner_answer(
     row.attempt_count = int(row.attempt_count or 0) + 1
     row.last_explanation = message.strip()[:4000]
     concept = db.get(Concept, concept_id)
-    blob = str(question or "").strip()
-    matched = ""
-    if concept is not None:
-        for item in required_questions(concept):
-            if item and item in blob:
-                matched = item
-                break
+    questions = required_questions(concept)
+    evidence = dict(row.evidence or empty_evidence())
+    matched = resolve_open_question(
+        questions,
+        last_tutor=str(question or ""),
+        evidence=evidence,
+    )
     answers = list(row.diagnostic_answers or [])
     answers.append(
         {
@@ -642,14 +690,6 @@ def record_learner_answer(
     )
     row.diagnostic_answers = answers[-20:]
     flag_modified(row, "diagnostic_answers")
-    if matched and len(message.strip()) >= 25:
-        evidence = dict(row.evidence or empty_evidence())
-        recorded = [str(item) for item in list(evidence.get("answered_questions") or [])]
-        if _norm_question(matched) not in {_norm_question(item) for item in recorded}:
-            recorded.append(matched)
-            evidence["answered_questions"] = recorded
-            row.evidence = evidence
-            flag_modified(row, "evidence")
     db.flush()
     return row
 

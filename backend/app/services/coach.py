@@ -566,6 +566,23 @@ def _run_mentor(
     control = record_tutor_question(control, reply)
     if state_row:
         curriculum_graph.save_learning_control(state_row, control)
+        result_ev = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+        catalog = curriculum_graph.required_questions(concept)
+        asked = curriculum_graph.match_required_question(catalog, reply)
+        answered = [str(item) for item in list(result_ev.get("answered_questions") or [])]
+        open_update: str | None = None
+        if asked:
+            open_update = asked
+        elif "open_question" in result_ev:
+            open_update = str(result_ev.get("open_question") or "")
+        elif contract.get("action") == "ASK_IMPLEMENTATION":
+            open_update = ""
+        if answered or open_update is not None:
+            curriculum_graph.apply_question_progress(
+                state_row,
+                answered=answered,
+                open_question=open_update,
+            )
     concept_id = ctx["graph_state"].get("current_concept") or None
     started_concept_id = str(concept_id) if concept_id else None
     unlocked = bool(contract.get("should_unlock") or result.get("should_unlock"))

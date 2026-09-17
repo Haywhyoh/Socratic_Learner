@@ -44,6 +44,7 @@ from app.agents.policies import (
 )
 from app.agents.state import MentorContract, MentorState
 from app.models.learning_state import ConceptStatus
+from app.services.curriculum_graph import match_required_question
 
 _BLOCKED_STATES = {
     ConceptStatus.blocked.value,
@@ -421,7 +422,8 @@ def _unfinished_practice_task(
 
 
 def _norm_question(text: str) -> str:
-    return " ".join(str(text or "").strip().lower().split())
+    cleaned = str(text or "").replace("`", "")
+    return " ".join(cleaned.strip().lower().split())
 
 
 def _required_questions(state: MentorState) -> list[str]:
@@ -443,14 +445,6 @@ def _answered_question_keys(state: MentorState) -> set[str]:
         key = _norm_question(str(item))
         if key:
             keys.add(key)
-    for item in state.get("diagnostic_answers") or []:
-        if not isinstance(item, dict):
-            continue
-        if len(str(item.get("answer") or "").strip()) < 25:
-            continue
-        question = str(item.get("question") or "").strip()
-        if question:
-            keys.add(_norm_question(question))
     return keys
 
 
@@ -471,16 +465,55 @@ def _implementation_complete(state: MentorState, extra_done: set[str] | None = N
     return all(str(item.get("id") or "") in done for item in tasks)
 
 
+def _current_catalog_question(state: MentorState) -> str | None:
+    questions = _required_questions(state)
+    answered = _answered_question_keys(state)
+    last = str(state.get("last_tutor_message") or "")
+    matched = match_required_question(questions, last)
+    if matched and _norm_question(matched) not in answered:
+        return matched
+    open_q = match_required_question(
+        questions, str(_evidence(state).get("open_question") or "")
+    )
+    if open_q and _norm_question(open_q) not in answered:
+        return open_q
+    return None
+
+
+def _with_answered(state: MentorState, question: str) -> dict[str, Any]:
+    evidence = dict(_evidence(state))
+    recorded = [str(item) for item in list(evidence.get("answered_questions") or [])]
+    if _norm_question(question) not in {_norm_question(item) for item in recorded}:
+        recorded.append(question)
+    evidence["answered_questions"] = recorded
+    evidence["open_question"] = ""
+    return evidence
+
+
+def _with_prefix(result: MentorState, prefix: str) -> MentorState:
+    text = str(prefix or "").strip()
+    if not text:
+        return result
+    reply = f"{text}\n\n{result.get('reply') or ''}".rstrip()
+    updated = dict(result)
+    updated["reply"] = reply
+    contract = dict(updated.get("contract") or {})
+    contract["message"] = reply
+    updated["contract"] = contract
+    return updated  # type: ignore[return-value]
+
+
 def _next_unasked_question(state: MentorState) -> str | None:
     remaining = _unanswered_questions(state)
     if not remaining:
         return None
-    last = str(state.get("last_tutor_message") or "")
-    for question in remaining:
-        if question and question in last:
-            continue
-        return question
-    return remaining[0]
+    last_key = _norm_question(state.get("last_tutor_message") or "")
+    others = [
+        question
+        for question in remaining
+        if question and _norm_question(question) not in last_key
+    ]
+    return others[0] if others else None
 
 
 def _next_unasked_diagnostic(state: MentorState) -> str | None:
@@ -493,18 +526,42 @@ def _concept_work_complete(state: MentorState, extra_done: set[str] | None = Non
 
 def _ask_remaining_question(state: MentorState, question: str) -> MentorState:
     title = state.get("concept_title") or "this concept"
-    message = f"We're still on '{title}'. Answer this before we move on:\n\n{question}"
+    message = f"We're still on '{title}'. Next question:\n\n{question}"
     contract = empty_contract(
         intent="MENTOR",
         action="ASK_QUESTION",
         message=message,
         next_state=ConceptStatus.discussing.value,
     )
+    evidence = dict(_evidence(state))
+    evidence["open_question"] = question
     return {
         "reply": message,
         "contract": contract,
         "next_state": ConceptStatus.discussing.value,
         "should_unlock": False,
+        "evidence": evidence,
+    }
+
+
+def _retry_current_question(state: MentorState, question: str, feedback: str) -> MentorState:
+    title = state.get("concept_title") or "this concept"
+    note = str(feedback or "Not yet.").strip()
+    message = f"{note}\n\nWe're still on '{title}'. Try again:\n\n{question}"
+    contract = empty_contract(
+        intent="DIAGNOSE",
+        action="ASK_QUESTION",
+        message=message,
+        next_state=ConceptStatus.discussing.value,
+    )
+    evidence = dict(_evidence(state))
+    evidence["open_question"] = question
+    return {
+        "reply": message,
+        "contract": contract,
+        "next_state": ConceptStatus.discussing.value,
+        "should_unlock": False,
+        "evidence": evidence,
     }
 
 
@@ -526,6 +583,8 @@ def _assign_practice(state: MentorState, task: dict[str, Any]) -> MentorState:
         assigned_file=filename or None,
         practice_task_id=str(task.get("id") or "") or None,
     )
+    evidence = dict(_evidence(state))
+    evidence["open_question"] = ""
     return {
         "reply": message,
         "contract": contract,
@@ -533,6 +592,7 @@ def _assign_practice(state: MentorState, task: dict[str, Any]) -> MentorState:
         "assigned_file": filename or None,
         "practice_task_id": str(task.get("id") or "") or None,
         "should_unlock": False,
+        "evidence": evidence,
     }
 
 
@@ -542,6 +602,8 @@ def _hold_for_remaining_work(
     ask = _next_unasked_question(state)
     if ask:
         return _ask_remaining_question(state, ask)
+    if _unanswered_questions(state):
+        return None
     if not _implementation_complete(state, extra_done):
         task = _unfinished_practice_task(state, extra_done)
         if task:
@@ -568,6 +630,8 @@ def _advance_or_missing_if_ready(state: MentorState) -> MentorState | None:
     held = _hold_for_remaining_work(state)
     if held is not None:
         return held
+    if not _concept_work_complete(state):
+        return None
     if _ledger_satisfied(state):
         return proved_this_node(state)
     missing = _control_missing(state)
@@ -580,6 +644,13 @@ def _advance_payload(state: MentorState) -> MentorState:
     held = _hold_for_remaining_work(state)
     if held is not None:
         return held
+    if not _concept_work_complete(state):
+        remaining = _unanswered_questions(state)
+        if remaining:
+            return _ask_remaining_question(state, remaining[0])
+        task = _unfinished_practice_task(state)
+        if task:
+            return _assign_practice(state, task)
     title = state.get("concept_title") or "this concept"
     nxt = (state.get("next_concept_title") or "").strip()
     follow = f" The curriculum graph's next concept is {nxt}." if nxt else ""
@@ -699,8 +770,11 @@ def next_step_node(state: MentorState) -> MentorState:
         )
         next_state = status
     else:
-        questions = list(state.get("diagnostic_questions") or [])
-        ask = questions[0] if questions else "What can you still prove about this, in your own words?"
+        ask = (
+            _current_catalog_question(state)
+            or _next_unasked_question(state)
+            or "What can you still prove about this, in your own words?"
+        )
         message = f"We're still on '{title}'. Next: {ask}"
         next_state = status or ConceptStatus.discussing.value
     contract = empty_contract(
@@ -958,112 +1032,135 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
                 "contract": contract,
                 "next_state": ConceptStatus.discussing.value,
             }
-        objectives = list(state.get("learning_objectives") or [])
-        recent = _recent_misconception(state)
-        if recent and recent.get("id") == "callback-caller-confusion":
-            objectives = [item for item in objectives if "closure" not in item.lower()] or objectives[:1]
-        result = llm.evaluate_explanation(
-            concept_title=state.get("concept_title") or "",
-            concept_description=state.get("concept_description") or "",
-            objectives=objectives,
-            answer=answer,
-            current_question=str(state.get("last_tutor_message") or ""),
-        )
-        passed = bool(result.get("passed"))
-        if passed:
-            leftover = uncovered_objectives(
-                list(state.get("learning_objectives") or []),
-                answer,
+        open_q = _current_catalog_question(state)
+        if open_q:
+            graded = llm.evaluate_answer(
+                question=open_q,
+                answer=answer,
+                milestone_title=str(state.get("concept_title") or ""),
             )
-            if _ledger_satisfied(state):
-                return proved_this_node(state)
-            missing = _control_missing(state)
-            if missing:
-                return missing_evidence_node(state)
-            if leftover and any("closure" in item.lower() for item in leftover) and not closure_proved(
-                state.get("learning_control") or {}
-            ):
-                message = (
-                    "The callback part is solid — passing stores the function, `cb()` runs it later.\n\n"
-                    "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "
-                    "then later `n = 2`, what does the inner function print when you call it?"
+            passed = bool(graded.get("passed"))
+            feedback = str(graded.get("push_back") or graded.get("feedback") or "").strip()
+            if not passed:
+                return _retry_current_question(
+                    state,
+                    open_q,
+                    feedback or "Not yet.",
                 )
+            state = {**state, "evidence": _with_answered(state, open_q)}
+            result = {"passed": True, "feedback": feedback or "That's right."}
+        else:
+            objectives = list(state.get("learning_objectives") or [])
+            recent = _recent_misconception(state)
+            if recent and recent.get("id") == "callback-caller-confusion":
+                objectives = [item for item in objectives if "closure" not in item.lower()] or objectives[:1]
+            result = llm.evaluate_explanation(
+                concept_title=state.get("concept_title") or "",
+                concept_description=state.get("concept_description") or "",
+                objectives=objectives,
+                answer=answer,
+                current_question=str(state.get("last_tutor_message") or ""),
+            )
+            passed = bool(result.get("passed"))
+            if not passed:
+                retry_q = _current_catalog_question(state)
+                feedback = str(
+                    result.get("feedback")
+                    or "Not yet — which part of this still feels fuzzy? Be specific."
+                )
+                if retry_q:
+                    return _retry_current_question(state, retry_q, feedback)
                 contract = empty_contract(
-                    intent="MENTOR",
+                    intent="DIAGNOSE",
                     action="ASK_QUESTION",
-                    message=message,
+                    message=f"{feedback}\n\nAnswer the current question, then I'll tell you the next step.",
                     next_state=ConceptStatus.discussing.value,
                 )
                 return {
-                    "reply": message,
+                    "reply": str(contract["message"]),
                     "contract": contract,
                     "next_state": ConceptStatus.discussing.value,
+                    "should_unlock": False,
                 }
-            if has_evidence_ledger(
-                list(state.get("learning_objectives") or []),
-                concept_id=str(state.get("current_concept") or ""),
-                concept_title=str(state.get("concept_title") or ""),
-            ):
-                return application_check_node(state)
-            task = _unfinished_practice_task(state)
-            feedback = str(result.get("feedback") or "That holds.").strip()
-            if task and not _implementation_complete(state):
-                filename = str(task.get("filename") or "").strip()
-                prompt = str(task.get("prompt") or "").strip()
-                message = (
-                    f"{feedback}\n\nWrite this in `{filename}`:\n\n{prompt}\n\n"
-                    "I will not edit your files. When it runs, click Check my work "
-                    "or tell me you're done."
-                )
-                contract = empty_contract(
-                    intent="MENTOR",
-                    action="ASK_IMPLEMENTATION",
-                    message=message,
-                    next_state=ConceptStatus.attempted.value,
-                    assigned_file=filename or None,
-                    practice_task_id=str(task.get("id") or "") or None,
-                )
-                return {
-                    "reply": message,
-                    "contract": contract,
-                    "next_state": ConceptStatus.attempted.value,
-                    "assigned_file": filename or None,
-                    "practice_task_id": str(task.get("id") or "") or None,
-                }
-            held = _hold_for_remaining_work(state)
-            if held is not None:
-                return held
-            nxt = (state.get("next_concept_title") or "").strip()
-            follow = f" Next: {nxt}." if nxt else ""
-            message = f"{feedback} I'm marking this concept verified.{follow}"
+        leftover = uncovered_objectives(
+            list(state.get("learning_objectives") or []),
+            answer,
+        )
+        feedback = str(result.get("feedback") or "That's right.").strip()
+        held = _hold_for_remaining_work(state)
+        if held is not None:
+            return _with_prefix(held, feedback)
+        if _ledger_satisfied(state):
+            return proved_this_node(state)
+        missing = _control_missing(state)
+        if missing:
+            return missing_evidence_node(state)
+        if leftover and any("closure" in item.lower() for item in leftover) and not closure_proved(
+            state.get("learning_control") or {}
+        ):
+            message = (
+                "The callback part is solid — passing stores the function, `cb()` runs it later.\n\n"
+                "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "
+                "then later `n = 2`, what does the inner function print when you call it?"
+            )
             contract = empty_contract(
                 intent="MENTOR",
-                action="REVIEW",
+                action="ASK_QUESTION",
                 message=message,
-                should_unlock=True,
-                next_state=ConceptStatus.verification.value,
+                next_state=ConceptStatus.discussing.value,
             )
             return {
                 "reply": message,
                 "contract": contract,
-                "next_state": ConceptStatus.verification.value,
-                "should_unlock": True,
+                "next_state": ConceptStatus.discussing.value,
             }
-        else:
-            contract = empty_contract(
-                intent="DIAGNOSE",
-                action="ASK_QUESTION",
-                message=str(
-                    result.get("feedback")
-                    or "Not yet — which part of this still feels fuzzy? Be specific."
-                ),
-                next_state=ConceptStatus.discussing.value,
+        if has_evidence_ledger(
+            list(state.get("learning_objectives") or []),
+            concept_id=str(state.get("current_concept") or ""),
+            concept_title=str(state.get("concept_title") or ""),
+        ):
+            return application_check_node(state)
+        task = _unfinished_practice_task(state)
+        if task and not _implementation_complete(state):
+            filename = str(task.get("filename") or "").strip()
+            prompt = str(task.get("prompt") or "").strip()
+            message = (
+                f"{feedback}\n\nWrite this in `{filename}`:\n\n{prompt}\n\n"
+                "I will not edit your files. When it runs, click Check my work "
+                "or tell me you're done."
             )
+            contract = empty_contract(
+                intent="MENTOR",
+                action="ASK_IMPLEMENTATION",
+                message=message,
+                next_state=ConceptStatus.attempted.value,
+                assigned_file=filename or None,
+                practice_task_id=str(task.get("id") or "") or None,
+            )
+            return {
+                "reply": message,
+                "contract": contract,
+                "next_state": ConceptStatus.attempted.value,
+                "assigned_file": filename or None,
+                "practice_task_id": str(task.get("id") or "") or None,
+                "evidence": _evidence(state),
+            }
+        nxt = (state.get("next_concept_title") or "").strip()
+        follow = f" Next: {nxt}." if nxt else ""
+        message = f"{feedback} I'm marking this concept verified.{follow}"
+        contract = empty_contract(
+            intent="MENTOR",
+            action="REVIEW",
+            message=message,
+            should_unlock=True,
+            next_state=ConceptStatus.verification.value,
+        )
         return {
-            "reply": str(contract["message"]),
+            "reply": message,
             "contract": contract,
-            "next_state": str(contract["next_state"]),
-            "should_unlock": bool(contract.get("should_unlock")),
+            "next_state": ConceptStatus.verification.value,
+            "should_unlock": True,
+            "evidence": _evidence(state),
         }
 
     return explanation_eval

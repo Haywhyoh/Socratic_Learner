@@ -355,9 +355,9 @@ def guidance_reply(
 
 
 def fallback_evaluate(question: str, answer: str) -> dict[str, object]:
-    """Stub evaluator: short answers fail; substantive answers pass."""
+    """Stub evaluator: refuse empty/non-answers; short factual answers can pass."""
     cleaned = answer.strip()
-    if len(cleaned) < 20 or cleaned.lower() in {"idk", "dunno", "pass", "yes", "no"}:
+    if not cleaned or cleaned.lower() in {"idk", "dunno", "pass", "yes", "no"}:
         return {
             "passed": False,
             "push_back": "Not enough. Answer the question in one clear sentence.",
