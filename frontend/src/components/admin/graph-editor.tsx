@@ -45,6 +45,7 @@ export function GraphEditor({
   const [graph, setGraph] = useState<AdminGraphPayload>(() => normalizeGraphPracticeTasks(initial));
   const [selectedId, setSelectedId] = useState<string | null>(graph.concepts[0]?.id ?? null);
   const [saving, setSaving] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -207,7 +208,7 @@ export function GraphEditor({
       setGraph(normalizeGraphPracticeTasks(saved));
       setMessage(
         graph.project_id
-          ? "Saved. Existing enrollments keep their cloned milestones."
+          ? "Saved catalog. Existing enrollments stay on their clone until you apply."
           : "Published. Learners can enroll from onboarding.",
       );
       if (persistDraft) {
@@ -227,6 +228,42 @@ export function GraphEditor({
       }
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function applyToEnrollments() {
+    if (!graph.project_id) return;
+    const confirmed = window.confirm(
+      "Add new catalog work only to milestones students have not started? Completed and current milestones will not change, and finished courses are skipped.",
+    );
+    if (!confirmed) return;
+    setApplying(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const report = await api.applyAdminGraphEnrollments(graph.project_id);
+      const updated = report.results.reduce(
+        (sum, row) =>
+          sum + row.milestones_updated + row.milestones_added,
+        0,
+      );
+      setMessage(
+        report.applied === 0 && report.skipped === 0
+          ? "No enrollments on this track yet."
+          : `Applied to ${report.applied} in-progress enrollment${report.applied === 1 ? "" : "s"}${
+              report.skipped ? `, skipped ${report.skipped} already finished` : ""
+            }. ${updated} future milestone${updated === 1 ? " was" : "s were"} updated.`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(formatApiDetail(err.detail ?? err.message));
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Could not apply catalog to enrollments");
+      }
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -286,7 +323,16 @@ export function GraphEditor({
           <Button variant="secondary" onClick={addConcept}>
             Add concept
           </Button>
-          <Button onClick={save} disabled={saving}>
+          {graph.project_id ? (
+            <Button
+              variant="secondary"
+              onClick={() => void applyToEnrollments()}
+              disabled={saving || applying}
+            >
+              {applying ? "Applying…" : "Apply to existing enrollments"}
+            </Button>
+          ) : null}
+          <Button onClick={save} disabled={saving || applying}>
             {saving ? "Saving…" : graph.project_id ? "Save" : "Publish"}
           </Button>
         </div>

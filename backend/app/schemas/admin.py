@@ -119,3 +119,21 @@ class GraphSummary(BaseModel):
     concept_count: int
     edge_count: int
     milestone_count: int
+
+
+class EnrollmentApplyResult(BaseModel):
+    enrollment_id: int
+    user_project_id: int
+    status: Literal["applied", "skipped"]
+    reason: str | None = None
+    freeze_order: int | None = None
+    milestones_updated: int = 0
+    milestones_added: int = 0
+    milestones_removed: int = 0
+
+
+class EnrollmentApplyReport(BaseModel):
+    project_id: int
+    applied: int
+    skipped: int
+    results: list[EnrollmentApplyResult] = Field(default_factory=list)

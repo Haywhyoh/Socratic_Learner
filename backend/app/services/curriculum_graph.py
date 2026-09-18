@@ -369,6 +369,17 @@ def states_by_concept(db: Session, user_project_id: int) -> dict[str, ConceptSta
 # ---------------------------------------------------------------------------
 
 
+def learner_concept_ids(db: Session, user_project: UserProject) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for milestone in learner_milestones(user_project):
+        for concept_id in concept_ids_for_milestone(db, milestone.id):
+            if concept_id not in seen:
+                seen.add(concept_id)
+                ordered.append(concept_id)
+    return ordered
+
+
 def initialize_learning_state(db: Session, user_project: UserProject) -> list[ConceptState]:
     """Create ConceptState rows for every concept in the project's graph.
 
@@ -376,6 +387,17 @@ def initialize_learning_state(db: Session, user_project: UserProject) -> list[Co
     LOCKED. Must run in the same transaction as enrollment; caller commits.
     """
     concept_ids = all_project_concept_ids(db, user_project.project_id)
+    return ensure_concept_states(db, user_project, concept_ids)
+
+
+def ensure_learner_concept_states(db: Session, user_project: UserProject) -> list[ConceptState]:
+    """Create missing ConceptState rows for this learner's cloned outline."""
+    return ensure_concept_states(db, user_project, learner_concept_ids(db, user_project))
+
+
+def ensure_concept_states(
+    db: Session, user_project: UserProject, concept_ids: list[str]
+) -> list[ConceptState]:
     existing = states_by_concept(db, user_project.id)
     created: list[ConceptState] = []
     for concept_id in concept_ids:
@@ -390,6 +412,7 @@ def initialize_learning_state(db: Session, user_project: UserProject) -> list[Co
         )
         db.add(row)
         created.append(row)
+        existing[concept_id] = row
     db.flush()
     apply_unlocks(db, user_project)
     return created

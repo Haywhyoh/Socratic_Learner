@@ -1,6 +1,7 @@
 import { clearToken, getToken } from "./auth-token";
 import type {
   AdminConceptSpec,
+  AdminEnrollmentApplyReport,
   AdminGenerateRequest,
   AdminGraphPayload,
   AdminGraphSummary,
@@ -432,5 +433,12 @@ export const api = {
       auth: false,
       body: payload,
     });
+  },
+
+  applyAdminGraphEnrollments(projectId: number) {
+    return request<AdminEnrollmentApplyReport>(
+      `/api/v1/admin/graphs/${projectId}/apply-enrollments`,
+      { method: "POST", auth: false },
+    );
   },
 };

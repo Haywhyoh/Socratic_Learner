@@ -8,6 +8,7 @@ from app.agents.graph_author import normalize_graph_draft
 from app.agents.llm import knowledge_graph_author_prompt
 from app.models.course import Course
 from app.models.curriculum import Concept
+from app.models.project import UserMilestone, UserMilestoneStatus
 from app.seed import seed
 from app.services.curriculum_authoring import GraphValidationError, publish_graph, validate_graph_payload
 from app.services.practice import normalize_practice_task
@@ -576,3 +577,181 @@ def test_generate_returns_202_before_llm_finishes(
     assert body["status"] in {"queued", "running"}
     assert body.get("graph") is None
     assert elapsed < 1.0, elapsed
+
+
+def _concept_spec(concept_id: str, title: str) -> dict:
+    return {
+        "id": concept_id,
+        "title": title,
+        "category": "foundation",
+        "description": title,
+        "hints": ["a", "b", "c", "d", "e"],
+        "mastery_requirements": {"explanation": True},
+        "practice_tasks": [],
+        "diagnostic_questions": [],
+        "research_questions": [],
+    }
+
+
+def _milestone_spec(title: str, concepts: list[str]) -> dict:
+    return {
+        "title": title,
+        "description": title,
+        "instructions": title,
+        "success_criteria": title,
+        "concepts": concepts,
+        "questions": [],
+    }
+
+
+def _track_payload(slug: str, concepts: list[dict], milestones: list[dict]) -> dict:
+    return {
+        "course": {
+            "slug": slug,
+            "name": slug,
+            "description": "",
+            "primary_label": "Language",
+            "secondary_label": "Track",
+            "primary_slug": "python",
+            "primary_name": "Python",
+            "secondary_slug": "fundamentals",
+            "secondary_name": "Fundamentals",
+        },
+        "project": {
+            "title": slug,
+            "description": slug,
+            "objective": slug,
+            "difficulty": "beginner",
+            "expected_outcome": slug,
+            "runtime": {"language": "python"},
+        },
+        "concepts": concepts,
+        "dependencies": [],
+        "milestones": milestones,
+    }
+
+
+def _enroll_slug(client: TestClient, auth_headers: dict[str, str], slug: str) -> dict:
+    courses = client.get("/api/v1/courses").json()
+    course = next(item for item in courses if item["slug"] == slug)
+    primary = client.get(f"/api/v1/courses/{course['id']}/options").json()[0]
+    secondary = client.get(
+        f"/api/v1/courses/{course['id']}/options/{primary['id']}/options"
+    ).json()[0]
+    enrolled = client.post(
+        "/api/v1/enrollments",
+        headers=auth_headers,
+        json={
+            "course_id": course["id"],
+            "primary_option_id": primary["id"],
+            "secondary_option_id": secondary["id"],
+            "learning_mode": "project",
+        },
+    )
+    assert enrolled.status_code == 201, enrolled.text
+    return enrolled.json()
+
+
+def _milestone_concept_ids(graph: dict, order_index: int) -> list[str]:
+    milestone = next(item for item in graph["milestones"] if item["order_index"] == order_index)
+    return [item["id"] for item in milestone["concepts"]]
+
+
+def test_apply_enrollments_adds_only_unstarted_work(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    slug = "apply-future-only"
+    created = client.post(
+        "/api/v1/admin/graphs",
+        json=_track_payload(
+            slug,
+            [
+                _concept_spec(f"{slug}.a", "A"),
+                _concept_spec(f"{slug}.b", "B"),
+            ],
+            [
+                _milestone_spec("First", [f"{slug}.a"]),
+                _milestone_spec("Second", [f"{slug}.b"]),
+            ],
+        ),
+    )
+    assert created.status_code == 201, created.text
+    graph = created.json()
+    project_id = graph["project_id"]
+    enrolled = _enroll_slug(client, auth_headers, slug)
+    user_project_id = enrolled["user_project"]["id"]
+
+    graph["concepts"].append(_concept_spec(f"{slug}.now", "Now"))
+    graph["concepts"].append(_concept_spec(f"{slug}.later", "Later"))
+    graph["concepts"].append(_concept_spec(f"{slug}.tail", "Tail"))
+    graph["milestones"][0]["concepts"].append(f"{slug}.now")
+    graph["milestones"][1]["concepts"].append(f"{slug}.later")
+    graph["milestones"].append(_milestone_spec("Third", [f"{slug}.tail"]))
+    updated = client.put(f"/api/v1/admin/graphs/{project_id}", json=graph)
+    assert updated.status_code == 200, updated.text
+
+    applied = client.post(f"/api/v1/admin/graphs/{project_id}/apply-enrollments")
+    assert applied.status_code == 200, applied.text
+    report = applied.json()
+    assert report["applied"] == 1
+    assert report["skipped"] == 0
+    assert report["results"][0]["freeze_order"] == 1
+    assert report["results"][0]["milestones_added"] == 1
+
+    learner = client.get(
+        f"/api/v1/me/projects/{user_project_id}/graph",
+        headers=auth_headers,
+    )
+    assert learner.status_code == 200, learner.text
+    body = learner.json()
+    assert _milestone_concept_ids(body, 1) == [f"{slug}.a"]
+    assert _milestone_concept_ids(body, 2) == [f"{slug}.b", f"{slug}.later"]
+    assert _milestone_concept_ids(body, 3) == [f"{slug}.tail"]
+
+
+def test_apply_enrollments_skips_finished_courses(
+    client: TestClient, db: Session, auth_headers: dict[str, str]
+) -> None:
+    slug = "apply-finished"
+    created = client.post(
+        "/api/v1/admin/graphs",
+        json=_track_payload(
+            slug,
+            [_concept_spec(f"{slug}.a", "A"), _concept_spec(f"{slug}.b", "B")],
+            [
+                _milestone_spec("First", [f"{slug}.a"]),
+                _milestone_spec("Second", [f"{slug}.b"]),
+            ],
+        ),
+    )
+    assert created.status_code == 201, created.text
+    graph = created.json()
+    project_id = graph["project_id"]
+    enrolled = _enroll_slug(client, auth_headers, slug)
+    for item in enrolled["user_milestones"]:
+        row = db.get(UserMilestone, item["id"])
+        assert row is not None
+        row.status = UserMilestoneStatus.completed
+    db.commit()
+
+    graph["concepts"].append(_concept_spec(f"{slug}.tail", "Tail"))
+    graph["milestones"].append(_milestone_spec("Third", [f"{slug}.tail"]))
+    updated = client.put(f"/api/v1/admin/graphs/{project_id}", json=graph)
+    assert updated.status_code == 200, updated.text
+
+    applied = client.post(f"/api/v1/admin/graphs/{project_id}/apply-enrollments")
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["skipped"] == 1
+    assert applied.json()["applied"] == 0
+
+    learner = client.get(
+        f"/api/v1/me/projects/{enrolled['user_project']['id']}/graph",
+        headers=auth_headers,
+    )
+    assert learner.status_code == 200
+    assert len(learner.json()["milestones"]) == 2
+
+
+def test_apply_enrollments_unknown_project_is_404(client: TestClient) -> None:
+    response = client.post("/api/v1/admin/graphs/999999/apply-enrollments")
+    assert response.status_code == 404

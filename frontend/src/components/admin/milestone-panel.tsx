@@ -39,7 +39,9 @@ export function MilestonePanel({
         </Button>
       </div>
       <p className="mt-2 text-xs text-stone-500">
-        Assign concepts to each milestone. Existing enrollments keep their cloned copy.
+        Assign concepts to each milestone. Saving updates the catalog only. Use
+        Apply to existing enrollments to add new work onto milestones students
+        have not started.
       </p>
       <ul className="mt-4 space-y-3">
         {milestones.map((milestone, index) => (

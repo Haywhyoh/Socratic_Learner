@@ -13,12 +13,14 @@ from app.schemas.admin import (
     CatalogGraphRead,
     ConceptGenerateRequest,
     ConceptGraphSpec,
+    EnrollmentApplyReport,
     GraphGenerateJob,
     GraphGenerateRequest,
     GraphPayload,
     GraphSummary,
 )
 from app.services import graph_jobs
+from app.services.curriculum import apply_catalog_to_enrollments
 from app.services.curriculum_authoring import GraphValidationError, get_graph, list_graphs, publish_graph
 from app.services.runtime import supported_languages
 
@@ -130,3 +132,19 @@ def admin_update_graph(
         db.rollback()
         raise
     return CatalogGraphRead.model_validate(graph)
+
+
+@router.post("/graphs/{project_id}/apply-enrollments", response_model=EnrollmentApplyReport)
+def admin_apply_graph_enrollments(
+    project_id: int, db: Session = Depends(get_db)
+) -> EnrollmentApplyReport:
+    try:
+        report = apply_catalog_to_enrollments(db, project_id)
+        db.commit()
+    except GraphValidationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.errors) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return EnrollmentApplyReport.model_validate(report)

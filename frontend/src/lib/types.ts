@@ -464,6 +464,24 @@ export interface AdminGraphSummary {
   milestone_count: number;
 }
 
+export interface AdminEnrollmentApplyResult {
+  enrollment_id: number;
+  user_project_id: number;
+  status: "applied" | "skipped";
+  reason?: string | null;
+  freeze_order?: number | null;
+  milestones_updated: number;
+  milestones_added: number;
+  milestones_removed: number;
+}
+
+export interface AdminEnrollmentApplyReport {
+  project_id: number;
+  applied: number;
+  skipped: number;
+  results: AdminEnrollmentApplyResult[];
+}
+
 export interface AdminGenerateRequest {
   topic: string;
   language: string;
