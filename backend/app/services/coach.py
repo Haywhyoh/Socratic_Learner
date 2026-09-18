@@ -597,8 +597,8 @@ def _run_mentor(
         and contract.get("action") == "REVIEW"
         and next_state == ConceptStatus.verification.value
     ):
-        curriculum_graph.explanation_passed(
-            db, user_project, started_concept_id, message
+        curriculum_graph.complete_conversational_mastery(
+            db, user_project, started_concept_id, answer=message
         )
     elif started_concept_id and unlocked and _has_substantive_explanation(
         state_row, graph_state

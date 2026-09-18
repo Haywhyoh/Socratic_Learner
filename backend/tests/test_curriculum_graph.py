@@ -242,3 +242,51 @@ def test_concept_progress_counts_questions_and_practice() -> None:
     assert progress["done"] == 1
     assert progress["total"] == 4
     assert progress["percent"] == 25
+
+
+def test_research_flag_is_satisfied_once_questions_are_done(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    seeded_db: Session,
+    db: Session,
+) -> None:
+    enrolled = _enroll_seeded(client, auth_headers, seeded_db)
+    from app.models.project import UserProject
+
+    user_project = db.get(UserProject, enrolled["user_project"]["id"])
+    assert user_project is not None
+    cid = "networking.client_server"
+    curriculum_graph.record_evidence(db, user_project, cid, explanation=True)
+    row = curriculum_graph.try_master(db, user_project, cid)
+    assert row.status != ConceptStatus.mastered
+    concept = db.get(Concept, cid)
+    curriculum_graph.mark_required_questions_answered(
+        row,
+        concept,
+        answer="The client initiates a request; the server listens, processes it, and responds.",
+    )
+    row = curriculum_graph.try_master(db, user_project, cid)
+    assert row.status == ConceptStatus.mastered
+    assert (row.evidence or {}).get("research") is True
+
+
+def test_complete_conversational_mastery_closes_js_client_server(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    seeded_db: Session,
+    db: Session,
+) -> None:
+    enrolled = _enroll_seeded(client, auth_headers, seeded_db)
+    from app.models.project import UserProject
+
+    user_project = db.get(UserProject, enrolled["user_project"]["id"])
+    assert user_project is not None
+    row = curriculum_graph.complete_conversational_mastery(
+        db,
+        user_project,
+        "networking.client_server",
+        answer="The client makes a request; the server processes it and sends a response.",
+    )
+    assert row.status == ConceptStatus.mastered
+    assert (row.evidence or {}).get("explanation") is True
+    assert (row.evidence or {}).get("research") is True

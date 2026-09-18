@@ -40,7 +40,9 @@ from app.agents.policies import (
     enforce_brevity,
     explain_gap_reason,
     filter_specialist_reply,
+    is_thin_acknowledgement,
     next_hint_level,
+    tutor_claimed_verified,
 )
 from app.agents.state import MentorContract, MentorState
 from app.models.learning_state import ConceptStatus
@@ -163,6 +165,8 @@ def _pick_branch(state: MentorState) -> str:
         state.get("practice_tasks") or state.get("needs_build")
     ):
         return "practice_eval"
+    if status in _BLOCKED_STATES:
+        return "gap_diagnosis"
     if asks_what_next(message):
         return "next_step"
     if asks_for_mentor_explanation(message):
@@ -171,8 +175,6 @@ def _pick_branch(state: MentorState) -> str:
         return "question"
     if intent == "code_ask":
         return "question"
-    if status in _BLOCKED_STATES:
-        return "gap_diagnosis"
     if status in {ConceptStatus.available.value, ConceptStatus.introduced.value}:
         return "question"
     if status == ConceptStatus.researching.value:
@@ -600,6 +602,31 @@ def _assign_practice(state: MentorState, task: dict[str, Any]) -> MentorState:
     }
 
 
+def _clean_pass_feedback(text: str, next_title: str = "") -> str:
+    cleaned = " ".join(str(text or "").split()).strip()
+    lowered = cleaned.lower()
+    for noise in (
+        "i'm marking this concept verified.",
+        "i'm marking this concept verified",
+        "i'm marking that verified.",
+        "i'm marking that verified",
+        "concept verified.",
+    ):
+        idx = lowered.find(noise)
+        if idx >= 0:
+            cleaned = (cleaned[:idx] + cleaned[idx + len(noise) :]).strip()
+            lowered = cleaned.lower()
+    title = str(next_title or "").strip()
+    if title:
+        marker = f"next: {title}".lower()
+        idx = lowered.find(marker)
+        if idx >= 0:
+            cleaned = cleaned[:idx].rstrip(" .")
+            lowered = cleaned.lower()
+    cleaned = cleaned.strip(" .")
+    return cleaned or "That's right."
+
+
 def _hold_for_remaining_work(
     state: MentorState, extra_done: set[str] | None = None
 ) -> MentorState | None:
@@ -754,25 +781,54 @@ def missing_evidence_node(state: MentorState) -> MentorState:
 
 
 def next_step_node(state: MentorState) -> MentorState:
-    skipped = _advance_or_missing_if_ready(state)
-    if skipped is not None:
-        return skipped
-    missing = _control_missing(state)
-    if missing:
-        return missing_evidence_node(state)
+    claimed = tutor_claimed_verified(str(state.get("last_tutor_message") or ""))
+    # After we already told the learner it's verified, don't re-open catalog
+    # questions — honor the advance. Still hold for unfinished practice.
+    if claimed and not _implementation_complete(state):
+        held = _hold_for_remaining_work(state)
+        if held is not None:
+            return held
+    elif not claimed:
+        skipped = _advance_or_missing_if_ready(state)
+        if skipped is not None:
+            return skipped
+        missing = _control_missing(state)
+        if missing:
+            return missing_evidence_node(state)
     title = state.get("concept_title") or "this concept"
     nxt = (state.get("next_concept_title") or "").strip()
     status = state.get("concept_state") or ""
-    if status in {
+    finished = status in {
         ConceptStatus.explained.value,
         ConceptStatus.verification.value,
         ConceptStatus.mastered.value,
         ConceptStatus.verified.value,
-    } and nxt:
+    } or claimed
+    ready_to_leave = _implementation_complete(state) and (
+        claimed or _concept_work_complete(state)
+    )
+    if finished and ready_to_leave:
+        follow = f" Next: {nxt}." if nxt else ""
+        message = f"Moving on.{follow}" if nxt else "Required evidence is in. I'm marking this concept verified."
+        contract = empty_contract(
+            intent="MENTOR",
+            action="REVIEW",
+            message=message,
+            should_unlock=True,
+            next_state=ConceptStatus.verification.value,
+        )
+        return {
+            "reply": message,
+            "contract": contract,
+            "next_state": ConceptStatus.verification.value,
+            "should_unlock": True,
+            "evidence": _evidence(state),
+        }
+    if finished and nxt:
         message = (
             f"Next concept: {nxt}. Don't skip ahead — what do you already understand about it?"
         )
-        next_state = status
+        next_state = status or ConceptStatus.discussing.value
     else:
         ask = (
             _current_catalog_question(state)
@@ -1018,7 +1074,24 @@ def misconception_cleared_node(state: MentorState) -> MentorState:
 def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]:
     def explanation_eval(state: MentorState) -> MentorState:
         answer = state.get("learner_message") or ""
-        if asks_what_next(answer):
+        last_tutor = str(state.get("last_tutor_message") or "")
+        if asks_what_next(answer) or (
+            tutor_claimed_verified(last_tutor) and is_thin_acknowledgement(answer)
+        ):
+            return next_step_node(state)
+        if is_thin_acknowledgement(answer):
+            held = _hold_for_remaining_work(state)
+            if held is not None:
+                return held
+            if _concept_work_complete(state):
+                return next_step_node(state)
+            ask = _current_catalog_question(state) or _next_unasked_question(state)
+            if ask:
+                return _retry_current_question(
+                    state,
+                    ask,
+                    "I need an actual answer to the current question, not just okay.",
+                )
             return next_step_node(state)
         if asks_for_mentor_explanation(answer):
             return make_teach_node(llm)(state)
@@ -1093,7 +1166,10 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
             list(state.get("learning_objectives") or []),
             answer,
         )
-        feedback = str(result.get("feedback") or "That's right.").strip()
+        feedback = _clean_pass_feedback(
+            str(result.get("feedback") or "That's right."),
+            str(state.get("next_concept_title") or ""),
+        )
         held = _hold_for_remaining_work(state)
         if held is not None:
             return _with_prefix(held, feedback)
@@ -1152,6 +1228,9 @@ def make_explanation_node(llm: CoachLLM) -> Callable[[MentorState], MentorState]
                 "practice_task_id": str(task.get("id") or "") or None,
                 "evidence": _evidence(state),
             }
+        remaining = _unanswered_questions(state)
+        if remaining:
+            return _with_prefix(_ask_remaining_question(state, remaining[0]), feedback)
         nxt = (state.get("next_concept_title") or "").strip()
         follow = f" Next: {nxt}." if nxt else ""
         message = f"{feedback} I'm marking this concept verified.{follow}"

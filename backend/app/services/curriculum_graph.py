@@ -622,13 +622,18 @@ def _requirements_met(
     evidence: dict[str, Any],
     row: ConceptState | None = None,
 ) -> bool:
+    blob = dict(evidence or {})
+    if questions_work_complete(concept, row, blob) and practice_work_complete(concept, blob):
+        # Answering the catalog questions is the research evidence on
+        # explanation-heavy nodes (JS networking has research=True but no lab).
+        blob["research"] = True
     req = concept.mastery_requirements or {}
     for key, needed in req.items():
-        if needed and not evidence.get(key):
+        if needed and not blob.get(key):
             return False
-    if not practice_work_complete(concept, evidence):
+    if not practice_work_complete(concept, blob):
         return False
-    if not questions_work_complete(concept, row, evidence):
+    if not questions_work_complete(concept, row, blob):
         return False
     return True
 
@@ -639,7 +644,12 @@ def try_master(db: Session, user_project: UserProject, concept_id: str) -> Conce
     concept = db.get(Concept, concept_id)
     if concept is None:
         return row
-    if _requirements_met(concept, row.evidence or {}, row):
+    evidence = dict(row.evidence or {})
+    if questions_work_complete(concept, row, evidence) and practice_work_complete(concept, evidence):
+        if not evidence.get("research"):
+            row = record_evidence(db, user_project, concept_id, research=True)
+            evidence = dict(row.evidence or {})
+    if _requirements_met(concept, evidence, row):
         row.status = ConceptStatus.mastered
         schedule_retrieval_checks(db, user_project, concept)
         apply_unlocks(db, user_project)
@@ -801,6 +811,25 @@ def explanation_passed(
     row = record_evidence(db, user_project, concept_id, explanation=True)
     row.last_explanation = text
     concept = db.get(Concept, concept_id)
+    if concept is not None and needs_build(concept) and not (row.evidence or {}).get("implementation"):
+        row.status = ConceptStatus.attempted
+        db.flush()
+        return row
+    if questions_work_complete(concept, row):
+        row = record_evidence(db, user_project, concept_id, research=True)
+        row.last_explanation = text
+    return try_master(db, user_project, concept_id)
+
+
+def complete_conversational_mastery(
+    db: Session, user_project: UserProject, concept_id: str, *, answer: str = ""
+) -> ConceptState:
+    """Finish an explanation-only concept the mentor already called verified."""
+    row = record_evidence(db, user_project, concept_id, explanation=True, research=True)
+    if answer.strip():
+        row.last_explanation = answer.strip()[:4000]
+    concept = db.get(Concept, concept_id)
+    mark_required_questions_answered(row, concept, answer=answer)
     if concept is not None and needs_build(concept) and not (row.evidence or {}).get("implementation"):
         row.status = ConceptStatus.attempted
         db.flush()

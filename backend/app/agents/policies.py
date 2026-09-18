@@ -127,12 +127,53 @@ def asks_what_next(message: str) -> bool:
             "what do i do now",
             "what should i do next",
             "can we move on",
+            "let's go",
+            "lets go",
+            "mark it",
             "i already answered",
             "we keep going over",
             "keep going over the same",
             "you're repeating",
             "you are repeating",
             "repeating yourself",
+        )
+    )
+
+
+def is_thin_acknowledgement(message: str) -> bool:
+    collapsed = " ".join(message.lower().split()).rstrip(".!")
+    return collapsed in {
+        "ok",
+        "okay",
+        "yes",
+        "yep",
+        "yeah",
+        "sure",
+        "cool",
+        "got it",
+        "thanks",
+        "thank you",
+        "alright",
+        "right",
+        "continue",
+        "next",
+        "go",
+        "done",
+        "lets go",
+        "let's go",
+        "mark it",
+    }
+
+
+def tutor_claimed_verified(message: str) -> bool:
+    lowered = " ".join(message.lower().split())
+    return any(
+        phrase in lowered
+        for phrase in (
+            "marking this concept verified",
+            "marking that verified",
+            "concept verified",
+            "required evidence",
         )
     )
 

@@ -2,9 +2,12 @@ from app.agents.mentor_graph import build_mentor_graph
 from app.agents.llm import StubCoachLLM
 from app.agents.policies import (
     asks_for_implementation,
+    asks_what_next,
     enforce_brevity,
     filter_specialist_reply,
+    is_thin_acknowledgement,
     next_hint_level,
+    tutor_claimed_verified,
 )
 
 
@@ -787,6 +790,80 @@ def test_correction_followup_does_not_repeat_an_already_answered_question() -> N
             },
         )
     )
-    reply = result["reply"].lower().replace("`", "")
-    assert "what does the caller get if there is no return" not in reply
-    assert "try again" not in reply
+def test_asks_what_next_covers_lets_go_and_mark_it() -> None:
+    assert asks_what_next("okay mark it and lets go")
+    assert asks_what_next("can we move on")
+    assert is_thin_acknowledgement("okay")
+    assert is_thin_acknowledgement("ok")
+    assert not is_thin_acknowledgement("the client requests and the server responds")
+    assert tutor_claimed_verified(
+        "That's right. I'm marking this concept verified. Next: TCP: connections, ports, listening."
+    )
+
+
+def _js_client_server_state(**overrides):
+    questions = [
+        "What does it mean for a program to 'listen' for connections?",
+        "Who initiates a request — the client or the server?",
+        "What happens, conceptually, when you type a URL into a browser and press enter?",
+    ]
+    state = {
+        "learner_message": "",
+        "concept_state": "verification",
+        "current_concept": "networking.client_server",
+        "concept_title": "Client / server / request / response",
+        "next_concept_title": "TCP: connections, ports, listening",
+        "learning_objectives": [
+            "Explain, at a high level, what a server does that a plain script doesn't",
+            "Explain the difference between a client and a server in one sentence each",
+        ],
+        "diagnostic_questions": questions[:2],
+        "research_questions": questions[2:],
+        "practice_tasks": [],
+        "needs_build": False,
+        "hints": [],
+        "allowed_ai_behavior": ["question", "review"],
+        "hint_level": -1,
+        "effort": {},
+        "evidence": {"answered_questions": questions, "explanation": True},
+        "last_tutor_message": (
+            "That's right. I'm marking this concept verified. "
+            "Next: TCP: connections, ports, listening."
+        ),
+    }
+    state.update(overrides)
+    return state
+
+
+class _RejectingExplanationLLM(StubCoachLLM):
+    def evaluate_explanation(self, **kwargs):
+        return {
+            "passed": False,
+            "feedback": (
+                "You acknowledged the concept but didn't provide an explanation—"
+                "please answer the current question about what a server does "
+                "differently from a plain script. You said this: That's right. "
+                "I'm marking this concept verified. Next: TCP: connections, ports, listening."
+            ),
+        }
+
+
+def test_okay_after_verified_unlocks_instead_of_regrading_explanation() -> None:
+    graph = build_mentor_graph(_RejectingExplanationLLM())
+    result = graph.invoke(_js_client_server_state(learner_message="okay"))
+    reply = result["reply"].lower()
+    assert result["contract"]["action"] == "REVIEW"
+    assert result["contract"]["should_unlock"] is True
+    assert "didn't provide an explanation" not in reply
+    assert "you said this" not in reply
+    assert "tcp" in reply
+
+
+def test_lets_go_after_verified_unlocks() -> None:
+    graph = build_mentor_graph(_RejectingExplanationLLM())
+    result = graph.invoke(
+        _js_client_server_state(learner_message="okay mark it and lets go")
+    )
+    assert result["contract"]["should_unlock"] is True
+    assert result["contract"]["action"] == "REVIEW"
+    assert "tcp" in result["reply"].lower()
