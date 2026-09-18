@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +20,7 @@ TERMINAL = frozenset({"done", "error"})
 
 
 def jobs_dir() -> Path:
-    root = Path(settings.sandbox_workspaces_root).resolve().parent / "graph_jobs"
+    root = Path(settings.sandbox_workspaces_root).resolve() / "graph_jobs"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -32,14 +34,29 @@ def _path(job_id: str) -> Path:
 
 def _read(job_id: str) -> dict[str, Any]:
     path = _path(job_id)
-    if not path.is_file():
-        raise FileNotFoundError(job_id)
-    return json.loads(path.read_text(encoding="utf-8"))
+    last_error: Exception | None = None
+    for _ in range(8):
+        if not path.is_file():
+            raise FileNotFoundError(job_id)
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw:
+            time.sleep(0.01)
+            continue
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            time.sleep(0.01)
+    if last_error:
+        raise last_error
+    raise FileNotFoundError(job_id)
 
 
 def _write(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     path = _path(job_id)
-    path.write_text(json.dumps(payload, default=str), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
+    os.replace(tmp, path)
     return payload
 
 
@@ -56,6 +73,12 @@ def create_job(request: dict[str, Any]) -> dict[str, Any]:
             "request": request,
         },
     )
+
+
+def enqueue_generate(request: dict[str, Any]) -> dict[str, Any]:
+    job = create_job(request)
+    start_job(job["job_id"])
+    return job
 
 
 def start_job(job_id: str) -> None:

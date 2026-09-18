@@ -6,7 +6,7 @@ Auth/roles are deferred so the dashboard can be tested without a login.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.agents.graph_author import GraphAuthorError, generate_concept_draft, generate_graph_draft
+from app.agents.graph_author import GraphAuthorError, generate_concept_draft
 from app.agents.llm import LLMConfigurationError, get_coach_llm
 from app.db.session import get_db
 from app.schemas.admin import (
@@ -48,29 +48,18 @@ def admin_get_graph(project_id: int, db: Session = Depends(get_db)) -> CatalogGr
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.errors) from exc
 
 
-@router.post("/graphs/generate", response_model=GraphPayload)
-def admin_generate_graph(body: GraphGenerateRequest) -> GraphPayload:
+@router.post(
+    "/graphs/generate",
+    response_model=GraphGenerateJob,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def admin_generate_graph(body: GraphGenerateRequest) -> GraphGenerateJob:
     try:
-        draft = generate_graph_draft(
-            topic=body.topic,
-            language=body.language,
-            slug=body.slug,
-            audience=body.audience,
-            constraints=body.constraints,
-            capstone=body.capstone,
-            difficulty=body.difficulty,
-            course_name=body.course_name,
-            track_kind=body.track_kind,
-            project_brief=body.project_brief,
-            include_concepts=list(body.include_concepts or []),
-        )
+        get_coach_llm()
     except LLMConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    except GraphValidationError as exc:
-        raise _http_from_validation(exc) from exc
-    except GraphAuthorError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    return GraphPayload.model_validate(draft)
+    job = graph_jobs.enqueue_generate(body.model_dump())
+    return GraphGenerateJob.model_validate(job)
 
 
 @router.post(
@@ -79,13 +68,7 @@ def admin_generate_graph(body: GraphGenerateRequest) -> GraphPayload:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def admin_start_generate_graph(body: GraphGenerateRequest) -> GraphGenerateJob:
-    try:
-        get_coach_llm()
-    except LLMConfigurationError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    job = graph_jobs.create_job(body.model_dump())
-    graph_jobs.start_job(job["job_id"])
-    return GraphGenerateJob.model_validate(job)
+    return admin_generate_graph(body)
 
 
 @router.get("/graphs/generate/jobs/{job_id}", response_model=GraphGenerateJob)

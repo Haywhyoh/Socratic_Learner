@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 import json
+import threading
 import time
 
 from app.agents.graph_author import normalize_graph_draft
@@ -10,6 +11,28 @@ from app.models.curriculum import Concept
 from app.seed import seed
 from app.services.curriculum_authoring import GraphValidationError, publish_graph, validate_graph_payload
 from app.services.practice import normalize_practice_task
+
+
+def generated_graph(client: TestClient, payload: dict) -> dict:
+    started = client.post("/api/v1/admin/graphs/generate", json=payload)
+    assert started.status_code == 202, started.text
+    job_id = started.json()["job_id"]
+    from app.services import graph_jobs
+
+    job = None
+    for _ in range(50):
+        fetched = client.get(f"/api/v1/admin/graphs/generate/jobs/{job_id}")
+        assert fetched.status_code == 200, fetched.text
+        job = fetched.json()
+        if job["status"] in {"done", "error"}:
+            break
+        time.sleep(0.02)
+    if job is None or job["status"] != "done":
+        graph_jobs.run_job(job_id)
+        job = client.get(f"/api/v1/admin/graphs/generate/jobs/{job_id}").json()
+    assert job["status"] == "done", job
+    assert job.get("graph")
+    return job["graph"]
 
 
 def test_normalize_maps_title_description_practice_tasks() -> None:
@@ -148,12 +171,9 @@ def test_publish_persists_mapped_practice_tasks(db: Session) -> None:
 
 
 def test_generate_preserves_go_language(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={"topic": "Go CLI notes", "language": "go", "slug": "go-cli"},
+    body = generated_graph(
+        client, {"topic": "Go CLI notes", "language": "go", "slug": "go-cli"}
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
     assert body["project"]["runtime"]["language"] == "go"
     assert body["course"]["primary_name"] == "Go"
     filenames = [
@@ -172,9 +192,9 @@ def test_admin_lists_extended_languages(client: TestClient) -> None:
 
 
 def test_generate_returns_namespaced_acyclic_draft(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={
+    body = generated_graph(
+        client,
+        {
             "topic": "Go CLI notes",
             "language": "python",
             "slug": "go-cli",
@@ -183,8 +203,6 @@ def test_generate_returns_namespaced_acyclic_draft(client: TestClient) -> None:
             "difficulty": "beginner",
         },
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
     ids = [c["id"] for c in body["concepts"]]
     assert ids == ["go-cli.start", "go-cli.core", "go-cli.capstone"]
     assert body["course"]["slug"] == "go-cli"
@@ -196,9 +214,9 @@ def test_generate_returns_namespaced_acyclic_draft(client: TestClient) -> None:
 
 
 def test_generate_includes_requested_concepts(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={
+    body = generated_graph(
+        client,
+        {
             "topic": "Go CLI notes",
             "language": "go",
             "slug": "go-cli-includes",
@@ -206,8 +224,6 @@ def test_generate_includes_requested_concepts(client: TestClient) -> None:
             "include_concepts": ["error wrapping", "flags"],
         },
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
     titles = " ".join(c["title"].lower() for c in body["concepts"])
     assert "error wrapping" in titles
     assert "flags" in titles
@@ -222,9 +238,9 @@ def test_generate_includes_requested_concepts(client: TestClient) -> None:
 
 
 def test_generate_project_track_uses_brief(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={
+    body = generated_graph(
+        client,
+        {
             "topic": "Simple backend",
             "language": "javascript",
             "slug": "simple-backend-gen",
@@ -232,8 +248,6 @@ def test_generate_project_track_uses_brief(client: TestClient) -> None:
             "project_brief": "tiny HTTP framework with routing and middleware",
         },
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
     blob = json.dumps(body)
     assert "tiny HTTP framework" in blob
     assert body["course"]["secondary_slug"] == "project"
@@ -284,12 +298,9 @@ def test_project_prompt_covers_js_framework_shape() -> None:
 def test_publish_list_get_and_enroll(
     client: TestClient, db: Session, auth_headers: dict[str, str]
 ) -> None:
-    generated = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={"topic": "Rust basics", "language": "python", "slug": "rust-basics"},
+    payload = generated_graph(
+        client, {"topic": "Rust basics", "language": "python", "slug": "rust-basics"}
     )
-    assert generated.status_code == 200, generated.text
-    payload = generated.json()
     created = client.post("/api/v1/admin/graphs", json=payload)
     assert created.status_code == 201, created.text
     graph = created.json()
@@ -338,11 +349,9 @@ def test_publish_list_get_and_enroll(
 
 
 def test_cycle_is_rejected(client: TestClient) -> None:
-    generated = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={"topic": "Cycle", "language": "javascript", "slug": "cycle-track"},
+    payload = generated_graph(
+        client, {"topic": "Cycle", "language": "javascript", "slug": "cycle-track"}
     )
-    payload = generated.json()
     ids = [c["id"] for c in payload["concepts"]]
     payload["dependencies"] = [
         {
@@ -362,11 +371,9 @@ def test_cycle_is_rejected(client: TestClient) -> None:
 
 
 def test_unknown_prerequisite_is_rejected(client: TestClient) -> None:
-    generated = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={"topic": "Missing edge", "language": "python", "slug": "missing-edge"},
+    payload = generated_graph(
+        client, {"topic": "Missing edge", "language": "python", "slug": "missing-edge"}
     )
-    payload = generated.json()
     payload["dependencies"].append(
         {
             "concept_id": payload["concepts"][0]["id"],
@@ -443,11 +450,12 @@ def test_seed_does_not_delete_admin_course(db: Session) -> None:
 
 
 def test_update_graph_changes_title(client: TestClient) -> None:
-    generated = client.post(
-        "/api/v1/admin/graphs/generate",
-        json={"topic": "Update me", "language": "python", "slug": "update-me"},
+    created = client.post(
+        "/api/v1/admin/graphs",
+        json=generated_graph(
+            client, {"topic": "Update me", "language": "python", "slug": "update-me"}
+        ),
     )
-    created = client.post("/api/v1/admin/graphs", json=generated.json())
     payload = created.json()
     payload["project"]["title"] = "Updated title"
     payload["concepts"][0]["title"] = "Renamed start"
@@ -542,3 +550,29 @@ def test_generate_job_returns_accepted_then_graph(
     titles = " ".join(item["title"].lower() for item in job["graph"]["concepts"])
     assert "syntax" in titles
     assert "variables" in titles
+
+
+def test_generate_returns_202_before_llm_finishes(
+    client: TestClient, workspace_tmp, monkeypatch
+) -> None:
+    """nginx 504s if this POST waits on the model. It must return a job immediately."""
+    release = threading.Event()
+
+    def hang(**_kwargs):
+        release.wait(timeout=5)
+        raise RuntimeError("llm still running")
+
+    monkeypatch.setattr("app.services.graph_jobs.generate_graph_draft", hang)
+    started_at = time.perf_counter()
+    response = client.post(
+        "/api/v1/admin/graphs/generate",
+        json={"topic": "c# from scratch", "language": "csharp", "slug": "csharp"},
+    )
+    elapsed = time.perf_counter() - started_at
+    release.set()
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["job_id"]
+    assert body["status"] in {"queued", "running"}
+    assert body.get("graph") is None
+    assert elapsed < 1.0, elapsed

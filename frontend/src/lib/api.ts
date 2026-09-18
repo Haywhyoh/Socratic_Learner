@@ -90,13 +90,16 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 async function pollAdminGenerateJob(
   payload: AdminGenerateRequest,
 ): Promise<AdminGraphPayload> {
-  const started = await request<AdminGenerateJob>("/api/v1/admin/graphs/generate/jobs", {
+  const started = await request<AdminGenerateJob>("/api/v1/admin/graphs/generate", {
     method: "POST",
     auth: false,
     body: payload,
   });
   const deadline = Date.now() + 10 * 60 * 1000;
   let jobId = started.job_id;
+  if (!jobId) {
+    throw new ApiError("Generate did not return a job id", 502);
+  }
   while (Date.now() < deadline) {
     const job = await request<AdminGenerateJob>(
       `/api/v1/admin/graphs/generate/jobs/${jobId}`,
