@@ -158,7 +158,19 @@ def bound_control(raw: Any, *, concept_id: str = "") -> dict[str, Any]:
         stored = str(raw.get("concept_id") or "")
         if stored and concept_id and stored != concept_id:
             return empty_control(concept_id)
-    return normalize_control(raw, concept_id=concept_id)
+    control = normalize_control(raw, concept_id=concept_id)
+    if concept_id and not has_evidence_ledger(None, concept_id=concept_id):
+        if control.get("strategy") in {
+            "change_representation",
+            "application",
+            "transfer",
+            "new_example",
+            "verify",
+            "verified",
+        }:
+            control["strategy"] = "diagnostic"
+            control["representation"] = "verbal"
+    return control
 
 
 def _closure_shown(message: str, last_tutor: str) -> bool:
@@ -271,6 +283,15 @@ def closure_proved(control: dict[str, Any]) -> bool:
     return CLOSURE_UNDERSTANDING in confirmed or "closure_live_link" in purposes
 
 
+_LEDGER_SKIP_PREFIXES = (
+    "server.",
+    "http.",
+    "networking.",
+    "python.",
+    "sql.",
+)
+
+
 def has_evidence_ledger(
     objectives: list[str] | None,
     *,
@@ -281,7 +302,9 @@ def has_evidence_ledger(
     cid = (concept_id or "").lower()
     if cid == "programming.functions":
         return True
-    blob = " ".join([*(objectives or []), concept_title]).lower()
+    if any(cid.startswith(prefix) for prefix in _LEDGER_SKIP_PREFIXES):
+        return False
+    blob = " ".join([cid, *(objectives or []), concept_title]).lower()
     return "callback" in blob or "closure" in blob
 
 
@@ -570,9 +593,11 @@ def teaching_branch(
     last_tutor: str,
     objectives: list[str] | None = None,
     concept_title: str = "",
+    concept_id: str = "",
 ) -> str | None:
     """Override graph routing from learning-control memory. None = keep classified branch."""
-    control = normalize_control(control)
+    live_id = concept_id or str((control or {}).get("concept_id") or "")
+    control = bound_control(control, concept_id=live_id)
     for item in understandings_from_answer(message, last_tutor):
         _append_unique(control["confirmed_understandings"], item)
     for item in purposes_from_answer(message, last_tutor):
@@ -581,7 +606,7 @@ def teaching_branch(
     missing = missing_required_evidence(
         control,
         objectives,
-        concept_id=str(control.get("concept_id") or ""),
+        concept_id=live_id,
         concept_title=concept_title,
     )
     ledger = missing is not None

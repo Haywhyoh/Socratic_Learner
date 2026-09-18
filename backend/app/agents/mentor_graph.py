@@ -48,6 +48,26 @@ from app.agents.state import MentorContract, MentorState
 from app.models.learning_state import ConceptStatus
 from app.services.curriculum_graph import match_required_question
 
+_CALLBACK_GRAPH_BRANCHES = {
+    "change_representation",
+    "proved_this",
+    "application_check",
+    "transfer_check",
+    "await_invoke",
+    "await_pass",
+    "closure_pass",
+    "missing_evidence",
+}
+
+
+def _ledger_active(state: MentorState) -> bool:
+    return has_evidence_ledger(
+        list(state.get("learning_objectives") or []),
+        concept_id=str(state.get("current_concept") or ""),
+        concept_title=str(state.get("concept_title") or ""),
+    )
+
+
 _BLOCKED_STATES = {
     ConceptStatus.blocked.value,
     ConceptStatus.diagnosis.value,
@@ -119,6 +139,7 @@ def _classify_turn(state: MentorState) -> dict:
         control=state.get("learning_control") or {},
         objectives=list(state.get("learning_objectives") or []),
         concept_title=str(state.get("concept_title") or ""),
+        concept_id=str(state.get("current_concept") or ""),
     )
     if not classified.get("misconception"):
         identified = state.get("identified_misconception")
@@ -139,6 +160,8 @@ def _pick_branch(state: MentorState) -> str:
         return "hint_gate"
     classified = _classify_turn(state)
     branch = classified.get("branch")
+    if branch in _CALLBACK_GRAPH_BRANCHES and not _ledger_active(state):
+        branch = None
     if branch == "remediate":
         return "misconception_remediation"
     if branch == "retest":
@@ -923,6 +946,11 @@ def proved_this_node(state: MentorState) -> MentorState:
 
 
 def change_representation_node(state: MentorState) -> MentorState:
+    if not _ledger_active(state):
+        skipped = _advance_or_missing_if_ready(state)
+        if skipped is not None:
+            return skipped
+        return next_step_node(state)
     control = state.get("learning_control") or {}
     representation = str(control.get("representation") or "verbal")
     from app.agents.learning_control import next_representation
@@ -1040,15 +1068,17 @@ def misconception_cleared_node(state: MentorState) -> MentorState:
     )
     skipped = _advance_or_missing_if_ready(state)
     if skipped is not None:
-        prefix = (
-            "That's the callback distinction: passing stores the function, `cb()` runs it later.\n\n"
-        )
+        prefix = ""
+        if _ledger_active(state):
+            prefix = (
+                "That's the callback distinction: passing stores the function, `cb()` runs it later.\n\n"
+            )
         skipped["reply"] = prefix + str(skipped.get("reply") or "")
         contract = dict(skipped.get("contract") or {})
         contract["message"] = skipped["reply"]
         skipped["contract"] = contract  # type: ignore[typeddict-item]
         return skipped
-    if leftover:
+    if leftover and _ledger_active(state):
         message = (
             "That's the callback distinction: passing stores the function, `cb()` runs it later.\n\n"
             "Closures are a different idea. If `let n = 1` and an inner function reads `n`, "

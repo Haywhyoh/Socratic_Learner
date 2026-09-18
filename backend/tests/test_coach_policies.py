@@ -867,3 +867,76 @@ def test_lets_go_after_verified_unlocks() -> None:
     assert result["contract"]["should_unlock"] is True
     assert result["contract"]["action"] == "REVIEW"
     assert "tcp" in result["reply"].lower()
+
+
+def test_packet_is_not_names_passing() -> None:
+    from app.agents.misconceptions import names_invoking, names_passing
+
+    assert not names_passing(
+        "listening is the server waiting for a data packet to arrive at a port"
+    )
+    assert names_passing("the outer call passes the function")
+    assert names_invoking("cb() runs it later")
+    assert not names_invoking("the process stays alive")
+
+
+def _js_server_listen_state(**overrides):
+    state = {
+        "learner_message": "",
+        "concept_state": "discussing",
+        "current_concept": "server.listen",
+        "concept_title": "Creating a server and listening",
+        "next_concept_title": "The request lifecycle end-to-end",
+        "learning_objectives": [
+            "Start a Node.js server that accepts a connection and logs something",
+        ],
+        "diagnostic_questions": ["What does 'listening' mean for a server process?"],
+        "research_questions": [
+            "How do you create a TCP or HTTP server in Node.js and have it listen on a port?",
+        ],
+        "practice_tasks": [
+            {
+                "id": "server_listen_1",
+                "filename": "practice/server_listen_1.js",
+                "prompt": "Create an HTTP server and listen on port 3000.",
+            }
+        ],
+        "needs_build": True,
+        "misconceptions": [
+            "Forgetting the process needs to stay alive/listening to accept more than one connection",
+        ],
+        "hints": [],
+        "allowed_ai_behavior": ["question", "review"],
+        "hint_level": -1,
+        "effort": {},
+        "evidence": {"open_question": "What does 'listening' mean for a server process?"},
+        "last_tutor_message": (
+            "We're still on 'Creating a server and listening'. Next question:\n\n"
+            "What does 'listening' mean for a server process?"
+        ),
+        "learning_control": {
+            "concept_id": "programming.functions",
+            "strategy": "change_representation",
+            "representation": "verbal",
+        },
+    }
+    state.update(overrides)
+    return state
+
+
+def test_server_listen_does_not_hijack_into_callback_drills() -> None:
+    graph = build_mentor_graph(StubCoachLLM())
+    result = graph.invoke(
+        _js_server_listen_state(
+            learner_message=(
+                "listening is the server waiting for a data packet to arrive at a port"
+            )
+        )
+    )
+    reply = result["reply"].lower()
+    assert "same concept, different representation" not in reply
+    assert "function outer" not in reply
+    assert "sealed envelope" not in reply
+    assert "router stores a function" not in reply
+    assert "callback distinction" not in reply
+    assert "listen" in reply or "server" in reply or "practice/server_listen_1.js" in reply

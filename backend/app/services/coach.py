@@ -503,6 +503,7 @@ def _run_mentor(
             control=control,
             objectives=objectives,
             concept_title=concept_title,
+            concept_id=str(state_row.concept_id),
         )
         control = apply_learner_turn(
             control,

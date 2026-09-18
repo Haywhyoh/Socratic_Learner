@@ -17,7 +17,8 @@ _BOOT_MESSAGES = {
     "what should i think about first",
 }
 
-_PASS_TOKENS = ("pass", "passes", "passed", "gives", "supplies", "argument")
+_PASS_TOKENS = ("pass", "passes", "passed", "passing", "gives", "supplies", "argument")
+_PASS_RE = re.compile(r"\b(pass(?:es|ed|ing)?|gives|supplies|argument)\b")
 _INVOKE_TOKENS = (
     "invoke",
     "invokes",
@@ -35,6 +36,9 @@ _INVOKE_TOKENS = (
     "calls operation",
     "runs it",
     "run it",
+)
+_INVOKE_RE = re.compile(
+    r"\b(invoke[sd]?|invoking|execut(?:e|es|ing)|calls|calling|runs it|run it)\b"
 )
 _CALLER_CONFUSION = (
     "person who called",
@@ -166,9 +170,9 @@ def names_passing(answer: str) -> bool:
     raw = answer.lower()
     text = _norm(answer)
     if "later(" in raw or "myfunction(" in raw or "run(" in raw:
-        if any(token in text for token in _PASS_TOKENS) or "passing" in text:
+        if _PASS_RE.search(text):
             return True
-    return any(token in text for token in (*_PASS_TOKENS, "passing"))
+    return bool(_PASS_RE.search(text))
 
 
 def names_invoking(answer: str) -> bool:
@@ -176,7 +180,7 @@ def names_invoking(answer: str) -> bool:
     if "cb()" in raw or "operation()" in raw:
         return True
     text = _norm(answer)
-    if any(token in text for token in _INVOKE_TOKENS):
+    if _INVOKE_RE.search(text):
         return True
     return bool(re.search(r"\bcb\b", text)) and any(
         token in text for token in ("call", "calling", "invoke", "run", "line")
@@ -195,8 +199,8 @@ def last_tutor_asks_pass_invoke(message: str) -> bool:
     text = message.lower()
     if "two separate answers" in text:
         return True
-    return "which line" in text and any(
-        token in text for token in ("pass", "invoke", "invokes")
+    return "which line" in text and bool(
+        re.search(r"\b(pass(?:es|ed|ing)?|invoke[sd]?|invoking)\b", text)
     )
 
 
@@ -311,9 +315,10 @@ def classify_learner_turn(
     control: dict[str, Any] | None = None,
     objectives: list[str] | None = None,
     concept_title: str = "",
+    concept_id: str = "",
 ) -> dict[str, Any]:
     """Decide whether to remediate, re-test, evaluate, or keep questioning."""
-    from app.agents.learning_control import teaching_branch
+    from app.agents.learning_control import has_evidence_ledger, teaching_branch
     from app.agents.policies import asks_for_mentor_explanation, asks_what_next
 
     if is_boot_message(message) or (
@@ -321,6 +326,12 @@ def classify_learner_turn(
     ):
         return {"branch": None, "misconception": None, "phase": None}
 
+    live_id = concept_id or str((control or {}).get("concept_id") or "")
+    ledger = has_evidence_ledger(
+        objectives,
+        concept_id=live_id,
+        concept_title=concept_title,
+    )
     specs = normalize_misconceptions(raw_misconceptions)
     by_id = {item["id"]: item for item in specs}
     last = (list(prior_answers or []) or [{}])[-1] if prior_answers else {}
@@ -329,12 +340,16 @@ def classify_learner_turn(
     callback_misc = (
         by_id.get("callback-caller-confusion")
         or by_id.get("callback-runs-when-passed")
-        or (specs[0] if specs else None)
+        or (specs[0] if ledger and specs else None)
     )
     closure_misc = by_id.get("closure-copies-values")
 
     result: dict[str, Any]
-    if last_tutor_asks_closures(last_tutor_message) and answer_shows_live_closure(message):
+    if (
+        ledger
+        and last_tutor_asks_closures(last_tutor_message)
+        and answer_shows_live_closure(message)
+    ):
         result = {
             "branch": "closure_pass",
             "misconception": closure_misc,
@@ -353,11 +368,14 @@ def classify_learner_turn(
             else:
                 result = {"branch": "retest", "misconception": resolved, "phase": "resolved"}
         else:
-            asked_pass_invoke = last_tutor_asks_pass_invoke(last_tutor_message) or last.get("phase") in {
-                "detected",
-                "stuck",
-                "resolved",
-            }
+            asked_pass_invoke = ledger and (
+                last_tutor_asks_pass_invoke(last_tutor_message)
+                or last.get("phase") in {
+                    "detected",
+                    "stuck",
+                    "resolved",
+                }
+            )
             if asked_pass_invoke and names_passing(message) and not names_invoking(message):
                 result = {
                     "branch": "await_invoke",
@@ -372,7 +390,11 @@ def classify_learner_turn(
                 }
             else:
                 matched = match_misconception(message, raw_misconceptions)
-                if matched:
+                if matched and (
+                    ledger
+                    or str(matched.get("id") or "")
+                    not in {"callback-caller-confusion", "callback-runs-when-passed", "closure-copies-values"}
+                ):
                     result = {"branch": "remediate", "misconception": matched, "phase": "detected"}
                 else:
                     result = {"branch": None, "misconception": None, "phase": None}
@@ -384,6 +406,7 @@ def classify_learner_turn(
         last_tutor=last_tutor_message,
         objectives=objectives,
         concept_title=concept_title,
+        concept_id=live_id,
     )
     if override:
         result["branch"] = override
