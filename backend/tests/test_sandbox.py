@@ -178,6 +178,127 @@ def test_sandbox_write_read_delete(
     assert missing.status_code == 404
 
 
+def test_sandbox_rename_practice_file(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+    workspace_tmp: Path,
+    fake_runner: FakeSandboxRunner,
+) -> None:
+    user_project_id = _enroll_project(client, auth_headers, db)
+    created = client.put(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files/practice/hello.js",
+        headers=auth_headers,
+        json={"content": "console.log('hi')\n"},
+    )
+    assert created.status_code == 200, created.text
+    renamed = client.post(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/rename",
+        headers=auth_headers,
+        json={"source": "practice/hello.js", "dest": "practice/greet.js"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json() == {
+        "source": "practice/hello.js",
+        "dest": "practice/greet.js",
+    }
+    assert (
+        client.get(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/files/practice/greet.js",
+            headers=auth_headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/files/practice/hello.js",
+            headers=auth_headers,
+        ).status_code
+        == 404
+    )
+
+
+def test_sandbox_rename_rejects_escape(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+    workspace_tmp: Path,
+    fake_runner: FakeSandboxRunner,
+) -> None:
+    user_project_id = _enroll_project(client, auth_headers, db)
+    client.put(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files/hello.js",
+        headers=auth_headers,
+        json={"content": "ok\n"},
+    )
+    escaped = client.post(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/rename",
+        headers=auth_headers,
+        json={"source": "hello.js", "dest": "../outside.js"},
+    )
+    assert escaped.status_code == 400
+    listed = client.get(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files",
+        headers=auth_headers,
+    )
+    paths = {item["path"] for item in listed.json()["files"]}
+    assert "hello.js" in paths
+    assert "../outside.js" not in paths
+
+
+def test_sandbox_run_refuses_workspace_wipe(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db: Session,
+    workspace_tmp: Path,
+    fake_runner: FakeSandboxRunner,
+) -> None:
+    user_project_id = _enroll_project(client, auth_headers, db)
+    response = client.post(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/run",
+        headers=auth_headers,
+        json={"argv": ["rm", "-rf", "."]},
+    )
+    assert response.status_code == 400
+    assert fake_runner.calls == []
+
+
+def test_coach_file_tools_stay_in_sandbox(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    user,
+    db: Session,
+    workspace_tmp: Path,
+    fake_runner: FakeSandboxRunner,
+) -> None:
+    from app.agents.tools import bind_coach_sandbox_tools
+
+    user_project_id = _enroll_project(client, auth_headers, db)
+    client.put(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files/practice/hello.js",
+        headers=auth_headers,
+        json={"content": "console.log('hi')\n"},
+    )
+    tools = {tool.name: tool for tool in bind_coach_sandbox_tools(db, user, user_project_id)}
+    renamed = tools["rename_workspace_file"].invoke(
+        {"source": "practice/hello.js", "dest": "practice/greet.js"}
+    )
+    assert str(renamed).startswith("Renamed")
+    escaped = tools["rename_workspace_file"].invoke(
+        {"source": "practice/greet.js", "dest": "../outside.js"}
+    )
+    assert str(escaped).startswith("ERROR")
+    deleted = tools["delete_workspace_file"].invoke({"path": "practice/greet.js"})
+    assert str(deleted).startswith("Deleted")
+    escaped_delete = tools["delete_workspace_file"].invoke({"path": "../secret"})
+    assert str(escaped_delete).startswith("ERROR")
+    missing = client.get(
+        f"/api/v1/me/projects/{user_project_id}/sandbox/files/practice/greet.js",
+        headers=auth_headers,
+    )
+    assert missing.status_code == 404
+
+
 def test_sandbox_run_rejects_disallowed(
     client: TestClient,
     auth_headers: dict[str, str],

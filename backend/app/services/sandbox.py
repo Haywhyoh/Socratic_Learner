@@ -190,6 +190,72 @@ def delete_file(db: Session, user: User, user_project_id: int, relative: str) ->
     target.unlink()
 
 
+def rename_file(
+    db: Session, user: User, user_project_id: int, source: str, dest: str
+) -> dict[str, str]:
+    ensure_workspace(db, user, user_project_id)
+    root = workspace_path_for(user_project_id)
+    src = resolve_safe_path(root, source)
+    dst = resolve_safe_path(root, dest)
+    if not src.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    if src == dst:
+        cleaned = dest.strip().lstrip("/")
+        return {"source": source.strip().lstrip("/"), "dest": cleaned}
+    if dst.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A file already exists at the destination",
+        )
+    if src.is_dir():
+        try:
+            dst.relative_to(src)
+        except ValueError:
+            pass
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot move a folder into itself",
+            )
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot create destination directory: {exc}",
+        ) from exc
+    src.rename(dst)
+    return {
+        "source": source.strip().lstrip("/"),
+        "dest": dest.strip().lstrip("/"),
+    }
+
+
+def _validate_mutating_paths(workspace: Path, argv: list[str]) -> None:
+    """Keep rm/mv/cp/mkdir/touch targets inside this learner workspace."""
+    if not argv or argv[0] not in FS_MUTATING_BINARIES:
+        return
+    paths = [part for part in argv[1:] if not part.startswith("-")]
+    if argv[0] == "rm":
+        if not paths:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="rm requires a workspace-relative path",
+            )
+        for part in paths:
+            if part in {".", "./", "/", "/workspace"}:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Refusing to delete the workspace root. Pass a relative file path.",
+                )
+            resolve_safe_path(workspace, part)
+        return
+    for part in paths:
+        if part in {".", "./"}:
+            continue
+        resolve_safe_path(workspace, part)
+
+
 def run_command(
     db: Session,
     user: User,
@@ -207,6 +273,9 @@ def run_command(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    workspace = workspace_path_for(user_project_id)
+    _validate_mutating_paths(workspace, safe_argv)
+
     if safe_cwd is not None:
         cwd_path = workspace_path_for(user_project_id) / safe_cwd
         if not cwd_path.is_dir():
@@ -215,7 +284,6 @@ def run_command(
                 detail=f"cwd does not exist: {safe_cwd}",
             )
 
-    workspace = workspace_path_for(user_project_id)
     runtime = _runtime_for(db, user, user_project_id)
     try:
         result = get_sandbox_runner().run(

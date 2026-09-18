@@ -7,6 +7,8 @@ from app.models.user import User
 from app.schemas.sandbox import (
     SandboxFileContent,
     SandboxFileList,
+    SandboxFileRename,
+    SandboxFileRenameResult,
     SandboxFileWrite,
     SandboxRunRequest,
     SandboxRunResult,
@@ -91,6 +93,23 @@ def delete_sandbox_file(
 ) -> Response:
     sandbox_service.delete_file(db, current_user, user_project_id, file_path)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/me/projects/{user_project_id}/sandbox/rename",
+    response_model=SandboxFileRenameResult,
+)
+def rename_sandbox_file(
+    user_project_id: int,
+    payload: SandboxFileRename,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SandboxFileRenameResult:
+    return SandboxFileRenameResult.model_validate(
+        sandbox_service.rename_file(
+            db, current_user, user_project_id, payload.source, payload.dest
+        )
+    )
 
 
 @router.post(

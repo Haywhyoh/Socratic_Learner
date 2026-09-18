@@ -34,6 +34,16 @@ class SandboxFileWrite(BaseModel):
     content: str = Field(..., max_length=1_000_000)
 
 
+class SandboxFileRename(BaseModel):
+    source: str = Field(..., min_length=1, max_length=512)
+    dest: str = Field(..., min_length=1, max_length=512)
+
+
+class SandboxFileRenameResult(BaseModel):
+    source: str
+    dest: str
+
+
 class SandboxRunRequest(BaseModel):
     """Run an allowlisted command. Prefer `command` for terminal input; `argv` for tools."""
 

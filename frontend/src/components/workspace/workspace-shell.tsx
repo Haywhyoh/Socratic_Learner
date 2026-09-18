@@ -222,6 +222,40 @@ export function WorkspaceShell({
     },
     [userProjectId, refreshFiles],
   );
+
+  const deleteFile = useCallback(
+    async (path: string) => {
+      if (!userProjectId) return;
+      await api.deleteSandboxFile(userProjectId, path);
+      await refreshFiles();
+      if (activeFile === path || (activeFile && activeFile.startsWith(`${path}/`))) {
+        setActiveFile(null);
+        setEditorContent("");
+        setDirty(false);
+      }
+      terminalRef.current?.echo(`deleted ${path}`);
+    },
+    [userProjectId, activeFile, refreshFiles],
+  );
+
+  const renameFile = useCallback(
+    async (source: string, dest: string) => {
+      if (!userProjectId) return;
+      if (source === dest) return;
+      if (dirty && activeFile && (activeFile === source || activeFile.startsWith(`${source}/`))) {
+        await saveFile();
+      }
+      await api.renameSandboxFile(userProjectId, source, dest);
+      await refreshFiles();
+      if (activeFile === source) {
+        await loadFile(dest);
+      } else if (activeFile && activeFile.startsWith(`${source}/`)) {
+        await loadFile(`${dest}${activeFile.slice(source.length)}`);
+      }
+      terminalRef.current?.echo(`renamed ${source} -> ${dest}`);
+    },
+    [userProjectId, dirty, activeFile, saveFile, refreshFiles, loadFile],
+  );
   useEffect(() => {
     if (!userProjectId) return;
     let cancelled = false;
@@ -674,6 +708,8 @@ export function WorkspaceShell({
                 onSelectFile={(path) => void loadFile(path)}
                 onCreateFile={createFile}
                 onCreateFolder={createFolder}
+                onRenameFile={renameFile}
+                onDeleteFile={deleteFile}
               />
             </aside>
 

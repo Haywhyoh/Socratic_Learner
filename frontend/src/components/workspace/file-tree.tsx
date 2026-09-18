@@ -8,6 +8,8 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SandboxFileEntry } from "@/lib/types";
@@ -118,7 +120,7 @@ export function normalizeWorkspacePath(raw: string): string | null {
   return parts.join("/");
 }
 
-type CreateMode = "file" | "folder";
+type EditorMode = "file" | "folder" | "rename";
 
 interface FileTreeProps {
   entries: SandboxFileEntry[];
@@ -126,6 +128,8 @@ interface FileTreeProps {
   onSelectFile: (path: string) => void;
   onCreateFile?: (path: string) => Promise<void> | void;
   onCreateFolder?: (path: string) => Promise<void> | void;
+  onRenameFile?: (source: string, dest: string) => Promise<void> | void;
+  onDeleteFile?: (path: string) => Promise<void> | void;
   busy?: boolean;
   filePlaceholder?: string;
 }
@@ -136,6 +140,8 @@ export function FileTree({
   onSelectFile,
   onCreateFile,
   onCreateFolder,
+  onRenameFile,
+  onDeleteFile,
   busy = false,
   filePlaceholder = "src/index.js",
 }: FileTreeProps) {
@@ -144,7 +150,8 @@ export function FileTree({
     collectAncestorDirs(activePath),
   );
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
-  const [createMode, setCreateMode] = useState<CreateMode | null>(null);
+  const [editorMode, setEditorMode] = useState<EditorMode | null>(null);
+  const [editorSource, setEditorSource] = useState<string | null>(null);
   const [createValue, setCreateValue] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -167,11 +174,11 @@ export function FileTree({
   }, [activePath]);
 
   useEffect(() => {
-    if (createMode) {
+    if (editorMode) {
       inputRef.current?.focus();
       inputRef.current?.select();
     }
-  }, [createMode]);
+  }, [editorMode]);
 
   const toggleDir = (path: string) => {
     setSelectedDir(path);
@@ -183,28 +190,46 @@ export function FileTree({
     });
   };
 
-  const startCreate = (mode: CreateMode) => {
+  const startCreate = (mode: "file" | "folder") => {
     if (busy || submitting) return;
     const base = selectedDir ?? parentDirOf(activePath);
-    setCreateMode(mode);
+    setEditorMode(mode);
+    setEditorSource(null);
     setCreateValue(base ? `${base}/` : "");
     setCreateError(null);
   };
 
+  const startRename = (path: string) => {
+    if (busy || submitting || !onRenameFile) return;
+    setEditorMode("rename");
+    setEditorSource(path);
+    setCreateValue(path);
+    setCreateError(null);
+  };
+
   const cancelCreate = () => {
-    setCreateMode(null);
+    setEditorMode(null);
+    setEditorSource(null);
     setCreateValue("");
     setCreateError(null);
   };
 
   const submitCreate = async () => {
-    if (!createMode || submitting) return;
+    if (!editorMode || submitting) return;
     const path = normalizeWorkspacePath(createValue);
     if (!path) {
       setCreateError("Enter a valid relative path");
       return;
     }
-    if (entries.some((e) => e.path === path)) {
+    if (editorMode !== "rename" && entries.some((e) => e.path === path)) {
+      setCreateError("Already exists");
+      return;
+    }
+    if (
+      editorMode === "rename" &&
+      path !== editorSource &&
+      entries.some((e) => e.path === path)
+    ) {
       setCreateError("Already exists");
       return;
     }
@@ -212,16 +237,34 @@ export function FileTree({
     setSubmitting(true);
     setCreateError(null);
     try {
-      if (createMode === "file") {
+      if (editorMode === "file") {
         await onCreateFile?.(path);
-      } else {
+      } else if (editorMode === "folder") {
         await onCreateFolder?.(path);
         setSelectedDir(path);
         setExpanded((prev) => new Set(prev).add(path));
+      } else if (editorSource) {
+        await onRenameFile?.(editorSource, path);
       }
       cancelCreate();
     } catch (e) {
-      setCreateError(e instanceof Error ? e.message : "Could not create");
+      setCreateError(e instanceof Error ? e.message : "Could not update file");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const deletePath = async (path: string) => {
+    if (busy || submitting || !onDeleteFile) return;
+    const confirmed = window.confirm(`Delete ${path}? This cannot be undone.`);
+    if (!confirmed) return;
+    setSubmitting(true);
+    setCreateError(null);
+    try {
+      await onDeleteFile(path);
+      if (editorSource === path) cancelCreate();
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : "Could not delete");
     } finally {
       setSubmitting(false);
     }
@@ -261,10 +304,14 @@ export function FileTree({
         )}
       </div>
 
-      {createMode && (
+      {editorMode && (
         <div className="mb-1 space-y-1 px-1">
           <label className="block text-[10px] uppercase tracking-wide text-stone-600">
-            {createMode === "file" ? "New file path" : "New folder path"}
+            {editorMode === "file"
+              ? "New file path"
+              : editorMode === "folder"
+                ? "New folder path"
+                : "Rename path"}
           </label>
           <input
             ref={inputRef}
@@ -284,7 +331,7 @@ export function FileTree({
               }
             }}
             placeholder={
-              createMode === "file" ? filePlaceholder : "src/utils"
+              editorMode === "folder" ? "src/utils" : filePlaceholder
             }
             className="w-full rounded border border-stone-700 bg-stone-950 px-1.5 py-1 text-xs text-stone-200 outline-none focus:border-amber-700"
           />
@@ -298,7 +345,11 @@ export function FileTree({
               onClick={() => void submitCreate()}
               className="rounded bg-stone-800 px-2 py-0.5 text-[10px] text-stone-200 hover:bg-stone-700 disabled:opacity-40"
             >
-              {submitting ? "Creating…" : "Create"}
+              {submitting
+                ? "Working…"
+                : editorMode === "rename"
+                  ? "Rename"
+                  : "Create"}
             </button>
             <button
               type="button"
@@ -312,7 +363,11 @@ export function FileTree({
         </div>
       )}
 
-      {tree.length === 0 && !createMode ? (
+      {!editorMode && createError ? (
+        <p className="mb-1 px-1 text-[10px] text-red-400">{createError}</p>
+      ) : null}
+
+      {tree.length === 0 && !editorMode ? (
         <p className="px-2 py-2 text-xs text-stone-600">No files yet</p>
       ) : (
         <ul className="space-y-0.5" role="tree">
@@ -324,11 +379,16 @@ export function FileTree({
               activePath={activePath}
               selectedDir={selectedDir}
               expanded={expanded}
+              busy={busy || submitting}
+              canRename={Boolean(onRenameFile)}
+              canDelete={Boolean(onDeleteFile)}
               onToggle={toggleDir}
               onSelectFile={(path) => {
                 setSelectedDir(parentDirOf(path) || null);
                 onSelectFile(path);
               }}
+              onRename={startRename}
+              onDelete={(path) => void deletePath(path)}
             />
           ))}
         </ul>
@@ -343,8 +403,65 @@ interface TreeItemProps {
   activePath: string | null;
   selectedDir: string | null;
   expanded: Set<string>;
+  busy: boolean;
+  canRename: boolean;
+  canDelete: boolean;
   onToggle: (path: string) => void;
   onSelectFile: (path: string) => void;
+  onRename: (path: string) => void;
+  onDelete: (path: string) => void;
+}
+
+function RowActions({
+  path,
+  busy,
+  canRename,
+  canDelete,
+  onRename,
+  onDelete,
+}: {
+  path: string;
+  busy: boolean;
+  canRename: boolean;
+  canDelete: boolean;
+  onRename: (path: string) => void;
+  onDelete: (path: string) => void;
+}) {
+  if (!canRename && !canDelete) return null;
+  return (
+    <span className="ml-auto flex shrink-0 items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+      {canRename ? (
+        <button
+          type="button"
+          title={`Rename ${path}`}
+          aria-label={`Rename ${path}`}
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRename(path);
+          }}
+          className="rounded p-0.5 text-stone-500 hover:bg-stone-800 hover:text-stone-200 disabled:opacity-40"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      ) : null}
+      {canDelete ? (
+        <button
+          type="button"
+          title={`Delete ${path}`}
+          aria-label={`Delete ${path}`}
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete(path);
+          }}
+          className="rounded p-0.5 text-stone-500 hover:bg-stone-800 hover:text-red-300 disabled:opacity-40"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      ) : null}
+    </span>
+  );
 }
 
 function TreeItem({
@@ -353,49 +470,70 @@ function TreeItem({
   activePath,
   selectedDir,
   expanded,
+  busy,
+  canRename,
+  canDelete,
   onToggle,
   onSelectFile,
+  onRename,
+  onDelete,
 }: TreeItemProps) {
   const isOpen = expanded.has(node.path);
   const paddingLeft = 8 + depth * 12;
+  const childProps = {
+    depth: depth + 1,
+    activePath,
+    selectedDir,
+    expanded,
+    busy,
+    canRename,
+    canDelete,
+    onToggle,
+    onSelectFile,
+    onRename,
+    onDelete,
+  };
 
   if (node.isDir) {
     const selected = selectedDir === node.path;
     return (
       <li role="treeitem" aria-expanded={isOpen}>
-        <button
-          type="button"
-          onClick={() => onToggle(node.path)}
+        <div
           style={{ paddingLeft }}
-          className={`flex w-full items-center gap-1 rounded px-1 py-1 text-left text-xs hover:bg-stone-900 hover:text-stone-200 ${
+          className={`group flex w-full items-center gap-1 rounded px-1 py-1 text-xs hover:bg-stone-900 hover:text-stone-200 ${
             selected ? "bg-stone-900 text-amber-200" : "text-stone-400"
           }`}
         >
-          {isOpen ? (
-            <ChevronDown className="h-3 w-3 shrink-0 text-stone-600" />
-          ) : (
-            <ChevronRight className="h-3 w-3 shrink-0 text-stone-600" />
-          )}
-          {isOpen ? (
-            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-600/80" />
-          ) : (
-            <Folder className="h-3.5 w-3.5 shrink-0 text-amber-700/70" />
-          )}
-          <span className="truncate">{node.name}</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => onToggle(node.path)}
+            className="flex min-w-0 flex-1 items-center gap-1 text-left"
+          >
+            {isOpen ? (
+              <ChevronDown className="h-3 w-3 shrink-0 text-stone-600" />
+            ) : (
+              <ChevronRight className="h-3 w-3 shrink-0 text-stone-600" />
+            )}
+            {isOpen ? (
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-600/80" />
+            ) : (
+              <Folder className="h-3.5 w-3.5 shrink-0 text-amber-700/70" />
+            )}
+            <span className="min-w-0 truncate">{node.name}</span>
+          </button>
+          <RowActions
+            path={node.path}
+            busy={busy}
+            canRename={canRename}
+            canDelete={canDelete}
+            onRename={onRename}
+            onDelete={onDelete}
+          />
+        </div>
         {isOpen && node.children.length > 0 && (
           <ul className="space-y-0.5" role="group">
             {node.children.map((child) => (
-              <TreeItem
-                key={child.path}
-                node={child}
-                depth={depth + 1}
-                activePath={activePath}
-                selectedDir={selectedDir}
-                expanded={expanded}
-                onToggle={onToggle}
-                onSelectFile={onSelectFile}
-              />
+              <TreeItem key={child.path} node={child} {...childProps} />
             ))}
           </ul>
         )}
@@ -407,20 +545,32 @@ function TreeItem({
 
   return (
     <li role="treeitem">
-      <button
-        type="button"
-        onClick={() => onSelectFile(node.path)}
+      <div
         style={{ paddingLeft }}
-        className={`flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-xs ${
+        className={`group flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs ${
           active
             ? "bg-stone-800 text-amber-200"
             : "text-stone-400 hover:bg-stone-900 hover:text-stone-200"
         }`}
       >
-        <span className="w-3 shrink-0" />
-        <FileCode className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">{node.name}</span>
-      </button>
+        <button
+          type="button"
+          onClick={() => onSelectFile(node.path)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        >
+          <span className="w-3 shrink-0" />
+          <FileCode className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 truncate">{node.name}</span>
+        </button>
+        <RowActions
+          path={node.path}
+          busy={busy}
+          canRename={canRename}
+          canDelete={canDelete}
+          onRename={onRename}
+          onDelete={onDelete}
+        />
+      </div>
     </li>
   );
 }

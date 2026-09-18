@@ -215,6 +215,20 @@ export const api = {
     );
   },
 
+  deleteSandboxFile(userProjectId: number, filePath: string) {
+    return request<void>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/files/${sandboxFilePath(filePath)}`,
+      { method: "DELETE" },
+    );
+  },
+
+  renameSandboxFile(userProjectId: number, source: string, dest: string) {
+    return request<{ source: string; dest: string }>(
+      `/api/v1/me/projects/${userProjectId}/sandbox/rename`,
+      { method: "POST", body: { source, dest } },
+    );
+  },
+
   runSandbox(
     userProjectId: number,
     payload: { argv?: string[]; command?: string; cwd?: string | null },

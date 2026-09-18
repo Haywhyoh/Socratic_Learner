@@ -1024,6 +1024,31 @@ def sandbox_rm(
     console.print(f"[green]Deleted[/green] {path}")
 
 
+@sandbox_app.command("mv")
+def sandbox_mv(
+    source: Annotated[str, typer.Argument(help="Existing relative path in the workspace")],
+    dest: Annotated[str, typer.Argument(help="New relative path in the workspace")],
+    user_project_id: Annotated[
+        Optional[int],
+        typer.Option("--project", help="User project ID (defaults to latest)"),
+    ] = None,
+) -> None:
+    if not isinstance(user_project_id, int):
+        user_project_id = None
+    with _client() as client:
+        if user_project_id is None:
+            user_project_id = _latest_user_project_id(client)
+        response = client.post(
+            f"/api/v1/me/projects/{user_project_id}/sandbox/rename",
+            headers=_headers(),
+            json={"source": source, "dest": dest},
+        )
+    if response.status_code >= 400:
+        _print_http_error(response)
+        raise typer.Exit(code=1)
+    console.print(f"[green]Renamed[/green] {source} -> {dest}")
+
+
 @sandbox_app.command(
     "run",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
